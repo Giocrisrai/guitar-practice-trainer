@@ -50,15 +50,34 @@ class Sesion:
     def diagnostico(self, nivel_db: float | None = None) -> Diagnostico:
         """Estado actual del montaje."""
         dispositivos = self._listar()
-        cable = buscar_rocksmith(dispositivos)
+        rocksmith = buscar_rocksmith(dispositivos)
+        cable = rocksmith
         if self.configuracion.dispositivo is not None:
             elegido = next(
                 (d for d in dispositivos if d.indice == self.configuracion.dispositivo), None
             )
-            if elegido is not None:
-                cable = elegido
+            if elegido is None:
+                # El dispositivo elegido a mano ya no está: decirlo, no sustituirlo
+                # en silencio por el Rocksmith.
+                return Diagnostico(
+                    estado="sin_dispositivo",
+                    mensaje=(
+                        f"El dispositivo elegido (índice {self.configuracion.dispositivo}) "
+                        "ya no está disponible."
+                    ),
+                    accion=(
+                        "Reconéctalo si es un dispositivo USB, o elige otro "
+                        "dispositivo en los ajustes."
+                    ),
+                    dispositivos=dispositivos,
+                )
+            cable = elegido
         return diagnosticar(
-            dispositivos, cable, nivel_db, self.configuracion.umbral_ruido_dbfs
+            dispositivos,
+            cable,
+            nivel_db,
+            self.configuracion.umbral_ruido_dbfs,
+            rocksmith,
         )
 
     def _construir_analizador(self) -> Analizador:

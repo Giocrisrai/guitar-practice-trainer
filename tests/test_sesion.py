@@ -109,6 +109,18 @@ def test_la_calibracion_devuelve_un_umbral_sobre_el_ruido():
     sesion.detener()
 
 
+def test_dispositivo_elegido_que_desaparecio_no_cae_de_vuelta_al_rocksmith():
+    """Si el índice elegido ya no está en la lista, hay que decirlo, no sustituirlo."""
+    sesion = Sesion(
+        Configuracion(dispositivo=99),
+        crear_captura=lambda **kw: CapturaFalsa(**kw),
+        listar=lambda: [MICROFONO, CABLE],
+    )
+    diagnostico = sesion.iniciar()
+    assert diagnostico.estado == "sin_dispositivo"
+    assert sesion.activa is False
+
+
 def test_detener_dos_veces_no_falla():
     sesion = Sesion(
         Configuracion(dispositivo=3),

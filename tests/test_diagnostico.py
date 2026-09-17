@@ -40,3 +40,21 @@ def test_el_diagnostico_lista_los_dispositivos_para_elegir_a_mano():
     resultado = diagnosticar(dispositivos=[MICROFONO, CABLE], cable=CABLE)
     assert len(resultado.a_dict()["dispositivos"]) == 2
     assert resultado.a_dict()["dispositivos"][1]["nombre"] == NOMBRE_ROCKSMITH
+
+
+def test_usar_el_microfono_con_el_rocksmith_conectado_avisa_del_error_probable():
+    """El cable está enchufado pero no elegido: casi siempre es una equivocación."""
+    resultado = diagnosticar(
+        dispositivos=[MICROFONO, CABLE], cable=MICROFONO, nivel_db=-40.0, rocksmith=CABLE
+    )
+    assert resultado.estado == "otro_dispositivo"
+    assert NOMBRE_ROCKSMITH in resultado.accion
+
+
+def test_usar_el_microfono_sin_el_rocksmith_presente_respeta_la_eleccion():
+    """Sin el cable en la lista, elegir el micrófono es una decisión legítima."""
+    resultado = diagnosticar(
+        dispositivos=[MICROFONO], cable=MICROFONO, nivel_db=-40.0, rocksmith=None
+    )
+    assert resultado.estado == "ok"
+    assert resultado.mensaje == "Dispositivo activo: MacBook Pro Microphone"

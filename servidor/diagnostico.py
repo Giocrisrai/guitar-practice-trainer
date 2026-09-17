@@ -36,11 +36,28 @@ def diagnosticar(
     cable: DispositivoAudio | None,
     nivel_db: float | None = None,
     umbral_dbfs: float = -60.0,
+    rocksmith: DispositivoAudio | None = None,
 ) -> Diagnostico:
-    """Determina en cuál de los cuatro estados está el montaje.
+    """Determina en cuál de los cinco estados está el montaje.
+
+    - "sin_permiso": no se ve ninguna entrada de audio (macOS no dio permiso).
+    - "sin_dispositivo": no hay ningún dispositivo en uso (`cable` es None).
+    - "sin_senal": hay un dispositivo en uso pero el nivel medido no llega al
+      umbral.
+    - "otro_dispositivo": el dispositivo en uso no es el Rocksmith y el Rocksmith
+      sí está presente en la lista; casi siempre significa que el usuario se
+      equivocó al elegir, porque el cable está enchufado pero no seleccionado.
+    - "ok": el dispositivo en uso tiene señal suficiente, sea o no el Rocksmith.
+      Elegir otro dispositivo a propósito es una decisión legítima del usuario
+      (por ejemplo para afinar una acústica con el micrófono); el diagnóstico no
+      lo prohíbe, solo deja de llamarlo "cable" cuando no lo es.
 
     nivel_db en None significa que todavía no se ha medido nada: en ese caso no se
     declara falta de señal, porque sería acusar en falso antes de mirar.
+
+    rocksmith es el cable Rocksmith encontrado por nombre en la lista, esté o no
+    en uso; se usa solo para distinguir "otro_dispositivo" de una elección
+    deliberada sin el cable presente.
     """
     if not dispositivos:
         return Diagnostico(
@@ -76,9 +93,20 @@ def diagnosticar(
             dispositivos=dispositivos,
         )
 
+    if rocksmith is not None and cable.indice != rocksmith.indice:
+        return Diagnostico(
+            estado="otro_dispositivo",
+            mensaje=f"Estás usando {cable.nombre}, no el cable de la guitarra.",
+            accion=(
+                f"El {rocksmith.nombre} está conectado pero no seleccionado. "
+                "Cámbialo en los ajustes si querías tocar la guitarra."
+            ),
+            dispositivos=dispositivos,
+        )
+
     return Diagnostico(
         estado="ok",
-        mensaje=f"Cable conectado: {cable.nombre}",
+        mensaje=f"Dispositivo activo: {cable.nombre}",
         accion="",
         dispositivos=dispositivos,
     )
