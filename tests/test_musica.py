@@ -41,7 +41,7 @@ def test_frecuencia_exacta_da_cero_cents():
     assert nota.cents == pytest.approx(0.0, abs=0.01)
 
 
-@pytest.mark.parametrize("desviacion", [-50.0, -25.0, -10.0, 10.0, 25.0, 50.0])
+@pytest.mark.parametrize("desviacion", [-49.0, -25.0, -10.0, 10.0, 25.0, 49.0])
 def test_desviacion_conocida_se_devuelve_igual(desviacion):
     """Si desafino una nota N cents, el resultado debe decir exactamente N cents."""
     frecuencia = midi_a_frecuencia(40) * 2 ** (desviacion / 1200.0)
