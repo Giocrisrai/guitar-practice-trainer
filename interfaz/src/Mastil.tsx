@@ -15,7 +15,13 @@ const TRASTES_CON_MARCA = [3, 5, 7, 9, 12, 15, 17, 19, 21];
  * 110 Hz es tanto la 5ª cuerda al aire como la 6ª en el traste 5; desde la
  * frecuencia no se pueden distinguir y elegir una sería inventar certeza.
  */
-export function Mastil({ perfil, posiciones, trastesVisibles = 12 }: Props) {
+export function Mastil({ perfil, posiciones, trastesVisibles }: Props) {
+  // El número de trastes sale del perfil, no de una constante fija: guitarras y
+  // bajos tienen 22 o 24 trastes (ver nucleo/afinaciones.py). Fijar 12 escondía
+  // más de la mitad del mástil sin avisar, y una posición detectada más allá del
+  // traste 12 no encontraba celda y se descartaba en silencio.
+  const trastes = trastesVisibles ?? perfil.trastes;
+
   const activa = (cuerda: number, traste: number) =>
     posiciones.some((p) => p.cuerda === cuerda && p.traste === traste);
 
@@ -24,7 +30,7 @@ export function Mastil({ perfil, posiciones, trastesVisibles = 12 }: Props) {
       {perfil.cuerdas.map((cuerda) => (
         <div className="cuerda" key={cuerda.numero}>
           <span className="etiqueta">{cuerda.nota.replace(/\d/g, "")}</span>
-          {Array.from({ length: trastesVisibles + 1 }, (_, traste) => (
+          {Array.from({ length: trastes + 1 }, (_, traste) => (
             <span
               key={traste}
               className={
@@ -37,7 +43,7 @@ export function Mastil({ perfil, posiciones, trastesVisibles = 12 }: Props) {
         </div>
       ))}
       <div className="numeros">
-        {Array.from({ length: trastesVisibles + 1 }, (_, traste) => (
+        {Array.from({ length: trastes + 1 }, (_, traste) => (
           <span key={traste} className="numero">
             {TRASTES_CON_MARCA.includes(traste) ? traste : ""}
           </span>

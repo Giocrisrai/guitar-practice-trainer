@@ -11,6 +11,7 @@ export function Afinador() {
   const { nota, conectado } = useNotas();
   const [perfiles, setPerfiles] = useState<PerfilAfinacion[]>([]);
   const [clavePerfil, setClavePerfil] = useState("guitarra_estandar");
+  const [errorPerfil, setErrorPerfil] = useState<string | null>(null);
 
   useEffect(() => {
     fetch("/api/perfiles").then((r) => r.json()).then(setPerfiles);
@@ -19,13 +20,29 @@ export function Afinador() {
       .then((config) => setClavePerfil(config.perfil));
   }, []);
 
-  const cambiarPerfil = (clave: string) => {
+  const cambiarPerfil = async (clave: string) => {
+    const anterior = clavePerfil;
     setClavePerfil(clave);
-    fetch("/api/config", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ perfil: clave }),
-    });
+    setErrorPerfil(null);
+    try {
+      const respuesta = await fetch("/api/config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ perfil: clave }),
+      });
+      if (!respuesta.ok) {
+        const datos = await respuesta.json().catch(() => null);
+        throw new Error(datos?.detail ?? `El servidor respondio ${respuesta.status}`);
+      }
+    } catch (error) {
+      // Si el PUT falla (400 por configuración inválida, error de red, etc.) se
+      // revierte al valor anterior: dejar el selector mostrando una afinación que
+      // el servidor nunca aplicó le mentiría al usuario sobre el estado real.
+      setClavePerfil(anterior);
+      setErrorPerfil(
+        error instanceof Error ? error.message : "No se pudo cambiar la afinacion"
+      );
+    }
   };
 
   const perfil = perfiles.find((p) => p.clave === clavePerfil);
@@ -45,6 +62,7 @@ export function Afinador() {
             </option>
           ))}
         </select>
+        {errorPerfil && <span className="error-perfil">{errorPerfil}</span>}
       </div>
 
       <Aguja nota={nota?.nota ?? null} cents={nota?.cents ?? null} />

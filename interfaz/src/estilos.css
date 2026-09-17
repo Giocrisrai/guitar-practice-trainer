@@ -43,6 +43,10 @@ body {
   background: var(--panel); color: var(--texto);
   border: 1px solid var(--borde); border-radius: 6px; padding: 6px 10px;
 }
+.error-perfil {
+  padding: 4px 10px; border-radius: 6px; font-size: 13px;
+  background: #3a2a1a; border: 1px solid var(--desviada); color: var(--desviada);
+}
 
 .aguja { text-align: center; padding: 24px 0; }
 .nota-grande { font-size: 72px; font-weight: 300; line-height: 1; }
@@ -67,16 +71,19 @@ body {
 .lectura { color: var(--tenue); font-variant-numeric: tabular-nums; }
 .veredicto { margin-top: 8px; font-weight: 600; }
 
-.mastil { margin: 24px 0; }
-.cuerda { display: flex; align-items: center; gap: 2px; margin-bottom: 6px; }
-.etiqueta { width: 20px; color: var(--tenue); font-size: 13px; }
+/* overflow-x: auto porque un mástil de 22-24 trastes (guitarras y bajos, ver
+   nucleo/afinaciones.py) no cabe cómodo en el ancho del panel; las celdas tienen
+   un ancho mínimo para seguir siendo legibles y el sobrante se desplaza. */
+.mastil { margin: 24px 0; overflow-x: auto; }
+.cuerda { display: flex; align-items: center; gap: 2px; margin-bottom: 6px; width: max-content; min-width: 100%; }
+.etiqueta { flex: 0 0 20px; width: 20px; color: var(--tenue); font-size: 13px; }
 .traste {
-  flex: 1; height: 18px; border-right: 1px solid var(--borde); border-radius: 2px;
+  flex: 1 0 20px; min-width: 20px; height: 18px; border-right: 1px solid var(--borde); border-radius: 2px;
 }
-.traste.al-aire { flex: 0 0 14px; }
+.traste.al-aire { flex: 0 0 14px; min-width: 14px; }
 .traste.activo { background: var(--afinada); }
-.numeros { display: flex; gap: 2px; padding-left: 22px; }
-.numero { flex: 1; text-align: right; color: var(--tenue); font-size: 11px; }
+.numeros { display: flex; gap: 2px; padding-left: 22px; width: max-content; min-width: 100%; }
+.numero { flex: 1 0 20px; min-width: 20px; text-align: right; color: var(--tenue); font-size: 11px; }
 
 .barra-estado {
   display: flex; align-items: center; gap: 20px;
