@@ -1,6 +1,7 @@
 """Configuración persistente y calibración del umbral de ruido."""
 
 import json
+import os
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 
@@ -63,11 +64,18 @@ def cargar(ruta: Path = RUTA_POR_DEFECTO) -> Configuracion:
 
 
 def guardar(configuracion: Configuracion, ruta: Path = RUTA_POR_DEFECTO) -> None:
-    """Escribe la configuración, validándola antes."""
+    """Escribe la configuración, validándola antes.
+
+    La escritura es atómica: primero a un archivo temporal en el mismo directorio
+    y después `os.replace`, que en un mismo sistema de archivos sustituye de golpe.
+    Escribir directamente sobre el destino lo truncaría antes de escribir, y una
+    interrupción a mitad dejaría al usuario sin sus ajustes.
+    """
     configuracion.validar()
-    ruta.write_text(
-        json.dumps(configuracion.a_dict(), indent=2, ensure_ascii=False), encoding="utf-8"
-    )
+    contenido = json.dumps(configuracion.a_dict(), indent=2, ensure_ascii=False)
+    temporal = ruta.with_name(ruta.name + ".tmp")
+    temporal.write_text(contenido, encoding="utf-8")
+    os.replace(temporal, ruta)
 
 
 def calibrar_umbral(

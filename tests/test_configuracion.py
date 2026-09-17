@@ -37,6 +37,13 @@ def test_guardar_y_cargar_conserva_todo(tmp_path):
     assert cargar(ruta) == original
 
 
+def test_guardar_no_deja_archivos_temporales(tmp_path):
+    """La escritura atomica no debe dejar restos: solo el archivo final."""
+    ruta = tmp_path / "config.json"
+    guardar(Configuracion(), ruta)
+    assert list(tmp_path.iterdir()) == [ruta]
+
+
 def test_cargar_sin_archivo_da_los_valores_por_defecto(tmp_path):
     assert cargar(tmp_path / "no_existe.json") == Configuracion()
 
