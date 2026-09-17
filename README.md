@@ -27,6 +27,12 @@ cd interfaz && pnpm install && pnpm build && cd ..
 
 Abre `http://127.0.0.1:8000` en el navegador.
 
+Opciones del comando:
+
+- `--puerto`: cambia el puerto en el que escucha el servidor (por defecto 8000).
+  Ejemplo: `.venv/bin/guitarra --puerto 8080`.
+- `--sin-navegador`: levanta el servidor sin abrir el navegador automáticamente.
+
 Si con el cable conectado el afinador avisa con el estado `otro_dispositivo`, es
 que el sistema está capturando otra entrada de audio (por ejemplo el micrófono
 del portátil) en vez del cable Rocksmith, aunque este esté enchufado. Elige el

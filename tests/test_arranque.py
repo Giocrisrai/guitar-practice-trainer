@@ -1,4 +1,4 @@
-from servidor.arranque import RUTA_INTERFAZ, construir_aplicacion
+from servidor.arranque import RUTA_INTERFAZ, _esperar_al_servidor, construir_aplicacion
 
 
 def test_la_aplicacion_se_construye_sin_hardware(tmp_path, monkeypatch):
@@ -24,3 +24,15 @@ def test_usa_la_configuracion_guardada(tmp_path):
     assert sesion.configuracion.perfil == "bajo_4"
     assert sesion.configuracion.ganancia == 3.0
     sesion.detener()
+
+
+def test_esperar_al_servidor_agota_el_limite_si_nadie_escucha():
+    """Si el puerto no acepta conexiones, debe devolver False sin colgarse.
+
+    Se usa un límite muy corto (0,3 s) y un puerto alto del rango efímero donde
+    no hay nada escuchando: no se levanta ningún servidor real ni se ocupa un
+    puerto (no se hace ``bind``, solo se intenta conectar), así que basta con
+    comprobar el camino del límite agotado.
+    """
+    puerto_sin_nada_escuchando = 47125
+    assert _esperar_al_servidor(puerto_sin_nada_escuchando, limite_espera=0.3) is False

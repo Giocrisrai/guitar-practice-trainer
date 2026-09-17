@@ -1,6 +1,7 @@
 """Punto de entrada: levanta el servidor y abre la interfaz en el navegador."""
 
 import argparse
+import socket
 import sys
 import threading
 import time
@@ -16,6 +17,23 @@ from servidor.sesion import Sesion
 RUTA_INTERFAZ = Path(__file__).resolve().parent.parent / "interfaz" / "dist"
 
 PUERTO_POR_DEFECTO = 8000
+
+
+def _esperar_al_servidor(puerto: int, limite_espera: float = 15.0) -> bool:
+    """Espera a que el servidor acepte conexiones en el puerto.
+
+    Abrir el navegador tras una espera fija dejaba al usuario ante una pestana
+    con error de conexion si uvicorn tardaba mas de lo previsto en arrancar.
+    Devuelve True si el puerto acepta antes del limite, False si se agota.
+    """
+    final = time.monotonic() + limite_espera
+    while time.monotonic() < final:
+        try:
+            with socket.create_connection(("127.0.0.1", puerto), timeout=0.25):
+                return True
+        except OSError:
+            time.sleep(0.1)
+    return False
 
 
 def construir_aplicacion(ruta_config: Path | None = None) -> tuple[FastAPI, Sesion]:
@@ -62,8 +80,13 @@ def main(argv: list[str] | None = None) -> int:
 
     if not argumentos.sin_navegador:
         def abrir() -> None:
-            time.sleep(1.0)
-            webbrowser.open(direccion)
+            if _esperar_al_servidor(argumentos.puerto):
+                webbrowser.open(direccion)
+            else:
+                print(
+                    f"El servidor tardó más de lo esperado en arrancar. "
+                    f"Abre {direccion} a mano."
+                )
 
         threading.Thread(target=abrir, daemon=True).start()
 
