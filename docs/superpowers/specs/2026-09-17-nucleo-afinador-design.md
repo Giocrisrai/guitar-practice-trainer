@@ -29,10 +29,15 @@ Comprobado el 2026-09-17 en el equipo destino (MacBook Pro M1 Pro, macOS 26.3):
 
 Niveles medidos con la guitarra del usuario, volumen al máximo, rasgueo fuerte:
 
-| Medida | Valor |
-|---|---|
-| Pico | −27 dBFS |
-| Medio | −45 dBFS |
+| Medida | Tocando | En silencio |
+|---|---|---|
+| Pico | −27 dBFS | −56,3 dBFS |
+| Medio | −45 dBFS | −74,4 dBFS |
+
+La separación entre el nivel medio tocando y el piso de ruido medio es de **29 dB**,
+margen amplio para una compuerta de ruido limpia. El umbral por defecto se fija en
+**−60 dBFS RMS**: 14 dB por encima del ruido medio y 15 dB por debajo de la señal
+media, centrado en el hueco entre ambos.
 
 Consecuencias de diseño, derivadas de estas mediciones:
 
@@ -119,7 +124,8 @@ permanentemente con el piso de ruido del cable.
 
 El umbral **no se fija por intuición**: se determina midiendo el piso de ruido real
 del equipo (guitarra conectada, sin tocar) y situando el umbral por encima con un
-margen. El software incluye un comando de calibración que repite esta medición y
+margen. El valor por defecto es **−60 dBFS RMS**, derivado de las mediciones de la
+sección 2. El software incluye un comando de calibración que repite esta medición y
 guarda el valor en la configuración, de modo que sirva también en otros equipos o
 con otras pastillas.
 
