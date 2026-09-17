@@ -1,0 +1,69 @@
+import json
+
+import pytest
+
+from servidor.configuracion import Configuracion, calibrar_umbral, cargar, guardar
+
+
+def test_los_valores_por_defecto_son_los_de_la_spec():
+    config = Configuracion()
+    assert config.perfil == "guitarra_estandar"
+    assert config.umbral_ruido_dbfs == -60.0
+    assert config.referencia_a4 == 440.0
+    assert config.ganancia == 1.0
+    assert config.detector == "yin"
+    assert config.dispositivo is None
+
+
+def test_un_perfil_inexistente_se_rechaza_con_mensaje_claro():
+    with pytest.raises(ValueError, match="perfil"):
+        Configuracion(perfil="ukelele").validar()
+
+
+def test_una_ganancia_negativa_se_rechaza():
+    with pytest.raises(ValueError, match="ganancia"):
+        Configuracion(ganancia=-1.0).validar()
+
+
+def test_una_referencia_absurda_se_rechaza():
+    with pytest.raises(ValueError, match="referencia"):
+        Configuracion(referencia_a4=20.0).validar()
+
+
+def test_guardar_y_cargar_conserva_todo(tmp_path):
+    ruta = tmp_path / "config.json"
+    original = Configuracion(dispositivo=3, perfil="bajo_5", ganancia=2.5)
+    guardar(original, ruta)
+    assert cargar(ruta) == original
+
+
+def test_cargar_sin_archivo_da_los_valores_por_defecto(tmp_path):
+    assert cargar(tmp_path / "no_existe.json") == Configuracion()
+
+
+def test_un_archivo_corrupto_no_rompe_el_arranque(tmp_path):
+    """Preferible arrancar con valores por defecto que no arrancar."""
+    ruta = tmp_path / "config.json"
+    ruta.write_text("{esto no es json", encoding="utf-8")
+    assert cargar(ruta) == Configuracion()
+
+
+def test_un_archivo_con_campos_desconocidos_los_ignora(tmp_path):
+    ruta = tmp_path / "config.json"
+    ruta.write_text(json.dumps({"perfil": "bajo_4", "inventado": 1}), encoding="utf-8")
+    assert cargar(ruta).perfil == "bajo_4"
+
+
+def test_la_calibracion_deja_margen_sobre_el_ruido():
+    """Niveles medidos en el equipo real: ruido en torno a -74 dBFS."""
+    assert calibrar_umbral([-74.4, -74.1, -74.8, -73.9]) == pytest.approx(-60.2, abs=0.5)
+
+
+def test_la_calibracion_descarta_un_golpe_accidental():
+    """Un ruido puntual durante la calibración no debe subir el umbral."""
+    con_golpe = calibrar_umbral([-74.0, -74.0, -30.0, -74.0, -74.0])
+    assert con_golpe == pytest.approx(-60.0, abs=0.5)
+
+
+def test_el_margen_de_calibracion_es_ajustable():
+    assert calibrar_umbral([-74.0], margen_db=20.0) == pytest.approx(-54.0, abs=0.1)
