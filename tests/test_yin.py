@@ -2,12 +2,22 @@
 import numpy as np
 import pytest
 
+from nucleo.analisis import registro as _modulo_registro
 from nucleo.analisis.registro import ResultadoTono, nombres_disponibles, obtener, registrar
 from nucleo.analisis.yin import detectar_yin
 
 FS = 48000
 F_MIN = 70.0
 F_MAX = 1400.0
+
+
+@pytest.fixture(autouse=True)
+def _restaurar_registro_global():
+    """Evita que un detector de prueba (p. ej. "falso") contamine el resto de la sesión."""
+    original = dict(_modulo_registro._DETECTORES)
+    yield
+    _modulo_registro._DETECTORES.clear()
+    _modulo_registro._DETECTORES.update(original)
 
 
 def senoide(frecuencia: float, muestras: int = 4096, amplitud: float = 0.3) -> np.ndarray:
@@ -55,9 +65,21 @@ def test_el_ruido_blanco_tiene_confianza_baja():
     assert resultado.confianza < 0.5
 
 
-def test_no_devuelve_frecuencias_fuera_del_rango_pedido():
-    resultado = detectar_yin(senoide(300.0), FS, 200.0, 400.0)
-    assert 200.0 <= resultado.frecuencia <= 400.0
+@pytest.mark.parametrize(
+    "frecuencia_senal, minima, maxima",
+    [(1500.0, 70.0, 1400.0), (60.0, 70.0, 1400.0), (420.0, 200.0, 400.0), (150.0, 200.0, 400.0)],
+)
+def test_una_senal_fuera_del_rango_no_saca_la_frecuencia_del_rango(frecuencia_senal, minima, maxima):
+    """La interpolacion no debe extrapolar mas alla de los limites pedidos."""
+    resultado = detectar_yin(senoide(frecuencia_senal), FS, minima, maxima)
+    assert minima <= resultado.frecuencia <= maxima
+
+
+def test_una_ventana_demasiado_corta_no_inventa_una_nota():
+    """Con 512 muestras no caben periodos de 70 Hz: debe callar, no dar una nota con confianza alta."""
+    resultado = detectar_yin(senoide(82.41, muestras=512), FS, F_MIN, F_MAX)
+    assert resultado.frecuencia == 0.0
+    assert resultado.confianza == 0.0
 
 
 def test_detecta_un_si0_de_bajo_con_la_ventana_larga():

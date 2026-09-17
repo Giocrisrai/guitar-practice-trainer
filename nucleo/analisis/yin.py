@@ -53,8 +53,11 @@ def _diferencia_normalizada(diferencia: np.ndarray) -> np.ndarray:
     acumulado = np.cumsum(diferencia[1:])
     tau = np.arange(1, diferencia.size)
     # Donde el acumulado es cero (señal constante) se deja el valor 1: sin periodo.
+    # Se usa `where` en vez de calcular sobre todo el array y enmascarar después,
+    # porque calcular sobre todo el array produce una división 0/0 real (y su
+    # RuntimeWarning) en cada trama silenciosa dentro del bucle de tiempo real.
     seguro = acumulado > 0.0
-    normalizada[1:][seguro] = (diferencia[1:] * tau / acumulado)[seguro]
+    np.divide(diferencia[1:] * tau, acumulado, out=normalizada[1:], where=seguro)
     return normalizada
 
 
@@ -82,11 +85,18 @@ def detectar_yin(
 ) -> ResultadoTono:
     """Estima la frecuencia fundamental de la ventana y la confianza de esa estimación.
 
-    Devuelve frecuencia 0.0 y confianza 0.0 cuando la ventana es demasiado corta
-    para contener periodos de la frecuencia mínima pedida.
+    Devuelve frecuencia 0.0 y confianza 0.0 cuando la ventana es demasiado corta para
+    contener periodos de la frecuencia mínima pedida: concretamente, cuando el periodo
+    correspondiente a `frecuencia_minima` (en muestras) no cabe ni siquiera una vez en
+    la mitad de la ventana. Sin esta guarda, `tau` cerca de n−1 deja a `d(τ)` sumar solo
+    1 o 2 términos, con lo que `d(τ) → 0` y aparece un valle espurio profundísimo que se
+    confundiría con una nota real.
     """
     tau_minimo = max(2, int(frecuencia_muestreo / frecuencia_maxima))
-    tau_maximo = min(muestras.size - 1, int(frecuencia_muestreo / frecuencia_minima) + 1)
+    mitad_ventana = muestras.size // 2
+    if frecuencia_muestreo / frecuencia_minima > mitad_ventana:
+        return ResultadoTono(frecuencia=0.0, confianza=0.0)
+    tau_maximo = min(mitad_ventana, int(frecuencia_muestreo / frecuencia_minima) + 1)
     if tau_maximo <= tau_minimo:
         return ResultadoTono(frecuencia=0.0, confianza=0.0)
 
@@ -109,8 +119,18 @@ def detectar_yin(
     periodo = _refinar_con_parabola(normalizada, indice)
     if periodo <= 0.0:
         return ResultadoTono(frecuencia=0.0, confianza=0.0)
+    # La parábola puede extrapolar más allá de los tres puntos que ajusta, sobre todo
+    # cerca de los bordes de la ventana de búsqueda. Se acota al rango pedido para no
+    # devolver una frecuencia fuera de [frecuencia_minima, frecuencia_maxima].
+    periodo = float(np.clip(periodo, tau_minimo, tau_maximo))
 
     frecuencia = frecuencia_muestreo / periodo
+    # tau_minimo y tau_maximo son, respectivamente, un piso y un techo en muestras
+    # (int(...) y int(...) + 1): no son la inversa exacta de frecuencia_maxima y
+    # frecuencia_minima. Acotar solo el periodo no basta —en los bordes puede seguir
+    # devolviendo una frecuencia justo fuera del rango pedido (p. ej. 69,97 Hz con
+    # mínimo 70)—, así que se acota también la frecuencia resultante.
+    frecuencia = float(np.clip(frecuencia, frecuencia_minima, frecuencia_maxima))
     confianza = float(np.clip(1.0 - normalizada[indice], 0.0, 1.0))
     return ResultadoTono(frecuencia=float(frecuencia), confianza=confianza)
 
