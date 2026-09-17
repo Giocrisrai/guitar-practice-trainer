@@ -119,8 +119,19 @@ class Analizador:
         """Muestras por ventana, derivadas del perfil."""
         return self.perfil.tamano_ventana(self.frecuencia_muestreo)
 
-    def _silencio(self, nivel: float, confianza: float = 0.0) -> ResultadoAnalisis:
-        self._suavizador.reiniciar()
+    def _silencio(
+        self, nivel: float, confianza: float = 0.0, reiniciar: bool = True
+    ) -> ResultadoAnalisis:
+        """Resultado de silencio.
+
+        `reiniciar` distingue los dos motivos por los que se calla. Vaciar el
+        historial solo tiene sentido cuando de verdad se dejó de tocar: si un
+        cuadro dudoso en mitad de una nota sostenida reiniciase el suavizador, se
+        tirarían ~107 ms de historial y la aguja parpadearía justo mientras el
+        usuario afina, que es la función principal de la etapa.
+        """
+        if reiniciar:
+            self._suavizador.reiniciar()
         return ResultadoAnalisis(
             estado="silencio", frecuencia=0.0, confianza=confianza, nivel_db=nivel
         )
@@ -150,7 +161,10 @@ class Analizador:
             self._frecuencia_maxima,
         )
         if tono.confianza < self.confianza_minima or tono.frecuencia <= 0.0:
-            return self._silencio(nivel, tono.confianza)
+            # Hay energía suficiente: el usuario sigue tocando y este cuadro
+            # simplemente no se pudo leer. Se calla, pero se conserva el
+            # historial del suavizado (ver _silencio).
+            return self._silencio(nivel, tono.confianza, reiniciar=False)
 
         suavizada = self._suavizador.agregar(tono.frecuencia)
         if suavizada is None:

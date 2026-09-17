@@ -10,6 +10,7 @@ from fastapi import Body, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 
 from nucleo.afinaciones import PERFILES
+from nucleo.analisis.pipeline import ResultadoAnalisis
 from servidor import configuracion as config_modulo
 from servidor.modulos import listar_modulos
 from servidor.sesion import Sesion
@@ -17,6 +18,11 @@ from servidor.sesion import Sesion
 # La pantalla no muestra más rápido que esto. Emitir más solo añadiría cola y, con
 # ella, retardo entre lo que se toca y lo que se ve.
 FRECUENCIA_EMISION = 30.0
+
+# Lo que se emite mientras el análisis todavía no ha producido nada.
+SILENCIO_INICIAL = ResultadoAnalisis(
+    estado="silencio", frecuencia=0.0, confianza=0.0, nivel_db=-120.0
+)
 
 
 def crear_app(sesion: Sesion, ruta_interfaz: Path | None = None) -> FastAPI:
@@ -105,19 +111,12 @@ def crear_app(sesion: Sesion, ruta_interfaz: Path | None = None) -> FastAPI:
             while True:
                 resultado = sesion.ultimo_resultado()
                 if resultado is None:
-                    mensaje = {
-                        "estado": "silencio",
-                        "frecuencia": 0.0,
-                        "nota": None,
-                        "cents": None,
-                        "confianza": 0.0,
-                        "nivel_db": -120.0,
-                        "posiciones": [],
-                        "cuerda_objetivo": None,
-                        "afinada": False,
-                    }
-                else:
-                    mensaje = resultado.a_dict()
+                    # Se construye el mismo dataclass que usa el análisis en vez
+                    # de escribir el diccionario a mano: así la forma del mensaje
+                    # tiene un solo dueño y añadir un campo al resultado no deja
+                    # este camino emitiendo una forma distinta en silencio.
+                    resultado = SILENCIO_INICIAL
+                mensaje = resultado.a_dict()
                 mensaje["latencia_ms"] = round(sesion.latencia_ms, 1)
                 await websocket.send_json(mensaje)
                 await asyncio.sleep(intervalo)

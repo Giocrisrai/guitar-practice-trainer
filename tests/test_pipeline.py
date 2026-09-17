@@ -103,3 +103,36 @@ def test_el_diccionario_emitido_tiene_la_forma_de_la_spec():
         "nivel_db", "posiciones", "cuerda_objetivo", "afinada",
     }
     assert emitido["posiciones"] == [{"cuerda": 6, "traste": 0}]
+
+
+def test_un_cuadro_dudoso_no_tira_el_historial_del_suavizado():
+    """Puerta de confianza: con energía suficiente, callar sin reiniciar.
+
+    Un cuadro de baja confianza dentro de una nota sostenida no es el final de la
+    nota; reiniciar el suavizador ahí tiraría ~107 ms de historial y haría
+    parpadear la aguja durante la afinación.
+    """
+    analizador = Analizador(GUITARRA, frecuencia_muestreo=FS, tamano_suavizado=5)
+    generador = np.random.default_rng(7)
+    ruido = (generador.normal(0.0, 0.2, 4096)).astype(np.float32)
+
+    for _ in range(5):
+        analizador.procesar(senoide(82.41))
+    assert analizador.procesar(senoide(82.41)).estado == "nota"
+
+    dudoso = analizador.procesar(ruido)
+    assert dudoso.estado == "silencio"
+
+    # El historial sigue ahí: la nota siguiente vuelve al instante, sin esperar
+    # a rellenar las cinco detecciones del suavizado.
+    assert analizador.procesar(senoide(82.41)).estado == "nota"
+
+
+def test_el_silencio_de_verdad_si_reinicia_el_suavizado():
+    """Bajo el umbral de energía sí se vacía: la nota terminó."""
+    analizador = Analizador(GUITARRA, frecuencia_muestreo=FS, tamano_suavizado=5)
+    for _ in range(6):
+        analizador.procesar(senoide(82.41))
+
+    assert analizador.procesar(np.zeros(4096, dtype=np.float32)).estado == "silencio"
+    assert analizador.procesar(senoide(82.41)).estado == "silencio"

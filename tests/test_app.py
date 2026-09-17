@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
+from nucleo.analisis.pipeline import ResultadoAnalisis
 from nucleo.captura import NOMBRE_ROCKSMITH, DispositivoAudio
 from servidor.app import crear_app
 from servidor.configuracion import Configuracion
@@ -137,3 +138,32 @@ def test_el_websocket_emite_el_resultado_del_analisis(cliente):
                 }
                 return
     pytest.fail("El WebSocket no emitió ninguna nota en 20 mensajes")
+
+
+def test_el_mensaje_de_silencio_tiene_la_misma_forma_que_el_del_analisis(tmp_path):
+    """El WebSocket emite una sola forma de mensaje, venga de donde venga.
+
+    Cuando aún no hay resultado, el servidor construye el mismo dataclass que
+    usa el análisis en vez de escribir el diccionario a mano: dos sitios que
+    había que cambiar juntos y que nada comparaba.
+    """
+    sesion = Sesion(
+        Configuracion(dispositivo=3),
+        crear_captura=lambda **kw: CapturaFalsa(**kw),
+        listar=lambda: [CABLE],
+    )
+    app = crear_app(sesion)
+    app.state.ruta_config = tmp_path / "config.json"
+
+    esperado = ResultadoAnalisis(
+        estado="silencio", frecuencia=0.0, confianza=0.0, nivel_db=-120.0
+    ).a_dict()
+
+    with TestClient(app) as cliente:
+        with cliente.websocket_connect("/ws/notas") as socket:
+            mensaje = socket.receive_json()
+
+    assert mensaje["estado"] == "silencio"
+    del mensaje["latencia_ms"]
+    assert mensaje == esperado
+    sesion.detener()
