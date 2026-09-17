@@ -126,6 +126,7 @@ def test_sin_dispositivos_la_sesion_no_arranca_y_explica_por_que():
     diagnostico = sesion.iniciar()
     assert diagnostico.estado == "sin_permiso"
     assert sesion.activa is False
+    sesion.detener()  # el hilo de reintento arranca siempre: no dejarlo vivo
 
 
 def test_sin_dispositivo_elegido_se_usa_el_rocksmith():
@@ -178,6 +179,7 @@ def test_dispositivo_elegido_que_desaparecio_no_cae_de_vuelta_al_rocksmith():
     diagnostico = sesion.iniciar()
     assert diagnostico.estado == "sin_dispositivo"
     assert sesion.activa is False
+    sesion.detener()
 
 
 def test_detener_dos_veces_no_falla():
