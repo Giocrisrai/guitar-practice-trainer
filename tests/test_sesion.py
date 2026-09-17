@@ -391,3 +391,24 @@ def test_la_latencia_publicada_es_la_medida_no_la_del_dispositivo():
     assert sesion.latencia_dispositivo_ms == 12.0
     assert sesion.latencia_ms != sesion.latencia_dispositivo_ms
     sesion.detener()
+
+
+def test_una_configuracion_invalida_no_deja_la_sesion_inservible():
+    """aplicar() construye el analizador antes de adoptar la configuración."""
+    sesion = Sesion(
+        Configuracion(dispositivo=3),
+        crear_captura=lambda **kw: CapturaFalsa(**kw),
+        listar=lambda: [CABLE],
+    )
+    sesion.iniciar()
+
+    try:
+        sesion.aplicar(Configuracion(dispositivo=3, detector="inexistente"))
+        raise AssertionError("se esperaba ValueError")
+    except ValueError:
+        pass
+
+    assert sesion.configuracion.detector == "yin"
+    assert sesion.aplicar(Configuracion(dispositivo=3, perfil="bajo_4")).estado == "ok"
+    assert esperar(lambda: sesion.ultimo_resultado() is not None)
+    sesion.detener()

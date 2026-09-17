@@ -103,6 +103,23 @@ def test_una_configuracion_invalida_da_400_con_mensaje_en_espanol(cliente):
     assert "perfil" in respuesta.json()["detail"]
 
 
+def test_un_put_invalido_no_encalla_la_configuracion(cliente):
+    """Un campo inválido debe dar 400 y dejar la sesión tan usable como estaba.
+
+    Antes, `detector` no se validaba y `aplicar()` asignaba la configuración
+    antes de construir el analizador: el 500 dejaba la sesión con una
+    configuración imposible y todos los PUT siguientes fallaban también.
+    """
+    respuesta = cliente.put("/api/config", json={"detector": "inexistente"})
+    assert respuesta.status_code == 400
+    assert "detector" in respuesta.json()["detail"]
+
+    siguiente = cliente.put("/api/config", json={"perfil": "bajo_4"})
+    assert siguiente.status_code == 200
+    assert cliente.get("/api/config").json()["perfil"] == "bajo_4"
+    assert cliente.get("/api/config").json()["detector"] == "yin"
+
+
 def test_la_calibracion_devuelve_un_umbral_sugerido(cliente):
     datos = cliente.post("/api/calibrar", json={"segundos": 0.2}).json()
     assert "umbral_sugerido" in datos

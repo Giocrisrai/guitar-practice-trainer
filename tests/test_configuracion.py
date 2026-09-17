@@ -30,6 +30,20 @@ def test_una_referencia_absurda_se_rechaza():
         Configuracion(referencia_a4=20.0).validar()
 
 
+def test_un_detector_inexistente_se_rechaza():
+    """El detector se valida contra el registro, no se acepta a ciegas."""
+    with pytest.raises(ValueError, match="detector"):
+        Configuracion(detector="inexistente").validar()
+
+
+def test_un_umbral_de_ruido_fuera_de_rango_se_rechaza():
+    """Sobre 0 dBFS no hay señal posible; bajo -120 no hay convertidor que llegue."""
+    with pytest.raises(ValueError, match="umbral"):
+        Configuracion(umbral_ruido_dbfs=20.0).validar()
+    with pytest.raises(ValueError, match="umbral"):
+        Configuracion(umbral_ruido_dbfs=-300.0).validar()
+
+
 def test_guardar_y_cargar_conserva_todo(tmp_path):
     ruta = tmp_path / "config.json"
     original = Configuracion(dispositivo=3, perfil="bajo_5", ganancia=2.5)
@@ -74,3 +88,16 @@ def test_la_calibracion_descarta_un_golpe_accidental():
 
 def test_el_margen_de_calibracion_es_ajustable():
     assert calibrar_umbral([-74.0], margen_db=20.0) == pytest.approx(-54.0, abs=0.1)
+
+
+def test_cargar_un_archivo_con_valores_invalidos_da_los_valores_por_defecto(tmp_path):
+    """Un config_local.json editado a mano no debe reventar el arranque.
+
+    Es lo que promete el docstring de cargar(): valores razonables antes que un
+    traceback en la cara del usuario.
+    """
+    ruta = tmp_path / "config.json"
+    ruta.write_text(
+        json.dumps({"perfil": "ukelele", "detector": "inexistente"}), encoding="utf-8"
+    )
+    assert cargar(ruta) == Configuracion()

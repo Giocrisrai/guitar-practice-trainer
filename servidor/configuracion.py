@@ -9,12 +9,20 @@ import numpy as np
 
 from nucleo.afinaciones import PERFILES
 from nucleo.analisis.energia import UMBRAL_RUIDO_POR_DEFECTO_DBFS
+from nucleo.analisis.registro import nombres_disponibles
 
 RUTA_POR_DEFECTO = Path(__file__).resolve().parent.parent / "config_local.json"
 
 # Margen sobre el piso de ruido medido. 14 dB es lo que separa el ruido medido en el
 # equipo real (-74,4 dBFS) del umbral elegido (-60 dBFS).
 MARGEN_CALIBRACION_DB = 14.0
+
+# Rango admisible del umbral de la compuerta. 0 dBFS es la saturación digital (un
+# umbral ahí dejaría fuera toda señal posible) y -120 dBFS está por debajo del
+# piso de ruido de cualquier convertidor real, así que fuera de este intervalo el
+# valor no puede ser deliberado.
+UMBRAL_MINIMO_DBFS = -120.0
+UMBRAL_MAXIMO_DBFS = 0.0
 
 
 @dataclass
@@ -40,6 +48,17 @@ class Configuracion:
             raise ValueError("La referencia A4 debe estar entre 380 y 500 Hz")
         if not 0.0 <= self.confianza_minima <= 1.0:
             raise ValueError("La confianza mínima debe estar entre 0 y 1")
+        detectores = nombres_disponibles()
+        if self.detector not in detectores:
+            opciones = ", ".join(detectores) or "ninguno"
+            raise ValueError(
+                f"El detector '{self.detector}' no existe. Opciones: {opciones}"
+            )
+        if not UMBRAL_MINIMO_DBFS <= self.umbral_ruido_dbfs <= UMBRAL_MAXIMO_DBFS:
+            raise ValueError(
+                "El umbral de ruido debe estar entre "
+                f"{UMBRAL_MINIMO_DBFS:.0f} y {UMBRAL_MAXIMO_DBFS:.0f} dBFS"
+            )
 
     def a_dict(self) -> dict:
         return asdict(self)
@@ -54,12 +73,19 @@ class Configuracion:
 def cargar(ruta: Path = RUTA_POR_DEFECTO) -> Configuracion:
     """Lee la configuración del disco.
 
-    Ante un archivo ausente o corrupto devuelve los valores por defecto en lugar de
-    fallar: arrancar con valores razonables es mejor que no arrancar.
+    Ante un archivo ausente, corrupto o con valores inválidos devuelve los valores
+    por defecto en lugar de fallar: arrancar con valores razonables es mejor que
+    no arrancar. Lo leído se valida, porque un `config_local.json` editado a mano
+    con un perfil o un detector inexistente reventaría después, mucho más lejos de
+    aquí y con un traceback en vez de un afinador.
     """
     try:
-        return Configuracion.desde_dict(json.loads(ruta.read_text(encoding="utf-8")))
-    except (OSError, json.JSONDecodeError, TypeError):
+        configuracion = Configuracion.desde_dict(
+            json.loads(ruta.read_text(encoding="utf-8"))
+        )
+        configuracion.validar()
+        return configuracion
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
         return Configuracion()
 
 
