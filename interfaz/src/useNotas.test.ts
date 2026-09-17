@@ -5,12 +5,14 @@ import { useNotas } from "./useNotas";
 
 class WebSocketFalso {
   static ultimo: WebSocketFalso | null = null;
+  url: string;
   onopen: (() => void) | null = null;
   onclose: (() => void) | null = null;
   onmessage: ((evento: { data: string }) => void) | null = null;
   cerrado = false;
 
-  constructor(public url: string) {
+  constructor(url: string) {
+    this.url = url;
     WebSocketFalso.ultimo = this;
   }
 
