@@ -77,7 +77,8 @@ def diagnosticar(
             mensaje="El cable Rocksmith no aparece entre los dispositivos.",
             accion=(
                 "Comprueba que el cable esté conectado al puerto USB. "
-                "Si lo está, prueba otro puerto o elige el dispositivo a mano."
+                "Si lo está, prueba otro puerto o elige el dispositivo a mano "
+                "en el selector Dispositivo de la pantalla del afinador."
             ),
             dispositivos=dispositivos,
         )
@@ -99,7 +100,7 @@ def diagnosticar(
             mensaje=f"Estás usando {cable.nombre}, no el cable de la guitarra.",
             accion=(
                 f"El {rocksmith.nombre} está conectado pero no seleccionado. "
-                "Cámbialo en los ajustes si querías tocar la guitarra."
+                "Cámbialo en el selector Dispositivo si querías tocar la guitarra."
             ),
             dispositivos=dispositivos,
         )

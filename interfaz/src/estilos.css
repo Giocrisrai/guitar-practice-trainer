@@ -38,15 +38,23 @@ body {
 }
 .aviso p { margin: 6px 0 0; color: var(--tenue); font-size: 14px; }
 
-.selector { margin: 16px 0; display: flex; gap: 8px; align-items: center; }
+.selector { margin: 16px 0; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .selector select {
   background: var(--panel); color: var(--texto);
   border: 1px solid var(--borde); border-radius: 6px; padding: 6px 10px;
 }
-.error-perfil {
+.error-perfil, .error-dispositivo {
   padding: 4px 10px; border-radius: 6px; font-size: 13px;
   background: #3a2a1a; border: 1px solid var(--desviada); color: var(--desviada);
 }
+
+.calibrar {
+  background: var(--panel); color: var(--texto);
+  border: 1px solid var(--borde); border-radius: 6px; padding: 6px 12px;
+  cursor: pointer;
+}
+.calibrar:disabled { opacity: 0.5; cursor: progress; }
+.umbral, .mensaje-calibracion { color: var(--tenue); font-size: 13px; }
 
 .aguja { text-align: center; padding: 24px 0; }
 .nota-grande { font-size: 72px; font-weight: 300; line-height: 1; }

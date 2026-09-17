@@ -6,7 +6,8 @@ export interface Posicion {
 }
 
 export interface MensajeNota {
-  estado: "nota" | "silencio" | "error";
+  /** El servidor solo emite "nota" o "silencio"; los fallos viajan por /api/diagnostico. */
+  estado: "nota" | "silencio";
   frecuencia: number;
   nota: string | null;
   cents: number | null;
@@ -14,6 +15,7 @@ export interface MensajeNota {
   nivel_db: number;
   posiciones: Posicion[];
   cuerda_objetivo: number | null;
+  /** Veredicto del núcleo. Solo significa algo cuando estado es "nota". */
   afinada: boolean;
   latencia_ms?: number;
 }
@@ -39,9 +41,34 @@ export interface PerfilAfinacion {
   cuerdas: Cuerda[];
 }
 
+/** Una entrada de audio del sistema, tal y como la emite el servidor. */
+export interface DispositivoEntrada {
+  indice: number;
+  nombre: string;
+  canales_entrada: number;
+  frecuencia_muestreo: number;
+}
+
 export interface Diagnostico {
   estado: "ok" | "sin_permiso" | "sin_dispositivo" | "sin_senal" | "otro_dispositivo";
   mensaje: string;
   accion: string;
-  dispositivos: { indice: number; nombre: string }[];
+  dispositivos: DispositivoEntrada[];
+}
+
+/** Ajustes que el usuario elige y que el servidor persiste. */
+export interface Configuracion {
+  dispositivo: number | null;
+  perfil: string;
+  ganancia: number;
+  umbral_ruido_dbfs: number;
+  referencia_a4: number;
+  confianza_minima: number;
+  detector: string;
+}
+
+/** Cuerpo de la respuesta de PUT /api/config. */
+export interface RespuestaConfig {
+  configuracion: Configuracion;
+  diagnostico: Diagnostico;
 }

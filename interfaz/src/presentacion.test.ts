@@ -24,18 +24,26 @@ describe("posicionAguja", () => {
 });
 
 describe("estadoAfinacion", () => {
-  it("marca afinada dentro de la tolerancia", () => {
-    expect(estadoAfinacion(0)).toBe("afinada");
-    expect(estadoAfinacion(4.9)).toBe("afinada");
+  it("usa el veredicto del servidor, no recalcula la tolerancia", () => {
+    expect(estadoAfinacion("nota", 0, true)).toBe("afinada");
+    expect(estadoAfinacion("nota", 4.9, true)).toBe("afinada");
+    // Aunque la desviación sea diminuta, si el núcleo dice que no, no.
+    expect(estadoAfinacion("nota", -0.1, false)).toBe("grave");
   });
 
   it("distingue grave de aguda", () => {
-    expect(estadoAfinacion(-20)).toBe("grave");
-    expect(estadoAfinacion(20)).toBe("aguda");
+    expect(estadoAfinacion("nota", -20, false)).toBe("grave");
+    expect(estadoAfinacion("nota", 20, false)).toBe("aguda");
   });
 
   it("sin nota no dice nada", () => {
-    expect(estadoAfinacion(null)).toBe("sin_nota");
+    expect(estadoAfinacion(null, null, false)).toBe("sin_nota");
+  });
+
+  it("en silencio no dice desafinada aunque afinada llegue en false", () => {
+    // El servidor envía afinada: false en silencio; ahí no significa "desafinada".
+    expect(estadoAfinacion("silencio", null, false)).toBe("sin_nota");
+    expect(estadoAfinacion("silencio", -30, false)).toBe("sin_nota");
   });
 });
 

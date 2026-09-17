@@ -1,13 +1,17 @@
 import { estadoAfinacion, posicionAguja } from "./presentacion";
+import type { MensajeNota } from "./tipos";
 
 interface Props {
+  estado: MensajeNota["estado"] | null;
   nota: string | null;
   cents: number | null;
+  /** Veredicto del servidor. La interfaz no lo recalcula. */
+  afinada: boolean;
 }
 
 /** Aguja de afinación: bemol a la izquierda, sostenido a la derecha. */
-export function Aguja({ nota, cents }: Props) {
-  const estado = estadoAfinacion(cents);
+export function Aguja({ estado: estadoNota, nota, cents, afinada }: Props) {
+  const estado = estadoAfinacion(estadoNota, cents, afinada);
   const desplazamiento = cents === null ? 0 : posicionAguja(cents) * 50;
 
   return (

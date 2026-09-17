@@ -36,7 +36,15 @@ Opciones del comando:
 Si con el cable conectado el afinador avisa con el estado `otro_dispositivo`, es
 que el sistema está capturando otra entrada de audio (por ejemplo el micrófono
 del portátil) en vez del cable Rocksmith, aunque este esté enchufado. Elige el
-dispositivo correcto en los ajustes para evitar afinar con el micrófono por error.
+cable en el selector **Dispositivo** de la pantalla del afinador, junto al de
+afinación; la elección se guarda y se reutiliza en el siguiente arranque.
+
+Si desconectas el cable mientras tocas, el afinador pasa a silencio y vuelve a
+abrirlo solo en cuanto lo enchufas de nuevo: no hace falta reiniciar nada.
+
+El botón **Calibrar ruido** mide el piso de ruido de tu equipo durante dos
+segundos —no toques nada mientras dura— y guarda el umbral resultante en la
+configuración. El valor vigente se muestra siempre junto al botón.
 
 ## Verificar el cable
 
