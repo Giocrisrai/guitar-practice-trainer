@@ -1,3 +1,4 @@
+import threading
 import time
 
 import numpy as np
@@ -8,6 +9,7 @@ from servidor.sesion import Sesion
 
 CABLE = DispositivoAudio(3, NOMBRE_ROCKSMITH, 1, 48000.0)
 MICROFONO = DispositivoAudio(0, "MacBook Pro Microphone", 1, 48000.0)
+OTRO_DISPOSITIVO = DispositivoAudio(7, "Otra entrada de audio", 1, 48000.0)
 FS = 48000
 
 
@@ -33,6 +35,26 @@ class CapturaFalsa:
     def leer_ventana(self, n: int):
         t = np.arange(n) / FS
         return (self.amplitud * np.sin(2 * np.pi * self.frecuencia * t)).astype(np.float32)
+
+
+class CapturaLenta(CapturaFalsa):
+    """Doble cuya lectura tarda más que el timeout de join() en detener()."""
+
+    def __init__(self, retraso: float = 1.2, **kwargs):
+        super().__init__(**kwargs)
+        self.retraso = retraso
+
+    def leer_ventana(self, n: int):
+        time.sleep(self.retraso)
+        return super().leer_ventana(n)
+
+
+class CapturaQueFalla(CapturaFalsa):
+    """Doble que simula un dispositivo que no se puede abrir."""
+
+    def iniciar(self) -> bool:
+        self.ultimo_error = "dispositivo ocupado"
+        return False
 
 
 def esperar_resultado(sesion, intentos: int = 100):
@@ -129,4 +151,74 @@ def test_detener_dos_veces_no_falla():
     )
     sesion.iniciar()
     sesion.detener()
+    sesion.detener()
+
+
+def test_calibrar_no_revienta_si_detener_corre_en_paralelo():
+    """detener() puede poner self._captura a None a mitad de la calibración."""
+    sesion = Sesion(
+        Configuracion(dispositivo=3),
+        crear_captura=lambda **kw: CapturaFalsa(amplitud=0.0002, **kw),
+        listar=lambda: [CABLE],
+    )
+    sesion.iniciar()
+
+    resultado: dict = {}
+
+    def calibrar_en_hilo():
+        try:
+            resultado["umbral"] = sesion.calibrar(segundos=1.0)
+        except Exception as error:  # queremos capturar cualquier fallo, no solo AttributeError
+            resultado["error"] = error
+
+    hilo = threading.Thread(target=calibrar_en_hilo)
+    hilo.start()
+    time.sleep(0.15)
+    sesion.detener()
+    hilo.join(timeout=2.0)
+
+    assert "error" not in resultado, f"calibrar() lanzó: {resultado.get('error')!r}"
+    assert "umbral" in resultado
+
+
+def test_hilo_huerfano_no_publica_tras_detener():
+    """Un hilo que sigue vivo tras el timeout de join() no debe publicar nada.
+
+    detener() espera como mucho un segundo (join(timeout=1.0)). Si la lectura
+    tarda más, el hilo queda huérfano corriendo en segundo plano; cuando por fin
+    termina su vuelta, la generación ya no coincide con la que leyó al empezarla
+    y su resultado debe descartarse en vez de publicarse.
+    """
+    sesion = Sesion(
+        Configuracion(dispositivo=3),
+        crear_captura=lambda **kw: CapturaLenta(retraso=1.2, **kw),
+        listar=lambda: [CABLE],
+    )
+    sesion.iniciar()
+    time.sleep(0.1)  # asegurar que el hilo ya entró en leer_ventana()
+    sesion.detener()
+    assert sesion.ultimo_resultado() is None
+    time.sleep(0.6)  # tiempo de sobra para que el hilo huérfano termine su vuelta
+    assert sesion.ultimo_resultado() is None
+
+
+def test_aplicar_devuelve_diagnostico_y_no_revierte_si_la_reapertura_falla():
+    """El usuario pidió ese dispositivo; si falla, se le informa pero no se revierte."""
+
+    def crear(**kw):
+        if kw["indice_dispositivo"] == 3:
+            return CapturaFalsa(**kw)
+        return CapturaQueFalla(**kw)
+
+    sesion = Sesion(
+        Configuracion(dispositivo=3),
+        crear_captura=crear,
+        listar=lambda: [CABLE, OTRO_DISPOSITIVO],
+    )
+    sesion.iniciar()
+
+    diagnostico = sesion.aplicar(Configuracion(dispositivo=7))
+
+    assert diagnostico.estado != "ok"
+    assert sesion.configuracion.dispositivo == 7
     sesion.detener()

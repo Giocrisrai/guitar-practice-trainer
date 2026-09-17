@@ -11,8 +11,11 @@ from nucleo.captura import CapturaAudio, buscar_rocksmith, listar_dispositivos_e
 from servidor.configuracion import Configuracion, calibrar_umbral
 from servidor.diagnostico import Diagnostico, diagnosticar
 
-# Cada cuánto analiza el hilo de trabajo. 21 ms son 512 muestras a 48 kHz: el mismo
-# ritmo al que llegan los bloques, sin analizar más veces de las que hay datos nuevos.
+# Cada cuánto analiza el hilo de trabajo. 512/48000 ≈ 10,67 ms es lo que tarda en
+# llegar un bloque; 21 ms son unos 1024, es decir dos bloques. No hace falta
+# analizar a la cadencia exacta de los bloques: la emisión posterior hacia la
+# interfaz va a 30 Hz (unos 33 ms), así que analizar más a menudo que eso no
+# añadiría información visible, solo gastaría CPU.
 INTERVALO_ANALISIS = 0.021
 
 
@@ -38,6 +41,12 @@ class Sesion:
         self._parar = threading.Event()
         self._ultimo: ResultadoAnalisis | None = None
         self._candado = threading.Lock()
+        # Se incrementa en detener() y en aplicar() cada vez que se reconstruye el
+        # analizador o se reabre el stream. _trabajar la lee al empezar cada vuelta
+        # y solo publica si no cambió: así un resultado calculado con la
+        # configuración anterior, o por un hilo huérfano que ya debía haber
+        # terminado, nunca llega a publicarse.
+        self._generacion = 0
 
     @property
     def activa(self) -> bool:
@@ -129,15 +138,27 @@ class Sesion:
         return self.diagnostico()
 
     def _trabajar(self) -> None:
-        """Hilo de análisis. Lee la última ventana, la analiza y guarda el resultado."""
+        """Hilo de análisis. Lee la última ventana, la analiza y guarda el resultado.
+
+        La generación se lee al empezar la vuelta y se vuelve a comprobar justo
+        antes de publicar. Entre ambas lecturas puede haber pasado un buen rato
+        (analizar una ventana no es instantáneo), y en ese hueco `detener()` o
+        `aplicar()` pueden haber cambiado la generación: si eso ocurrió, el
+        resultado se calculó con una captura o un analizador que ya no son los
+        vigentes y se descarta en vez de publicarse. Esto cubre tanto al hilo
+        huérfano que sigue vivo tras un `join(timeout=...)` vencido como al hilo
+        que estaba a mitad de una vuelta cuando `aplicar()` cambió el perfil.
+        """
         while not self._parar.is_set():
+            generacion = self._generacion
             captura, analizador = self._captura, self._analizador
             if captura is not None and analizador is not None:
                 muestras = captura.leer_ventana(analizador.tamano_ventana)
                 if muestras is not None:
                     resultado = analizador.procesar(muestras)
                     with self._candado:
-                        self._ultimo = resultado
+                        if generacion == self._generacion and not self._parar.is_set():
+                            self._ultimo = resultado
             time.sleep(INTERVALO_ANALISIS)
 
     def ultimo_resultado(self) -> ResultadoAnalisis | None:
@@ -145,11 +166,16 @@ class Sesion:
         with self._candado:
             return self._ultimo
 
-    def aplicar(self, configuracion: Configuracion) -> None:
-        """Cambia la configuración en caliente.
+    def aplicar(self, configuracion: Configuracion) -> Diagnostico:
+        """Cambia la configuración en caliente y devuelve el diagnóstico resultante.
 
         Si cambia el dispositivo o la ganancia hay que reabrir el stream; para el
-        resto basta con reconstruir el analizador, que es instantáneo.
+        resto basta con reconstruir el analizador, que es instantáneo. La
+        configuración nueva se adopta pase lo que pase, incluida una reapertura
+        que falle: el usuario pidió ese dispositivo, y revertirle la elección en
+        silencio sería otra mentira. Devolver el diagnóstico es la única forma de
+        que quien llama se entere de que la reapertura falló y con qué error del
+        sistema.
         """
         configuracion.validar()
         reabrir = (
@@ -159,11 +185,13 @@ class Sesion:
         self.configuracion = configuracion
         if reabrir and self.activa:
             self.detener()
-            self.iniciar()
-        elif self.activa:
+            return self.iniciar()
+        if self.activa:
+            self._generacion += 1
             self._analizador = self._construir_analizador()
             with self._candado:
                 self._ultimo = None
+        return self.diagnostico()
 
     def calibrar(self, segundos: float = 2.0) -> float:
         """Mide el piso de ruido durante unos segundos y devuelve el umbral sugerido.
@@ -171,21 +199,40 @@ class Sesion:
         El usuario debe estar en silencio mientras dura. No modifica la
         configuración: devolver el valor y dejar que el usuario lo acepte es
         preferible a cambiarle los ajustes por sorpresa.
+
+        La captura se referencia una sola vez, al principio, igual que `ventana`,
+        y en cada vuelta se comprueba que sigue siendo la vigente. Este bucle
+        puede tardar segundos; si mientras tanto otro hilo llama a `detener()` (o
+        `aplicar()` reabre con una captura distinta), `self._captura` cambia por
+        debajo. Sin esta comprobación, la vuelta siguiente llamaría
+        `leer_ventana()` sobre `None` (o sobre una captura ya cerrada) y
+        reventaría con `AttributeError` a mitad de la calibración.
         """
         if not self.activa or self._analizador is None:
             return self.configuracion.umbral_ruido_dbfs
+        captura = self._captura
         ventana = self._analizador.tamano_ventana
         niveles = []
         final = time.monotonic() + segundos
         while time.monotonic() < final:
-            muestras = self._captura.leer_ventana(ventana)
+            if captura is not self._captura:
+                break
+            muestras = captura.leer_ventana(ventana)
             if muestras is not None:
                 niveles.append(nivel_dbfs(muestras))
             time.sleep(0.05)
         return calibrar_umbral(niveles)
 
     def detener(self) -> None:
-        """Para el hilo y cierra el dispositivo. Seguro de llamar varias veces."""
+        """Para el hilo y cierra el dispositivo. Seguro de llamar varias veces.
+
+        La generación se incrementa antes de tocar nada más. Si `join(timeout=...)`
+        vence con el hilo aún vivo, ese hilo huérfano sigue corriendo: al terminar
+        su vuelta verá que la generación ya no coincide con la que leyó al
+        empezarla y descartará su resultado, en vez de publicarlo después de que
+        esta llamada ya haya dejado la sesión como parada.
+        """
+        self._generacion += 1
         self._parar.set()
         if self._hilo is not None:
             self._hilo.join(timeout=1.0)
