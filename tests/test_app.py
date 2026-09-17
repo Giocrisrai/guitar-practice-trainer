@@ -1,3 +1,5 @@
+import time
+
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
@@ -15,6 +17,15 @@ class CapturaFalsa:
     def __init__(self, **kwargs):
         self.ultimo_error = None
         self.latencia_ms = 12.0
+        self._total = 0
+        self.instante_ultimo_bloque = time.monotonic()
+
+    @property
+    def total_capturado(self) -> int:
+        """Cada consulta simula que siguen llegando bloques del dispositivo."""
+        self._total += 512
+        self.instante_ultimo_bloque = time.monotonic()
+        return self._total
 
     def iniciar(self) -> bool:
         return True

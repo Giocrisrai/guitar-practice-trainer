@@ -8,3 +8,4 @@ dist/
 .pnpm-store/
 .pytest_cache/
 config_local.json
+*.egg-info/

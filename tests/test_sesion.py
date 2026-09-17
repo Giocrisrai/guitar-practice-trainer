@@ -14,7 +14,12 @@ FS = 48000
 
 
 class CapturaFalsa:
-    """Doble de CapturaAudio que devuelve siempre la misma ventana."""
+    """Doble de CapturaAudio que devuelve siempre la misma ventana.
+
+    Imita también el contador de muestras y la marca de tiempo del último bloque,
+    que es lo que la sesión usa para saber si el dispositivo sigue entregando
+    audio y para medir la latencia real.
+    """
 
     def __init__(self, frecuencia: float = 82.41, amplitud: float = 0.3, **kwargs):
         self.frecuencia = frecuencia
@@ -24,6 +29,16 @@ class CapturaFalsa:
         self.ganancia = kwargs.get("ganancia", 1.0)
         self.ultimo_error = None
         self.latencia_ms = 12.0
+        self.indice_dispositivo = kwargs.get("indice_dispositivo")
+        self._total = 0
+        self.instante_ultimo_bloque = time.monotonic()
+
+    @property
+    def total_capturado(self) -> int:
+        """Cada consulta simula que siguen llegando bloques del dispositivo."""
+        self._total += 512
+        self.instante_ultimo_bloque = time.monotonic()
+        return self._total
 
     def iniciar(self) -> bool:
         self.iniciada = True
@@ -35,6 +50,28 @@ class CapturaFalsa:
     def leer_ventana(self, n: int):
         t = np.arange(n) / FS
         return (self.amplitud * np.sin(2 * np.pi * self.frecuencia * t)).astype(np.float32)
+
+
+class CapturaQueSeCongela(CapturaFalsa):
+    """Doble que deja de entregar bloques en cuanto se le llama `congelar()`.
+
+    Reproduce la desconexión en caliente del cable: el callback deja de escribir
+    pero el buffer circular conserva las últimas muestras, que es lo que hacía
+    que el afinador congelase la última nota para siempre.
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.congelada = False
+
+    def congelar(self) -> None:
+        self.congelada = True
+
+    @property
+    def total_capturado(self) -> int:
+        if self.congelada:
+            return self._total
+        return CapturaFalsa.total_capturado.fget(self)
 
 
 class CapturaLenta(CapturaFalsa):
@@ -221,4 +258,136 @@ def test_aplicar_devuelve_diagnostico_y_no_revierte_si_la_reapertura_falla():
 
     assert diagnostico.estado != "ok"
     assert sesion.configuracion.dispositivo == 7
+    sesion.detener()
+
+
+def esperar(condicion, intentos: int = 200, pausa: float = 0.02) -> bool:
+    """Espera activa a que se cumpla una condición. Devuelve si se cumplió."""
+    for _ in range(intentos):
+        if condicion():
+            return True
+        time.sleep(pausa)
+    return condicion()
+
+
+def test_la_sesion_se_recupera_sola_cuando_el_dispositivo_aparece_despues():
+    """Arrancar sin cable y enchufarlo después debe bastar (spec §5).
+
+    El hilo de trabajo es el dueño del ciclo de vida del dispositivo: si al
+    arrancar no hay nada que abrir, reintenta hasta que lo haya. Obligar a
+    reiniciar el programa sería un castigo desproporcionado.
+    """
+    dispositivos = [MICROFONO]
+    capturas = []
+
+    def crear(**kw):
+        captura = CapturaFalsa(**kw)
+        capturas.append(captura)
+        return captura
+
+    sesion = Sesion(Configuracion(), crear_captura=crear, listar=lambda: list(dispositivos))
+    sesion.espera_reintento = 0.05
+
+    assert sesion.iniciar().estado != "ok"
+    assert sesion.activa is False
+
+    dispositivos.append(CABLE)  # el usuario enchufa el cable
+
+    assert esperar(lambda: sesion.activa), "la sesión no reabrió el dispositivo sola"
+    assert capturas[-1].indice_dispositivo == CABLE.indice
+    assert sesion.diagnostico().estado == "ok"
+    assert esperar(lambda: sesion.ultimo_resultado() is not None)
+    sesion.detener()
+
+
+def test_el_diagnostico_no_dice_ok_mientras_no_se_captura():
+    """Con el dispositivo en la lista pero sin poder abrirlo, "ok" sería mentira."""
+    sesion = Sesion(
+        Configuracion(dispositivo=3),
+        crear_captura=lambda **kw: CapturaQueFalla(**kw),
+        listar=lambda: [CABLE],
+    )
+    sesion.espera_reintento = 0.05
+
+    diagnostico = sesion.iniciar()
+    assert sesion.activa is False
+    assert diagnostico.estado != "ok"
+    assert diagnostico.estado == "sin_dispositivo"
+    assert "dispositivo ocupado" in diagnostico.accion
+
+    time.sleep(0.15)  # el hilo reintenta y sigue fallando: tampoco ahora es "ok"
+    assert sesion.diagnostico().estado != "ok"
+    sesion.detener()
+
+
+def test_sin_muestras_nuevas_el_resultado_pasa_a_silencio():
+    """Al desconectar el cable en caliente no se congela la última nota.
+
+    El buffer circular no caduca: sin esta comprobación el analizador reprocesa
+    la misma ventana vieja y la aguja se queda clavada en E2 para siempre.
+    """
+    captura = None
+
+    def crear(**kw):
+        nonlocal captura
+        captura = CapturaQueSeCongela(**kw)
+        return captura
+
+    sesion = Sesion(
+        Configuracion(dispositivo=3), crear_captura=crear, listar=lambda: [CABLE]
+    )
+    sesion.tiempo_sin_muestras = 0.2
+
+    sesion.iniciar()
+    resultado = esperar_resultado(sesion)
+    assert resultado is not None and resultado.estado == "nota"
+
+    captura.congelar()
+
+    assert esperar(
+        lambda: sesion.ultimo_resultado().estado == "silencio"
+    ), "el resultado se quedó congelado en la última nota"
+    sesion.detener()
+
+
+def test_la_falta_de_senal_solo_se_avisa_tras_varios_segundos():
+    """spec §5: sin_senal exige más de 5 s seguidos bajo el umbral.
+
+    Avisar al instante haría parpadear "sube el volumen" entre nota y nota, y un
+    aviso que cría lobo se deja de leer. Aquí se acorta la espera para no
+    encadenar cinco segundos de reloj en la prueba.
+    """
+    sesion = Sesion(
+        Configuracion(dispositivo=3),
+        crear_captura=lambda **kw: CapturaFalsa(amplitud=0.0002, **kw),
+        listar=lambda: [CABLE],
+    )
+    sesion.segundos_sin_senal = 0.3
+    sesion.iniciar()
+
+    assert sesion.diagnostico(-80.0).estado != "sin_senal"
+    time.sleep(0.4)
+    assert sesion.diagnostico(-80.0).estado == "sin_senal"
+
+    # Una sola lectura con señal reinicia la cuenta: el usuario volvió a tocar.
+    assert sesion.diagnostico(-30.0).estado != "sin_senal"
+    assert sesion.diagnostico(-80.0).estado != "sin_senal"
+    sesion.detener()
+
+
+def test_la_latencia_publicada_es_la_medida_no_la_del_dispositivo():
+    """spec §6: se mide el tiempo entre la llegada del bloque y la emisión."""
+    sesion = Sesion(
+        Configuracion(dispositivo=3),
+        crear_captura=lambda **kw: CapturaFalsa(**kw),
+        listar=lambda: [CABLE],
+    )
+    sesion.iniciar()
+    assert esperar(lambda: sesion.ultimo_resultado() is not None)
+
+    assert sesion.latencia_ms > 0.0
+    assert sesion.latencia_ms < 200.0
+    # 12 ms es lo que reporta el dispositivo falso: lo que se muestra es la medida.
+    assert sesion.latencia_dispositivo_ms == 12.0
+    assert sesion.latencia_ms != sesion.latencia_dispositivo_ms
     sesion.detener()

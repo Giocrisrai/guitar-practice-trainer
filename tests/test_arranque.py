@@ -15,9 +15,15 @@ def test_la_ruta_de_la_interfaz_apunta_a_dist():
     assert RUTA_INTERFAZ.parent.name == "interfaz"
 
 
-def test_usa_la_configuracion_guardada(tmp_path):
+def test_usa_la_configuracion_guardada(tmp_path, monkeypatch):
+    """Ninguna prueba abre el dispositivo de audio real.
+
+    Sin simular la lista de dispositivos, en un equipo con el Rocksmith
+    conectado esta prueba abriría el hardware de verdad.
+    """
     from servidor.configuracion import Configuracion, guardar
 
+    monkeypatch.setattr("servidor.sesion.listar_dispositivos_entrada", lambda: [])
     ruta = tmp_path / "config.json"
     guardar(Configuracion(perfil="bajo_4", ganancia=3.0), ruta)
     _, sesion = construir_aplicacion(ruta_config=ruta)

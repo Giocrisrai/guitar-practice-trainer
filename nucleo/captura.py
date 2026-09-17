@@ -5,6 +5,7 @@ callback de audio nunca se bloquea. Sin cálculo, sin red, sin asignar memoria, 
 locks que puedan esperar. Copia el bloque al buffer y retorna.
 """
 
+import time
 from dataclasses import dataclass
 from typing import Callable
 
@@ -140,6 +141,13 @@ class CapturaAudio:
         self._stream = None
         self._ultimo_error: str | None = None
         self._desbordes = 0
+        # Instante (reloj monótono) en que llegó el último bloque. Lo marca el
+        # callback porque es el único sitio que sabe cuándo llegó de verdad;
+        # time.monotonic() es una lectura de reloj sin bloqueo ni asignación, lo
+        # único que puede permitirse ahí dentro. Con él, la sesión mide la
+        # latencia real de la cadena (spec §6) en vez de la que promete el
+        # dispositivo.
+        self._instante_ultimo_bloque: float | None = None
 
     @property
     def activa(self) -> bool:
@@ -164,6 +172,11 @@ class CapturaAudio:
         return float(self._stream.latency) * 1000.0
 
     @property
+    def instante_ultimo_bloque(self) -> float | None:
+        """Reloj monótono del último bloque recibido, o None si no llegó ninguno."""
+        return self._instante_ultimo_bloque
+
+    @property
     def total_capturado(self) -> int:
         """Muestras capturadas desde el inicio."""
         return self._buffer.total_escrito
@@ -172,6 +185,7 @@ class CapturaAudio:
         """Callback de audio. NO BLOQUEAR: copiar y salir, nada más."""
         if estado:
             self._desbordes += 1
+        self._instante_ultimo_bloque = time.monotonic()
         self._buffer.escribir(datos[:, 0] * self.ganancia)
 
     def iniciar(self) -> bool:
