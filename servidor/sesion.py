@@ -100,8 +100,17 @@ class Sesion:
 
     @property
     def activa(self) -> bool:
-        """Verdadero si la captura está abierta, es decir, si se está capturando."""
-        return self._captura is not None
+        """Verdadero si se está capturando de verdad: captura abierta **y** hilo vivo.
+
+        Las dos condiciones son necesarias desde que el hilo es el dueño del
+        ciclo de vida del dispositivo. Una captura abierta sin un hilo que la lea
+        es una sesión muerta que aparenta estar viva: el stream sigue escribiendo
+        en el buffer circular, nadie lo analiza, el último resultado se queda
+        congelado y `diagnostico()` diría "ok" sobre una pantalla que ya no se
+        actualiza. Es la misma mentira que la reconexión automática vino a
+        eliminar, solo que por otra causa.
+        """
+        return self._captura is not None and self._hilo is not None and self._hilo.is_alive()
 
     @property
     def latencia_ms(self) -> float:
@@ -271,14 +280,15 @@ class Sesion:
             return True
 
     def _anunciar_error_una_vez(self) -> None:
-        """Imprime el error de apertura solo cuando cambia.
+        """Imprime el último error del dispositivo solo cuando cambia.
 
         Con un reintento cada dos segundos, imprimirlo siempre llenaría la
-        terminal de la misma línea repetida y escondería lo que sí importa.
+        terminal de la misma línea repetida y escondería lo que sí importa. Lo
+        usan tanto el fallo al abrir como el fallo a mitad de captura.
         """
         if self._ultimo_error_apertura != self._error_anunciado:
             self._error_anunciado = self._ultimo_error_apertura
-            print(f"Aviso: no se pudo abrir el dispositivo: {self._ultimo_error_apertura}")
+            print(f"Aviso del dispositivo de audio: {self._ultimo_error_apertura}")
 
     def _cerrar_captura(self) -> None:
         """Cierra la captura si está abierta. Seguro de llamar varias veces."""
@@ -334,6 +344,11 @@ class Sesion:
            reanalizar la misma ventana vieja congelaría la última nota en
            pantalla indefinidamente tras desconectar el cable en caliente.
 
+        Todo el cuerpo va dentro de un try/except: una excepción a mitad de
+        vuelta mataría el hilo en silencio y dejaría la sesión publicando el
+        pasado con el stream todavía abierto. Se registra, se cierra la captura y
+        se vuelve al punto 1, que es de donde la sesión sabe salir sola.
+
         La generación se lee al empezar la vuelta y se vuelve a comprobar justo
         antes de publicar. Entre ambas lecturas puede haber pasado un buen rato
         (analizar una ventana no es instantáneo), y en ese hueco `detener()` o
@@ -348,45 +363,58 @@ class Sesion:
         silencio_publicado = False
 
         while not self._parar.is_set():
-            generacion = self._generacion
-            ahora = time.monotonic()
-            captura, analizador = self._captura, self._analizador
+            try:
+                generacion = self._generacion
+                ahora = time.monotonic()
+                captura, analizador = self._captura, self._analizador
 
-            if captura is None or analizador is None:
-                if ahora >= proximo_intento:
-                    proximo_intento = ahora + self.espera_reintento
-                    self._abrir_captura()
-                self._parar.wait(INTERVALO_ANALISIS)
-                continue
-
-            if ahora >= proxima_revision:
-                proxima_revision = ahora + self.intervalo_revision
-                if not self._dispositivo_sigue_presente():
-                    self._cerrar_captura()
-                    proximo_intento = ahora + self.espera_reintento
-                    # Tras cerrar, la generación ya cambió: se publica con la
-                    # nueva para que el silencio sí llegue a la pantalla.
-                    self._publicar(self._resultado_silencio(), self._generacion)
+                if captura is None or analizador is None:
+                    if ahora >= proximo_intento:
+                        proximo_intento = ahora + self.espera_reintento
+                        self._abrir_captura()
                     self._parar.wait(INTERVALO_ANALISIS)
                     continue
 
-            total = captura.total_capturado
-            if total > self._total_visto:
-                self._total_visto = total
-                self._instante_muestras = ahora
-                silencio_publicado = False
-                muestras = captura.leer_ventana(analizador.tamano_ventana)
-                if muestras is not None:
-                    resultado = analizador.procesar(muestras)
-                    self._medir_latencia(captura)
-                    self._publicar(resultado, generacion)
-            elif not silencio_publicado and (
-                ahora - self._instante_muestras > self.tiempo_sin_muestras
-            ):
-                silencio_publicado = True
-                self._publicar(self._resultado_silencio(), generacion)
+                if ahora >= proxima_revision:
+                    proxima_revision = ahora + self.intervalo_revision
+                    if not self._dispositivo_sigue_presente():
+                        self._cerrar_captura()
+                        proximo_intento = ahora + self.espera_reintento
+                        # Tras cerrar, la generación ya cambió: se publica con la
+                        # nueva para que el silencio sí llegue a la pantalla.
+                        self._publicar(self._resultado_silencio(), self._generacion)
+                        self._parar.wait(INTERVALO_ANALISIS)
+                        continue
 
-            self._parar.wait(INTERVALO_ANALISIS)
+                total = captura.total_capturado
+                if total > self._total_visto:
+                    self._total_visto = total
+                    self._instante_muestras = ahora
+                    silencio_publicado = False
+                    muestras = captura.leer_ventana(analizador.tamano_ventana)
+                    if muestras is not None:
+                        resultado = analizador.procesar(muestras)
+                        self._medir_latencia(captura)
+                        self._publicar(resultado, generacion)
+                elif not silencio_publicado and (
+                    ahora - self._instante_muestras > self.tiempo_sin_muestras
+                ):
+                    silencio_publicado = True
+                    self._publicar(self._resultado_silencio(), generacion)
+
+                self._parar.wait(INTERVALO_ANALISIS)
+            except Exception as error:
+                # Una excepción a mitad de vuelta (un fallo de PortAudio, por
+                # ejemplo) mataría el hilo en silencio, y con el hilo muerto la
+                # sesión deja de publicar mientras el stream sigue abierto: otra
+                # vez "ok" sobre una pantalla congelada. Se registra una sola
+                # vez, se cierra la captura y la vuelta siguiente entra en el
+                # camino de reintento, que es de donde se sale solo.
+                self._ultimo_error_apertura = f"fallo durante la captura: {error}"
+                self._anunciar_error_una_vez()
+                self._cerrar_captura()
+                proximo_intento = time.monotonic() + self.espera_reintento
+                self._parar.wait(INTERVALO_ANALISIS)
 
     def _resultado_silencio(self) -> ResultadoAnalisis:
         """Silencio por falta de muestras nuevas, no por falta de energía."""

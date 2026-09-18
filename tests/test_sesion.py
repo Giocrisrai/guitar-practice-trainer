@@ -74,6 +74,30 @@ class CapturaQueSeCongela(CapturaFalsa):
         return CapturaFalsa.total_capturado.fget(self)
 
 
+class CapturaQueSeRompe(CapturaFalsa):
+    """Doble que revienta al leer mientras esté averiada.
+
+    Es lo que haría un fallo de PortAudio a mitad de vuelta. Mientras dura la
+    avería tampoco se deja abrir, igual que un dispositivo que el sistema ya ha
+    soltado, para que el estado de la sesión durante el fallo sea inequívoco.
+    """
+
+    def __init__(self, averia: dict, **kwargs):
+        super().__init__(**kwargs)
+        self.averia = averia
+
+    def iniciar(self) -> bool:
+        if self.averia["rota"]:
+            self.ultimo_error = "el dispositivo no responde"
+            return False
+        return super().iniciar()
+
+    def leer_ventana(self, n: int):
+        if self.averia["rota"]:
+            raise RuntimeError("PortAudio devolvió un error a mitad de lectura")
+        return super().leer_ventana(n)
+
+
 class CapturaLenta(CapturaFalsa):
     """Doble cuya lectura tarda más que el timeout de join() en detener()."""
 
@@ -413,4 +437,39 @@ def test_una_configuracion_invalida_no_deja_la_sesion_inservible():
     assert sesion.configuracion.detector == "yin"
     assert sesion.aplicar(Configuracion(dispositivo=3, perfil="bajo_4")).estado == "ok"
     assert esperar(lambda: sesion.ultimo_resultado() is not None)
+    sesion.detener()
+
+
+def test_un_fallo_al_leer_no_mata_el_hilo_y_la_sesion_se_recupera():
+    """Una excepción a mitad de vuelta no puede matar el hilo en silencio.
+
+    Con el hilo muerto y el stream todavía abierto, la sesión dejaría de
+    publicar mientras el diagnóstico seguiría diciendo "ok": la misma mentira
+    que la reconexión automática vino a eliminar, solo que por otra causa.
+    """
+    averia = {"rota": False}
+    sesion = Sesion(
+        Configuracion(dispositivo=3),
+        crear_captura=lambda **kw: CapturaQueSeRompe(averia, **kw),
+        listar=lambda: [CABLE],
+    )
+    sesion.espera_reintento = 0.05
+
+    assert sesion.iniciar().estado == "ok"
+    assert esperar_resultado(sesion).estado == "nota"
+
+    averia["rota"] = True
+
+    assert esperar(lambda: not sesion.activa), "la captura rota no se cerró"
+    assert sesion._hilo.is_alive(), "el hilo murió con la excepción"
+    assert sesion.diagnostico().estado != "ok"
+
+    averia["rota"] = False
+
+    assert esperar(lambda: sesion.activa), "la sesión no se recuperó sola"
+    assert sesion.diagnostico().estado == "ok"
+    assert esperar(
+        lambda: sesion.ultimo_resultado() is not None
+        and sesion.ultimo_resultado().estado == "nota"
+    )
     sesion.detener()
