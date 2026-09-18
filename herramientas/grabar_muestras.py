@@ -28,6 +28,16 @@ SILENCIO_MINIMO_S = 0.3
 ESPERA_SILENCIO_MAXIMA_S = 10.0
 ESPERA_ATAQUE_MAXIMA_S = 20.0
 
+MENSAJE_NO_INTERACTIVO = (
+    "Este script es interactivo: pide pulsar Enter antes de grabar cada cuerda.\n"
+    "No se puede ejecutar desde un canal sin terminal (por ejemplo, una tubería\n"
+    "o una entrada redirigida).\n"
+    "\n"
+    "Abre una ventana de Terminal y ejecuta ahí:\n"
+    "  cd /Users/giocrisraigodoy/Documents/proyecto_musica && "
+    ".venv/bin/python -m herramientas.grabar_muestras"
+)
+
 
 def _esperar_nivel(
     captura: CapturaAudio,
@@ -112,6 +122,10 @@ def _verificar_grabacion(
 
 
 def main() -> int:
+    if not sys.stdin.isatty():
+        print(MENSAJE_NO_INTERACTIVO)
+        return 1
+
     cable = buscar_rocksmith()
     if cable is None:
         print("El cable Rocksmith no aparece. Conéctalo y reintenta.")
@@ -129,7 +143,13 @@ def main() -> int:
     for cuerda in perfil.cuerdas:
         nombre = f"cuerda_{cuerda.numero}_{cuerda.nota.lower()}.wav"
         while True:
-            input(f"\nCuerda {cuerda.numero} ({cuerda.nota}) al aire. Enter y púlsala...")
+            try:
+                input(f"\nCuerda {cuerda.numero} ({cuerda.nota}) al aire. Enter y púlsala...")
+            except EOFError:
+                captura.detener()
+                print()
+                print(MENSAJE_NO_INTERACTIVO)
+                return 1
 
             if not _esperar_nivel(
                 captura,
