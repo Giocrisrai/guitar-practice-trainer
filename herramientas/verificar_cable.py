@@ -1,6 +1,6 @@
 """Comprueba que el cable está conectado, llega señal y el análisis la reconoce.
 
-Uso:  .venv/bin/python -m herramientas.verificar_cable
+Uso:  uv run python -m herramientas.verificar_cable
 """
 
 import sys

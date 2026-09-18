@@ -1,6 +1,6 @@
 """Graba las seis cuerdas al aire para usarlas como pruebas permanentes.
 
-Uso:  .venv/bin/python -m herramientas.grabar_muestras
+Uso:  uv run python -m herramientas.grabar_muestras
 """
 
 import sys
@@ -35,7 +35,7 @@ MENSAJE_NO_INTERACTIVO = (
     "\n"
     "Abre una ventana de Terminal y ejecuta ahí:\n"
     "  cd /Users/giocrisraigodoy/Documents/proyecto_musica && "
-    ".venv/bin/python -m herramientas.grabar_muestras"
+    "uv run python -m herramientas.grabar_muestras"
 )
 
 

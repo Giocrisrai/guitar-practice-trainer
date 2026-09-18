@@ -7,22 +7,27 @@ Etapa 1: afinador y monitor de notas en el mástil.
 
 - macOS con permiso de micrófono concedido al terminal
   (Ajustes del Sistema → Privacidad y seguridad → Micrófono)
-- Python 3.13 (pyenv)
+- Python 3.13 (pyenv) — el archivo `.python-version` fija `3.13.1`, y `uv`
+  lo respeta automáticamente al crear el entorno
+- [uv](https://docs.astral.sh/uv/) como gestor del entorno Python
 - pnpm
 - Cable Rocksmith USB Guitar Adapter
 
 ## Instalación
 
 ```bash
-pyenv exec python -m venv .venv
-.venv/bin/pip install -e ".[dev]"
+uv sync
 cd interfaz && pnpm install && pnpm build && cd ..
 ```
+
+`uv sync` crea `.venv/` con Python 3.13.1 (según `.python-version`), instala las
+dependencias de ejecución y el proyecto en modo editable, según lo fijado en
+`uv.lock`.
 
 ## Uso
 
 ```bash
-.venv/bin/guitarra
+uv run guitarra
 ```
 
 Abre `http://127.0.0.1:8000` en el navegador.
@@ -30,7 +35,7 @@ Abre `http://127.0.0.1:8000` en el navegador.
 Opciones del comando:
 
 - `--puerto`: cambia el puerto en el que escucha el servidor (por defecto 8000).
-  Ejemplo: `.venv/bin/guitarra --puerto 8080`.
+  Ejemplo: `uv run guitarra --puerto 8080`.
 - `--sin-navegador`: levanta el servidor sin abrir el navegador automáticamente.
 
 Si con el cable conectado el afinador avisa con el estado `otro_dispositivo`, es
@@ -49,7 +54,7 @@ configuración. El valor vigente se muestra siempre junto al botón.
 ## Verificar el cable
 
 ```bash
-.venv/bin/python -m herramientas.verificar_cable
+uv run python -m herramientas.verificar_cable
 ```
 
 Comprueba que el dispositivo aparece, mide la latencia y reconoce las notas que toques.
@@ -57,14 +62,14 @@ Comprueba que el dispositivo aparece, mide la latencia y reconoce las notas que 
 ## Pruebas
 
 ```bash
-.venv/bin/pytest          # núcleo y servidor
+uv run pytest             # núcleo y servidor
 cd interfaz && pnpm test  # interfaz
 ```
 
 Las pruebas de `tests/test_audio_real.py` usan grabaciones reales en `tests/audio/`.
 En un checkout nuevo esas grabaciones todavía no existen, así que esas pruebas
 aparecen como saltadas (`skipped`): es lo esperado, no un fallo. Para
-regenerarlas: `.venv/bin/python -m herramientas.grabar_muestras`.
+regenerarlas: `uv run python -m herramientas.grabar_muestras`.
 
 ## Estructura
 
