@@ -6,20 +6,12 @@ interface Props {
   onReiniciar: () => void;
 }
 
-/**
- * Notas que costaron tres intentos o mas.
- *
- * Mismo umbral que usa el evaluador para decidir donde conviene insistir
- * (ver nucleo/ejercicios/modelo.py, INTENTOS_NOTA_DIFICIL); el servidor no lo
- * manda como campo aparte, asi que se filtra aqui sobre los intentos ya
- * contados, sin inventar ningun juicio musical nuevo.
- */
-const INTENTOS_NOTA_DIFICIL = 3;
-
 /** Informe final de un ejercicio completado. */
 export function Informe({ informe, onReiniciar }: Props) {
   const total = informe.notas.length;
-  const dificiles = informe.notas.filter((n) => n.intentos >= INTENTOS_NOTA_DIFICIL);
+  // Que nota cuenta como "dificil" (INTENTOS_NOTA_DIFICIL) lo decide el
+  // nucleo, no la interfaz: notas_dificiles llega ya calculada en el informe.
+  const dificiles = informe.notas_dificiles;
 
   return (
     <section className="informe">

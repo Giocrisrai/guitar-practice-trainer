@@ -180,4 +180,5 @@ class ResultadoEjercicio:
             "aciertos_a_la_primera": self.aciertos_a_la_primera,
             "desviacion_mediana_cents": None if mediana is None else round(mediana, 1),
             "regularidad_ms": None if regularidad is None else round(regularidad, 1),
+            "notas_dificiles": [n.a_dict() for n in self.notas_dificiles],
         }

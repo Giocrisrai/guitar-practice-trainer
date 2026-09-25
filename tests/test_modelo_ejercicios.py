@@ -170,7 +170,9 @@ def test_con_menos_de_tres_notas_acertadas_no_hay_regularidad():
 
 def test_el_resultado_se_serializa_para_la_interfaz():
     resultado = ResultadoEjercicio(
-        ejercicio="prueba", notas=(IntentoNota(0, 40, 1, 2.0, 0.0),), completado=True
+        ejercicio="prueba",
+        notas=(IntentoNota(0, 40, 1, 2.0, 0.0), IntentoNota(1, 42, 3, -8.0, 1.0)),
+        completado=True,
     )
     datos = resultado.a_dict()
     assert set(datos) == {
@@ -180,5 +182,9 @@ def test_el_resultado_se_serializa_para_la_interfaz():
         "aciertos_a_la_primera",
         "desviacion_mediana_cents",
         "regularidad_ms",
+        "notas_dificiles",
     }
     assert datos["notas"][0]["nombre"] == "E2"
+    # La nota con 3 intentos o mas es la unica que aparece como dificil: el
+    # umbral (INTENTOS_NOTA_DIFICIL) lo decide el nucleo, no la interfaz.
+    assert [n["indice"] for n in datos["notas_dificiles"]] == [1]

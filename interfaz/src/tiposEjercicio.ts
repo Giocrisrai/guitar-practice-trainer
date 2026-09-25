@@ -48,6 +48,8 @@ export interface InformeServidor {
   aciertos_a_la_primera: number;
   desviacion_mediana_cents: number | null;
   regularidad_ms: number | null;
+  /** Notas con 3 intentos o mas, ya decididas por el nucleo (INTENTOS_NOTA_DIFICIL). */
+  notas_dificiles: IntentoNotaServidor[];
 }
 
 /** Lo que emite /api/ejercicios/estado y /ws/ejercicios. */

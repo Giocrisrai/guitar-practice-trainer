@@ -169,6 +169,9 @@ describe("Ejercicios", () => {
         aciertos_a_la_primera: 1,
         desviacion_mediana_cents: -3.0,
         regularidad_ms: null,
+        notas_dificiles: [
+          { indice: 1, midi: 42, nombre: "F#2", intentos: 4, cents: -8.0, instante: 1, ayuda_mostrada: false },
+        ],
       },
       metronomo: false,
     });
