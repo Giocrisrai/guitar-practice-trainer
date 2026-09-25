@@ -12,6 +12,7 @@ from fastapi import FastAPI
 
 from servidor import configuracion as config_modulo
 from servidor.app import crear_app
+from servidor.ejercicios import SesionPractica
 from servidor.sesion import Sesion
 
 RUTA_INTERFAZ = Path(__file__).resolve().parent.parent / "interfaz" / "dist"
@@ -52,7 +53,8 @@ def construir_aplicacion(ruta_config: Path | None = None) -> tuple[FastAPI, Sesi
         if diagnostico.accion:
             print(f"  {diagnostico.accion}")
 
-    app = crear_app(sesion, RUTA_INTERFAZ)
+    practica = SesionPractica(sesion)
+    app = crear_app(sesion, RUTA_INTERFAZ, practica)
     app.state.ruta_config = ruta
     return app, sesion
 
@@ -94,6 +96,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         uvicorn.run(app, host="127.0.0.1", port=argumentos.puerto, log_level="warning")
     finally:
+        app.state.practica.detener()
         sesion.detener()
     return 0
 

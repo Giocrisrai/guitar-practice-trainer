@@ -11,7 +11,9 @@ from fastapi.staticfiles import StaticFiles
 
 from nucleo.afinaciones import PERFILES
 from nucleo.analisis.pipeline import ResultadoAnalisis
+from nucleo.ejercicios.teoria import ACORDES, ESCALAS, INTERVALOS
 from servidor import configuracion as config_modulo
+from servidor.ejercicios import SesionPractica
 from servidor.modulos import listar_modulos
 from servidor.sesion import Sesion
 
@@ -25,11 +27,16 @@ SILENCIO_INICIAL = ResultadoAnalisis(
 )
 
 
-def crear_app(sesion: Sesion, ruta_interfaz: Path | None = None) -> FastAPI:
+def crear_app(
+    sesion: Sesion,
+    ruta_interfaz: Path | None = None,
+    practica: SesionPractica | None = None,
+) -> FastAPI:
     """Construye la aplicación alrededor de una sesión ya creada."""
     app = FastAPI(title="proyecto_musica")
     app.state.sesion = sesion
     app.state.ruta_config = config_modulo.RUTA_POR_DEFECTO
+    app.state.practica = practica or SesionPractica(sesion)
 
     @app.get("/api/modulos")
     def leer_modulos() -> list[dict]:
@@ -119,6 +126,89 @@ def crear_app(sesion: Sesion, ruta_interfaz: Path | None = None) -> FastAPI:
                 mensaje = resultado.a_dict()
                 mensaje["latencia_ms"] = round(sesion.latencia_ms, 1)
                 await websocket.send_json(mensaje)
+                await asyncio.sleep(intervalo)
+        except WebSocketDisconnect:
+            return
+
+    @app.get("/api/ejercicios/familias")
+    def leer_familias() -> list[dict]:
+        """Familias con sus parametros y valores admitidos.
+
+        Esto es lo que permite que el configurador de la interfaz se construya
+        solo: sin este endpoint la pantalla tendria escritas a mano unas listas
+        que ya viven en teoria.py, y anadir la escala dorica obligaria a tocar
+        dos sitios.
+        """
+        return [
+            {
+                "clave": "escala",
+                "nombre": "Escalas",
+                "descripcion": "Una escala en una posicion del mastil",
+                "tipos": sorted(ESCALAS),
+                "parametros": ["raiz_midi", "tipo", "traste_minimo", "traste_maximo", "tempo", "direccion"],
+            },
+            {
+                "clave": "arpegio",
+                "nombre": "Arpegios",
+                "descripcion": "Las notas de un acorde, una a una",
+                "tipos": sorted(ACORDES),
+                "parametros": ["raiz_midi", "tipo", "traste_minimo", "traste_maximo", "tempo", "direccion"],
+            },
+            {
+                "clave": "intervalo",
+                "nombre": "Intervalos",
+                "descripcion": "Suena una nota y tocas la que esta al intervalo pedido",
+                "tipos": sorted(INTERVALOS),
+                "parametros": ["intervalo", "traste_minimo", "traste_maximo", "tempo", "repeticiones"],
+            },
+            {
+                "clave": "lectura",
+                "nombre": "Lectura del mastil",
+                "descripcion": "Se nombra una nota y tienes que encontrarla",
+                "tipos": [],
+                "parametros": ["cuerda", "traste_minimo", "traste_maximo", "tempo", "repeticiones"],
+            },
+        ]
+
+    @app.post("/api/ejercicios/generar")
+    def generar_ejercicio(datos: dict = Body(...)) -> dict:
+        """Genera un ejercicio sin iniciarlo, para previsualizarlo."""
+        try:
+            ejercicio = app.state.practica.generar(
+                datos.get("familia", ""), **datos.get("parametros", {})
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error))
+        return ejercicio.a_dict()
+
+    @app.post("/api/ejercicios/iniciar")
+    def iniciar_ejercicio(datos: dict = Body(...)) -> dict:
+        """Genera un ejercicio y lo pone en marcha."""
+        try:
+            ejercicio = app.state.practica.generar(
+                datos.get("familia", ""), **datos.get("parametros", {})
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error))
+        return app.state.practica.iniciar(ejercicio, datos.get("con_metronomo", True))
+
+    @app.post("/api/ejercicios/detener")
+    def detener_ejercicio() -> dict:
+        app.state.practica.detener()
+        return app.state.practica.estado()
+
+    @app.get("/api/ejercicios/estado")
+    def leer_estado_ejercicio() -> dict:
+        return app.state.practica.estado()
+
+    @app.websocket("/ws/ejercicios")
+    async def emitir_ejercicio(websocket: WebSocket) -> None:
+        """Emite el estado del ejercicio a 30 Hz, igual que el del afinador."""
+        await websocket.accept()
+        intervalo = 1.0 / FRECUENCIA_EMISION
+        try:
+            while True:
+                await websocket.send_json(app.state.practica.estado())
                 await asyncio.sleep(intervalo)
         except WebSocketDisconnect:
             return

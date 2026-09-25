@@ -55,3 +55,12 @@ registrar_modulo(
         icono="🎸",
     )
 )
+
+registrar_modulo(
+    Modulo(
+        clave="ejercicios",
+        nombre="Ejercicios",
+        descripcion="Escalas, arpegios, intervalos y lectura del mastil, con correccion",
+        icono="🎯",
+    )
+)
