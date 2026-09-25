@@ -151,18 +151,22 @@ class EvaluadorEjercicio:
     detector de tono puede flaquear sin que la pulsacion haya terminado, y
     limpiar el registro ahi mismo resolveria la misma pulsacion dos veces.
 
-    Limitacion conocida: dos pulsaciones seguidas de la MISMA nota, sin
-    ninguna caida de nivel real entre ellas, no se distinguen. Ni la altura
-    cambia (el camino B no ve nada nuevo) ni hay, por definicion, un silencio
-    que libere `_ultima_nota_resuelta` para que un segundo ataque de energia
-    vuelva a contar (el camino A tambien queda filtrado). Mientras el nivel
-    baje lo suficiente entre pulsaciones -el caso normal al tocar con
-    articulacion- el camino A las distingue igual que antes. El caso sin
-    solucion es el de picar la misma nota una y otra vez sin que el nivel
-    llegue a caer: ahi solo el disparador temporal de la regla 3 garantiza que
-    el alumno no se quede atascado sin ayuda. Los generadores de lectura e
-    intervalos pueden producir el escenario de nota repetida; que el nivel no
-    caiga entre pulsaciones depende de como toque el alumno, no del generador.
+    Limitacion conocida: dos pulsaciones seguidas de la MISMA nota no se
+    distinguen si entre ellas no hay un hueco de `cuadros_para_olvidar_nota`
+    cuadros (unos 63 ms al intervalo de analisis habitual) en los que el tono
+    deje de ser creible. El nivel no interviene: el filtro compara NOMBRES DE
+    NOTA, no niveles, asi que por muy marcada que sea la caida de volumen entre
+    las dos pulsaciones el camino A queda filtrado igual, y el camino B no ve
+    ninguna altura nueva. Lo unico que libera el filtro es que el detector de
+    tono deje de dar esa nota como creible durante esos cuadros seguidos; con
+    una nota de guitarra que sigue sonando, eso puede no llegar nunca.
+
+    Lo que evita que el alumno se quede atascado en ese caso es el disparador
+    temporal de la regla 3: pasados `segundos_para_ayuda` con senal creible, la
+    ayuda aparece aunque no se haya podido contar ni un solo intento. Y los
+    generadores de lectura e intervalos ya no producen notas repetidas
+    adyacentes (ver `elegir_sin_repetir_adyacentes`), asi que este escenario
+    solo aparece con un ejercicio escrito a mano que las contenga.
     """
 
     def __init__(

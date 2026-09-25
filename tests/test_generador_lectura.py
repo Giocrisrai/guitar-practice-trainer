@@ -65,3 +65,23 @@ def test_el_bajo_tambien_sirve_para_leer():
     cuerdas_validas = {c.numero for c in PERFILES["bajo_4"].cuerdas}
     for nota in ejercicio.notas:
         assert all(p.cuerda in cuerdas_validas for p in nota.posiciones)
+
+
+def test_nunca_hay_dos_notas_iguales_seguidas():
+    """Una nota repetida adyacente hace el ejercicio imposible de terminar: al
+    repicarla el tono sigue siendo creible, asi que el evaluador nunca libera
+    `_ultima_nota_resuelta` y esa nota no se puede resolver nunca.
+    """
+    for semilla in range(200):
+        midis = [n.midi for n in generar_lectura(repeticiones=12, semilla=semilla).notas]
+        assert all(a != b for a, b in zip(midis, midis[1:])), f"semilla {semilla}"
+
+
+def test_con_una_sola_nota_alcanzable_se_deja_pasar_el_duplicado():
+    """Preferible a colgarse: con un solo traste de una sola cuerda no hay otra
+    nota que elegir, y el generador debe devolver el ejercicio igualmente.
+    """
+    ejercicio = generar_lectura(cuerda=6, traste_minimo=5, traste_maximo=5, repeticiones=4, semilla=1)
+    midis = [n.midi for n in ejercicio.notas]
+    assert len(set(midis)) == 1
+    assert len(midis) == 4

@@ -6,7 +6,10 @@ conocimiento del diapason, que es lo que mas cuesta al principio.
 
 import numpy as np
 
-from nucleo.ejercicios.generadores.comun import validar_parametros
+from nucleo.ejercicios.generadores.comun import (
+    elegir_sin_repetir_adyacentes,
+    validar_parametros,
+)
 from nucleo.ejercicios.modelo import Ejercicio, NotaEsperada
 from nucleo.ejercicios.teoria import notas_alcanzables
 
@@ -25,6 +28,11 @@ def generar_lectura(
     Si se restringe la cuerda, cada nota lleva SOLO la posicion de esa cuerda:
     pedir "el Fa# en la quinta" y aceptarlo en cualquier otra vaciaria el
     ejercicio de sentido.
+
+    El muestreo es con reemplazo (la misma nota puede volver a salir mas
+    adelante) pero nunca dos veces seguidas: un ejercicio con dos notas iguales
+    adyacentes no se puede terminar, porque el evaluador no distingue la segunda
+    pulsacion de la primera (ver `elegir_sin_repetir_adyacentes`).
     """
     perfil = validar_parametros(perfil_clave, "ascendente")
     if repeticiones < 1:
@@ -53,9 +61,9 @@ def generar_lectura(
         )
 
     generador = np.random.default_rng(semilla)
-    elegidas = generador.choice(candidatas, size=repeticiones, replace=True)
+    elegidas = elegir_sin_repetir_adyacentes(generador, candidatas, repeticiones)
     notas = tuple(
-        NotaEsperada(midi=int(midi), posiciones=alcanzables[int(midi)], pulsos=1.0)
+        NotaEsperada(midi=midi, posiciones=alcanzables[midi], pulsos=1.0)
         for midi in elegidas
     )
 

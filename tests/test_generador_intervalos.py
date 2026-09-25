@@ -64,3 +64,26 @@ def test_un_rango_sin_pares_validos_se_rechaza_al_generar():
 def test_cero_repeticiones_se_rechaza():
     with pytest.raises(ValueError, match="repeticiones"):
         generar_intervalo(repeticiones=0)
+
+
+def test_nunca_hay_dos_notas_iguales_seguidas():
+    """Referencias iguales adyacentes darian objetivos iguales adyacentes, y ese
+    ejercicio el evaluador no lo puede terminar.
+    """
+    for semilla in range(200):
+        ejercicio = generar_intervalo(repeticiones=12, semilla=semilla)
+        midis = [n.midi for n in ejercicio.notas]
+        referencias = [n.referencia_midi for n in ejercicio.notas]
+        assert all(a != b for a, b in zip(midis, midis[1:])), f"semilla {semilla}"
+        assert all(a != b for a, b in zip(referencias, referencias[1:])), f"semilla {semilla}"
+
+
+def test_con_un_solo_par_valido_se_deja_pasar_el_duplicado():
+    """Con una sola referencia posible la repeticion es inevitable: el generador
+    devuelve el ejercicio en vez de girar para siempre en el rechazo.
+    """
+    ejercicio = generar_intervalo(
+        intervalo="tercera_mayor", traste_minimo=2, traste_maximo=2, repeticiones=3, semilla=1
+    )
+    assert len({n.referencia_midi for n in ejercicio.notas}) == 1
+    assert len(ejercicio.notas) == 3

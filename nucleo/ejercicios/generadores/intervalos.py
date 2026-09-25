@@ -7,7 +7,10 @@ intervalo pedido.
 
 import numpy as np
 
-from nucleo.ejercicios.generadores.comun import validar_parametros
+from nucleo.ejercicios.generadores.comun import (
+    elegir_sin_repetir_adyacentes,
+    validar_parametros,
+)
 from nucleo.ejercicios.modelo import Ejercicio, NotaEsperada
 from nucleo.ejercicios.teoria import INTERVALOS, nombre_de_intervalo, notas_alcanzables
 
@@ -30,6 +33,12 @@ def generar_intervalo(
 
     Las referencias se eligen SOLO entre las que tienen objetivo alcanzable en el
     mastil. Elegir primero y comprobar despues fallaria cerca del extremo agudo.
+
+    El muestreo es con reemplazo pero nunca repite la misma referencia dos veces
+    seguidas. Como el objetivo es `referencia + salto`, referencias iguales
+    adyacentes darian notas objetivo iguales adyacentes, y ese ejercicio no se
+    puede terminar: el evaluador no distingue la segunda pulsacion de la primera
+    (ver `elegir_sin_repetir_adyacentes`).
     """
     perfil = validar_parametros(perfil_clave, "ascendente")
     if intervalo not in INTERVALOS:
@@ -48,13 +57,13 @@ def generar_intervalo(
         )
 
     generador = np.random.default_rng(semilla)
-    elegidas = generador.choice(referencias, size=repeticiones, replace=True)
+    elegidas = elegir_sin_repetir_adyacentes(generador, referencias, repeticiones)
     notas = tuple(
         NotaEsperada(
-            midi=int(referencia) + salto,
-            posiciones=alcanzables[int(referencia) + salto],
+            midi=referencia + salto,
+            posiciones=alcanzables[referencia + salto],
             pulsos=1.0,
-            referencia_midi=int(referencia),
+            referencia_midi=referencia,
         )
         for referencia in elegidas
     )
