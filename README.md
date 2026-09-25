@@ -69,10 +69,12 @@ notas que costaron más intentos y la desviación mediana en cents.
 
 **Límite conocido del detector de ataques:** dos pulsaciones seguidas de la
 misma nota, sin ninguna caída de nivel real entre ellas, no se distinguen por
-energía sola. El evaluador lo compensa con un segundo disparador basado en el
-cambio de nota detectada, así que en el uso normal (tocando con articulación)
-esto no se nota; solo afecta al caso límite de picar la misma nota una y otra
-vez sin dejar que el nivel caiga entre pulsaciones.
+energía sola. En el uso normal el nivel sí cae entre pulsaciones y el detector
+de energía las separa igual que siempre; cuando la nota pedida cambia, el
+evaluador además resuelve por el cambio de nota detectada, sin depender del
+ataque. El caso límite que no tiene solución es picar la misma nota una y otra
+vez sin dejar que el nivel caiga: ahí lo que evita que te quedes atascado es el
+aviso por tiempo, que resalta la nota en el mástil a los doce segundos.
 
 ## Verificar el cable
 

@@ -17,11 +17,14 @@ from nucleo.afinaciones import PERFILES
 from nucleo.analisis.energia import nivel_dbfs
 from nucleo.captura import CapturaAudio, buscar_rocksmith
 from nucleo.ejercicios.ataques import MUESTRAS_REFERENCIA, DetectorAtaques
+from servidor.sesion import INTERVALO_ANALISIS
 
 FS = 48000
 PULSACIONES_PEDIDAS = 8
 SEGUNDOS = 12.0
-PASO_ANALISIS = 0.021
+# El mismo paso con el que el servidor analiza en vivo: calibrar con otro
+# paso daria numeros que no sirven en produccion.
+PASO_ANALISIS = INTERVALO_ANALISIS
 
 SALTOS = [3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 10.0, 12.0]
 REFRACTARIOS = [0.030, 0.050, 0.080, 0.120, 0.200]

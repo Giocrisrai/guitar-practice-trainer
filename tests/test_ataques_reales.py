@@ -14,10 +14,13 @@ soundfile = pytest.importorskip("soundfile")
 from nucleo.afinaciones import PERFILES
 from nucleo.analisis.energia import nivel_dbfs
 from nucleo.ejercicios.ataques import DetectorAtaques
+from servidor.sesion import INTERVALO_ANALISIS
 
 AUDIO = Path(__file__).parent / "audio"
 GUITARRA = PERFILES["guitarra_estandar"]
-PASO_ANALISIS = 0.021
+# El mismo paso con el que el servidor analiza en vivo: calibrar con otro
+# paso daria numeros que no sirven en produccion.
+PASO_ANALISIS = INTERVALO_ANALISIS
 
 CUERDAS = [
     "cuerda_6_e2.wav",
@@ -57,4 +60,5 @@ def test_una_cuerda_pulsada_una_vez_da_un_solo_ataque(archivo):
 def test_el_ataque_cae_al_principio_de_la_grabacion(archivo):
     """La grabacion empieza con el ataque: el script espera a que suene para grabar."""
     ataques = ataques_de(archivo)
+    assert ataques, f"ningun ataque en {archivo}: revisa el salto y el umbral de ruido"
     assert ataques[0].instante < 0.5
