@@ -28,6 +28,18 @@ REFRACTARIO_S = 0.050
 # ataque la senal es caotica y la frecuencia poco fiable.
 ESPERA_ESTABILIZACION_S = 0.060
 
+# Cuantos niveles recientes componen la referencia. El valor esta ACOPLADO al
+# refractario y al intervalo de analisis: la mediana de n muestras no refleja el
+# nivel nuevo hasta pasadas ceil(n/2)-1 vueltas, y hasta entonces lo unico que
+# impide un disparo repetido es el refractario. La condicion es
+#
+#     (ceil(n/2) - 1) · intervalo_de_analisis < refractario_s
+#
+# Con n=5, intervalo 21 ms y refractario 50 ms: 2·21 = 42 < 50, correcto y con
+# 8 ms de margen. Con n=6 el margen desaparece y una nota sostenida marca un
+# ataque falso. Cambiar cualquiera de los tres obliga a revisar los otros dos.
+MUESTRAS_REFERENCIA = 5
+
 
 @dataclass(frozen=True)
 class Ataque:
@@ -46,13 +58,18 @@ class DetectorAtaques:
 
     Se usa mediana y no media por lo mismo que en el suavizado del afinador: un
     valor atipico no debe mover la referencia.
+
+    `muestras_referencia` esta acoplado a `refractario_s` y al intervalo de
+    analisis: la mediana solo refleja un nivel nuevo pasadas ceil(n/2)-1 vueltas,
+    y ese hueco debe caber dentro del refractario. Ver la constante
+    `MUESTRAS_REFERENCIA` para la formula y por que 5 es el maximo a 21 ms.
     """
 
     def __init__(
         self,
         salto_db: float = SALTO_ATAQUE_DB,
         refractario_s: float = REFRACTARIO_S,
-        muestras_referencia: int = 5,
+        muestras_referencia: int = MUESTRAS_REFERENCIA,
         nivel_minimo_dbfs: float = UMBRAL_RUIDO_POR_DEFECTO_DBFS,
     ) -> None:
         self.salto_db = salto_db

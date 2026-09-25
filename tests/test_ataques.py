@@ -3,6 +3,7 @@ import pytest
 
 from nucleo.ejercicios import ataques as _modulo_ataques
 from nucleo.ejercicios.ataques import (
+    ESPERA_ESTABILIZACION_S,
     REFRACTARIO_S,
     SALTO_ATAQUE_DB,
     Ataque,
@@ -37,6 +38,7 @@ def alimentar(detector: DetectorAtaques, niveles: list[float], paso: float = PAS
 def test_los_valores_por_defecto_son_los_de_la_spec():
     assert SALTO_ATAQUE_DB == 6.0
     assert REFRACTARIO_S == 0.050
+    assert ESPERA_ESTABILIZACION_S == 0.060
 
 
 def test_el_silencio_no_produce_ataques():
@@ -110,6 +112,45 @@ def test_reiniciar_olvida_el_historial():
     assert len(alimentar(detector, [-30.0] * 10)) == 1
 
 
+def test_muestras_referencia_cinco_es_el_maximo_seguro_al_paso_de_21ms():
+    """MUESTRAS_REFERENCIA=5 esta acoplado al refractario y al paso de analisis.
+
+    La mediana de n muestras solo refleja el nivel nuevo pasadas ceil(n/2)-1
+    vueltas; hasta entonces solo el refractario evita un disparo repetido. Con
+    n=5 y paso 21 ms esas dos vueltas (42 ms) caben dentro del refractario de
+    50 ms. Con n=6 ya no caben (tres vueltas, 63 ms > 50 ms) y una nota
+    sostenida marca un ataque falso cuando la mediana por fin alcanza el nivel
+    de la nota y coincide con que el refractario ya expiro.
+    """
+    niveles = [-95.0] * 5 + [-30.0] * 30
+    assert len(alimentar(DetectorAtaques(), niveles)) == 1
+    assert len(alimentar(DetectorAtaques(muestras_referencia=6), niveles)) == 2
+
+
+def test_el_decaimiento_realista_de_una_cuerda_fusiona_dos_pulsaciones():
+    """Limite conocido del detector de energia, no un fallo suyo.
+
+    Una cuerda real decae entre 2 y 20 dB/s, muy lejos de los 262 dB/s que usa
+    `test_el_refractario_impide_el_doble_disparo_del_transitorio` para el
+    transitorio de la pua. Con una envolvente de -8,7 dB/s (tau approx 1 s), en
+    los 0,5 s que separan dos pulsaciones el nivel solo cae unos 4,35 dB: menos
+    que el salto de 6 dB exigido, asi que la segunda pulsacion no se distingue
+    de la cola de la primera y el detector de energia por si solo marca un
+    unico ataque. Esto no se corrige aqui: el evaluador de la tarea siguiente
+    compensa esta limitacion con un segundo disparador basado en el cambio de
+    la nota detectada, no solo en la energia.
+    """
+    tasa_db_por_s = 8.7
+    separacion_s = 0.5
+    pasos_por_pulsacion = round(separacion_s / PASO)
+
+    def pulsacion(nivel_inicial: float) -> list[float]:
+        return [nivel_inicial - tasa_db_por_s * (i * PASO) for i in range(pasos_por_pulsacion)]
+
+    niveles = [-95.0] * 5 + pulsacion(-20.0) + pulsacion(-20.0)
+    assert len(alimentar(DetectorAtaques(), niveles)) == 1
+
+
 def test_el_detector_de_energia_esta_registrado():
     assert "energia" in nombres_disponibles()
     assert isinstance(obtener_detector("energia")(), DetectorAtaques)
@@ -119,6 +160,7 @@ def test_se_puede_registrar_otro_detector():
     """Para enchufar uno espectral sin tocar el evaluador."""
     registrar_detector("falso", lambda: DetectorAtaques(salto_db=99.0))
     assert "falso" in nombres_disponibles()
+    assert obtener_detector("falso")().salto_db == 99.0
 
 
 def test_pedir_un_detector_inexistente_es_un_error_claro():
