@@ -5,12 +5,17 @@ parametros y devuelve un Ejercicio. Sin estado, sin audio, sin catalogos
 escritos a mano.
 """
 
-from nucleo.afinaciones import PERFILES
+from nucleo.ejercicios.generadores.comun import (
+    DIRECCIONES,
+    notas_del_patron_en_mastil,
+    secuenciar,
+    validar_parametros,
+)
 from nucleo.ejercicios.modelo import Ejercicio, NotaEsperada
-from nucleo.ejercicios.teoria import ESCALAS, clases_del_patron, notas_alcanzables
+from nucleo.ejercicios.teoria import ESCALAS
 from nucleo.musica import nombre_de_clase, nombre_de_midi
 
-DIRECCIONES: tuple[str, ...] = ("ascendente", "descendente", "ambas")
+__all__ = ["DIRECCIONES", "generar_escala"]
 
 NOMBRES_TIPOS: dict[str, str] = {
     "mayor": "mayor",
@@ -39,20 +44,14 @@ def generar_escala(
     Lanza ValueError si la configuracion es imposible. Detectarlo aqui y no
     mientras se toca es lo que pide la spec: descubrirlo tocando seria tarde.
     """
-    if perfil_clave not in PERFILES:
-        disponibles = ", ".join(sorted(PERFILES))
-        raise ValueError(f"El perfil '{perfil_clave}' no existe. Opciones: {disponibles}")
+    perfil = validar_parametros(perfil_clave, direccion)
     if tipo not in ESCALAS:
         disponibles = ", ".join(sorted(ESCALAS))
         raise ValueError(f"La escala '{tipo}' no existe. Opciones: {disponibles}")
-    if direccion not in DIRECCIONES:
-        disponibles = ", ".join(DIRECCIONES)
-        raise ValueError(f"La direccion '{direccion}' no existe. Opciones: {disponibles}")
 
-    perfil = PERFILES[perfil_clave]
-    alcanzables = notas_alcanzables(perfil, traste_minimo, traste_maximo)
-    clases = clases_del_patron(raiz_midi, ESCALAS[tipo])
-    midis = sorted(midi for midi in alcanzables if midi % 12 in clases)
+    midis, alcanzables = notas_del_patron_en_mastil(
+        perfil, raiz_midi, ESCALAS[tipo], traste_minimo, traste_maximo
+    )
 
     if not midis:
         raise ValueError(
@@ -61,14 +60,7 @@ def generar_escala(
             f"{traste_maximo} del perfil {perfil.nombre}."
         )
 
-    if direccion == "ascendente":
-        secuencia = midis
-    elif direccion == "descendente":
-        secuencia = midis[::-1]
-    else:
-        # Subir y bajar sin repetir la cumbre: do re mi fa sol fa mi re do.
-        secuencia = midis + midis[-2::-1]
-
+    secuencia = secuenciar(midis, direccion)
     notas = tuple(
         NotaEsperada(midi=midi, posiciones=alcanzables[midi], pulsos=1.0) for midi in secuencia
     )
