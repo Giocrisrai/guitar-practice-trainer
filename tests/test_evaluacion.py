@@ -377,8 +377,10 @@ def test_la_ayuda_por_tiempo_aparece_aunque_los_intentos_no_lleguen_a_cinco():
 
 
 def test_la_ayuda_por_tiempo_no_aparece_sin_ningun_intento_fallido():
-    """Exigir un fallo evita que la ayuda salte sola mientras el alumno
-    todavia esta leyendo el ejercicio sin haber tocado nada.
+    """Exigir senal creible (no un fallo) evita que la ayuda salte sola
+    mientras el alumno todavia esta leyendo el ejercicio sin haber tocado
+    nada: con puro silencio no hay senal creible ni fallo, asi que tampoco
+    hay ayuda.
     """
     evaluador = EvaluadorEjercicio(ejercicio_de([40]), segundos_para_ayuda=0.5)
     instante = 0.0
@@ -548,3 +550,114 @@ def test_tres_cuadros_dudosos_seguidos_si_cuentan_como_hueco_real():
     assert estado.indice == 1
     assert estado.intentos == 1
     assert estado.ultimo_fallo == "E2"
+
+
+# --- Ronda de correccion 3, hallazgo 2 (Minor): falta la prueba que protege
+# el reinicio del contador -------------------------------------------------
+#
+# Las dos pruebas de la ronda 2 fijan la frontera 1 contra 3, pero pasarian
+# igual con un contador que solo incrementara y nunca se reiniciara -que es
+# justo la propiedad que distingue ese arreglo del anterior (ronda 1, que
+# liberaba el registro ante cualquier cuadro dudoso sin excepcion).
+
+
+def test_el_contador_de_cuadros_dudosos_se_reinicia_no_solo_acumula():
+    """Protege la propiedad que distingue este arreglo del anterior: el
+    contador de cuadros sin nota creible se REINICIA en cuanto vuelve un
+    cuadro creible, no solo se incrementa. Con un patron estrictamente
+    alterno (dudoso, creible, dudoso, creible...) nunca hay dos cuadros
+    dudosos seguidos, y mucho menos tres, aunque el total acumulado a lo
+    largo de la secuencia sea mucho mayor que CUADROS_PARA_OLVIDAR_NOTA. Si
+    el contador solo acumulara sin reiniciarse, la ultima nota resuelta se
+    olvidaria de todos modos y esta prueba fallaria.
+    """
+    evaluador = EvaluadorEjercicio(ejercicio_de([40, 42, 44]))
+    instante = 0.0
+    estado = None
+
+    # Se resuelve la nota 40 de verdad, por el camino B, a nivel constante.
+    for _ in range(6):
+        estado = evaluador.procesar(suena(40, nivel=-20.0), instante)
+        instante += PASO
+    assert estado.indice == 1
+
+    # El alumno sigue insistiendo con la MISMA nota 40 (ya equivocada, se
+    # espera la 42), alternando cuadro dudoso y cuadro creible sin parar:
+    # diez cuadros dudosos en total, pero nunca mas de uno seguido.
+    for _ in range(20):
+        estado = evaluador.procesar(silencio(nivel=-20.0), instante)
+        instante += PASO
+        estado = evaluador.procesar(suena(40, nivel=-20.0), instante)
+        instante += PASO
+    assert estado.intentos == 0
+    assert estado.ultimo_fallo is None
+
+    # Una racha real de tres cuadros creibles seguidos con la MISMA nota: si
+    # `_ultima_nota_resuelta` sobrevivio (el contador se reinicio en cada
+    # cuadro creible, como debe), esto no cuenta como un intento nuevo.
+    for _ in range(3):
+        estado = evaluador.procesar(suena(40, nivel=-20.0), instante)
+        instante += PASO
+
+    assert estado.indice == 1
+    assert estado.intentos == 0
+    assert estado.ultimo_fallo is None
+
+
+# --- Ronda de correccion 3: la ayuda por tiempo tambien debe rescatar al
+# alumno cuando el detector de tono oscila --------------------------------
+#
+# Si el detector de tono alterna con periodo corto (dos cuadros creibles, uno
+# dudoso, repetido) los dos contadores del evaluador se hambrean mutuamente:
+# `_contador_candidata` (camino B) se reinicia en cada cuadro dudoso, y
+# `_cuadros_sin_nota_creible` se reinicia en cada cuadro creible. Ninguno de
+# los dos llega nunca a tres, asi que ningun camino resuelve nada, `intentos`
+# se queda en cero, y la condicion original del disparador por tiempo
+# (`intentos >= 1`) tampoco se cumple nunca. El alumno puede llevar veinte
+# segundos tocando la nota equivocada sin que el software diga una palabra.
+#
+# La condicion se cambio de "hubo al menos un fallo" a "hubo alguna nota
+# creible mientras esta nota era la actual": eso es lo que de verdad separa a
+# un alumno que esta tocando de uno que todavia no ha tocado nada.
+
+
+def test_un_detector_que_oscila_dispara_la_ayuda_por_tiempo_aunque_nunca_resuelva_nada():
+    """Con el patron de jitter que hambrea a los dos contadores (dos cuadros
+    creibles, uno dudoso, repetido) ningun camino llega a resolver ninguna
+    pulsacion: `intentos` se queda en cero para siempre. La ayuda por tiempo
+    debe aparecer de todos modos, porque hubo senal creible de sobra mientras
+    esta nota era la actual.
+    """
+    evaluador = EvaluadorEjercicio(ejercicio_de([40, 42]), segundos_para_ayuda=0.5)
+    instante = 0.0
+    estado = None
+    ciclo = 0
+    # La fase del jitter se elige para que el unico ataque de energia real
+    # (el salto inicial desde la referencia de silencio) resuelva sobre un
+    # cuadro dudoso y no cuente como intento, aislando asi el efecto del
+    # jitter en si mismo.
+    while instante < 1.0:
+        if ciclo % 3 == 0:
+            estado = evaluador.procesar(silencio(nivel=-20.0), instante)
+        else:
+            estado = evaluador.procesar(suena(45), instante)
+        instante += PASO
+        ciclo += 1
+
+    assert estado.intentos == 0
+    assert estado.ayuda_visible is True
+
+
+def test_el_silencio_absoluto_durante_el_mismo_tiempo_no_dispara_la_ayuda():
+    """Contraparte del jitter: sin ninguna senal creible en absoluto durante
+    el mismo tiempo, la ayuda no debe aparecer. Ahi el alumno probablemente
+    todavia no ha tocado la guitarra.
+    """
+    evaluador = EvaluadorEjercicio(ejercicio_de([40, 42]), segundos_para_ayuda=0.5)
+    instante = 0.0
+    estado = None
+    while instante < 1.0:
+        estado = evaluador.procesar(silencio(), instante)
+        instante += PASO
+
+    assert estado.ayuda_visible is False

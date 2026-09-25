@@ -80,11 +80,18 @@ CUADROS_PARA_NOTA_ESTABLE = 3
 # de analisis habitual.
 CUADROS_PARA_OLVIDAR_NOTA = 3
 
-# Segundos que la nota actual puede estar sin acertarse antes de mostrar la ayuda,
-# aunque no se hayan contado cinco intentos. El conteo de intentos depende de
-# detectar cada pulsacion, y hay situaciones -repulsar la misma nota equivocada a
-# nivel constante, sin ningun silencio real de por medio- en que ninguna de las
-# dos vias lo consigue. El alumno atascado merece ayuda igual.
+# Segundos que la nota actual puede estar sin resolverse antes de mostrar la
+# ayuda, aunque no se haya contado ningun intento (ni cinco, ni uno solo). El
+# conteo de intentos depende de que alguno de los dos caminos logre RESOLVER
+# una pulsacion, y hay escenarios en los que ninguno lo consigue pese a que el
+# alumno esta tocando de verdad: repulsar la misma nota equivocada a nivel
+# constante, sin ningun hueco real de por medio, o un detector de tono que
+# oscila con periodo corto (creible, dudoso, creible, dudoso...) sin llegar
+# nunca a los cuadros seguidos que exige ningun camino. La condicion no es
+# "hubo al menos un fallo", sino "hubo alguna nota creible mientras esta nota
+# era la actual": eso basta para distinguir a un alumno que esta tocando
+# -aunque el software no logre resolver sus pulsaciones- de uno que todavia
+# esta leyendo el ejercicio sin tocar la guitarra.
 SEGUNDOS_PARA_AYUDA = 12.0
 
 
@@ -123,12 +130,14 @@ class EvaluadorEjercicio:
        cents, y la desviacion se guarda para el informe.
     3. Tras INTENTOS_PARA_AYUDA fallos en la misma nota se resalta donde esta. No
        se salta el ejercicio: se ayuda. Como el conteo de fallos depende de
-       detectar cada pulsacion, y eso puede fallar (ver limitacion mas abajo),
-       hay un segundo disparador puramente temporal: si pasan
-       `segundos_para_ayuda` desde que la nota actual paso a serlo y hubo al
-       menos un fallo, la ayuda aparece igual. Exigir un fallo evita que la
-       ayuda salte sola mientras el alumno todavia esta leyendo el ejercicio
-       sin haber tocado nada.
+       resolver cada pulsacion, y eso puede fallar (ver limitacion mas abajo,
+       y el caso del detector que oscila), hay un segundo disparador puramente
+       temporal: si pasan `segundos_para_ayuda` desde que la nota actual paso
+       a serlo y en ese tramo se detecto alguna nota creible, la ayuda aparece
+       igual, se haya llegado a contar un fallo o no. Exigir señal creible (en
+       vez de un fallo) evita que la ayuda salte sola mientras el alumno
+       todavia esta leyendo el ejercicio sin tocar la guitarra, sin depender
+       de que el software haya logrado resolver ninguna pulsacion.
 
     Un evento de nota (una lectura que cuenta como intento) puede llegar por dos
     caminos independientes, resueltos a lo sumo uno por cuadro: el ataque de
@@ -198,8 +207,10 @@ class EvaluadorEjercicio:
         self._ultima_nota_resuelta: str | None = None
         self._cuadros_sin_nota_creible = 0
         # Regla 3, disparador por tiempo: cuando paso a ser actual la nota que
-        # se esta pidiendo ahora mismo.
+        # se esta pidiendo ahora mismo, y si desde entonces se detecto alguna
+        # nota creible (aunque ningun camino haya llegado a resolverla).
         self._instante_nota_actual: float | None = None
+        self._hubo_senal_creible_nota_actual = False
 
     @property
     def _nota_actual(self) -> NotaEsperada | None:
@@ -253,6 +264,7 @@ class EvaluadorEjercicio:
 
         if self._es_creible(resultado):
             self._cuadros_sin_nota_creible = 0
+            self._hubo_senal_creible_nota_actual = True
         else:
             self._cuadros_sin_nota_creible += 1
             if self._cuadros_sin_nota_creible >= self.cuadros_para_olvidar_nota:
@@ -285,13 +297,14 @@ class EvaluadorEjercicio:
                     # cancela para no contarla otra vez cuando le toque su turno.
                     self._lectura_pendiente = None
 
-        # Regla 3, respaldo por tiempo: si nada de lo anterior logro
-        # confirmar suficientes intentos, el tiempo atascado en la misma nota
-        # tambien dispara la ayuda, con tal de que haya habido al menos un
-        # fallo real.
+        # Regla 3, respaldo por tiempo: si nada de lo anterior logro resolver
+        # ninguna pulsacion, el tiempo atascado en la misma nota tambien
+        # dispara la ayuda, con tal de que se haya detectado alguna nota
+        # creible en ese tramo (no hace falta que ningun camino la haya
+        # llegado a resolver: ver SEGUNDOS_PARA_AYUDA).
         if (
             not self._ayuda_mostrada
-            and self._intentos >= 1
+            and self._hubo_senal_creible_nota_actual
             and self._instante_nota_actual is not None
             and instante - self._instante_nota_actual >= self.segundos_para_ayuda
         ):
@@ -377,6 +390,7 @@ class EvaluadorEjercicio:
             self._ayuda_mostrada = False
             self._ultimo_fallo = None
             self._instante_nota_actual = instante_evento
+            self._hubo_senal_creible_nota_actual = False
             return True
 
         self._ultimo_fallo = resultado.nota
