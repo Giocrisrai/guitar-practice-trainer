@@ -103,6 +103,15 @@ class SalidaAudio:
     Quedarse sin salida degrada la experiencia, no la impide: abrir() devuelve
     False y guarda el error en vez de lanzar, para que el ejercicio pueda seguir
     sin metronomo.
+
+    `reproducir()` SERIALIZA las escrituras con un candado, porque un ejercicio
+    de intervalos tiene dos emisores sobre la misma salida en hilos distintos: el
+    metronomo y el tono de referencia. `OutputStream.write()` no promete ser
+    seguro entre hilos, y dos escrituras solapadas pueden entregar audio
+    entremezclado o reventar dentro de PortAudio. El precio es que un click puede
+    salir tarde si cae mientras se escribe un tono; el metronomo lo absorbe
+    realineandose en vez de soltar los clicks atrasados de golpe (ver
+    `Metronomo._trabajar`).
     """
 
     def __init__(
@@ -114,6 +123,8 @@ class SalidaAudio:
         self._abrir_stream = abrir_stream or _abrir_stream_real
         self._stream = None
         self._ultimo_error: str | None = None
+        # Serializa las escrituras entre hilos (metronomo y tono de referencia).
+        self._candado_escritura = threading.Lock()
 
     @property
     def activa(self) -> bool:
@@ -141,14 +152,19 @@ class SalidaAudio:
 
     def reproducir(self, muestras: np.ndarray) -> bool:
         """Envia muestras a los altavoces. Devuelve False si no hay salida abierta."""
-        if self._stream is None:
-            return False
-        try:
-            self._stream.write(muestras)
-            return True
-        except Exception as error:
-            self._ultimo_error = str(error)
-            return False
+        with self._candado_escritura:
+            # Se relee dentro del candado: `cerrar()` pone `_stream` a None antes
+            # de detener el stream, y quien entre aqui despues de eso debe ver
+            # None y retirarse sin escribir.
+            stream = self._stream
+            if stream is None:
+                return False
+            try:
+                stream.write(muestras)
+                return True
+            except Exception as error:
+                self._ultimo_error = str(error)
+                return False
 
     def cerrar(self) -> None:
         """Cierra el stream. Seguro de llamar varias veces.
@@ -412,8 +428,14 @@ class Metronomo:
                 return
             self._pulsos += 1
             siguiente += intervalo
-            espera = max(0.0, siguiente - time.monotonic())
-            if self._parar.wait(espera):
+            ahora = time.monotonic()
+            if siguiente < ahora - intervalo:
+                # El pulso siguiente ya deberia haber sonado hace mas de un
+                # intervalo: la escritura se quedo bloqueada (por ejemplo tras un
+                # tono de referencia en la misma salida). Realinear evita soltar
+                # de golpe todos los clicks atrasados, que es peor que perderlos.
+                siguiente = ahora + intervalo
+            if self._parar.wait(max(0.0, siguiente - time.monotonic())):
                 return
 
     def detener(self) -> None:

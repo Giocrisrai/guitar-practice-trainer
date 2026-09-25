@@ -440,3 +440,40 @@ def test_el_reproductor_huerfano_no_escribe_tras_un_join_vencido():
     # Ni conto ese tono ni dio otra vuelta escribiendo sobre la salida cerrada.
     assert reproductor.tonos_sonados == 0
     assert len(escrituras) == 1
+
+
+def test_dos_emisores_no_escriben_a_la_vez_en_la_misma_salida():
+    """Un ejercicio de intervalos tiene dos emisores sobre la misma salida en
+    hilos distintos: el metronomo y el tono de referencia. OutputStream.write()
+    no promete ser seguro entre hilos, asi que reproducir() las serializa.
+    """
+    solapes = []
+    dentro = threading.Lock()
+    escribiendo = [False]
+
+    class StreamQueVigila(StreamSalidaFalso):
+        def write(self, muestras):
+            with dentro:
+                if escribiendo[0]:
+                    solapes.append(1)
+                escribiendo[0] = True
+            time.sleep(0.01)
+            with dentro:
+                escribiendo[0] = False
+
+    salida = SalidaAudio(abrir_stream=lambda **kw: StreamQueVigila())
+    salida.abrir()
+    onda = tono(440.0, 0.05)
+
+    def emitir():
+        for _ in range(20):
+            salida.reproducir(onda)
+
+    hilos = [threading.Thread(target=emitir) for _ in range(4)]
+    for hilo in hilos:
+        hilo.start()
+    for hilo in hilos:
+        hilo.join(timeout=10.0)
+    salida.cerrar()
+
+    assert solapes == []
