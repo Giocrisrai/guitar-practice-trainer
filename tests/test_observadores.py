@@ -96,3 +96,57 @@ def test_sin_observadores_la_sesion_funciona_igual():
     time.sleep(0.2)
     assert sesion.ultimo_resultado() is not None
     sesion.detener()
+
+
+def test_el_fallo_de_un_observador_se_registra(capsys):
+    """`except Exception: continue` se tragaba el fallo: un error dentro del
+    evaluador de ejercicios se veia como "el ejercicio no avanza" sin ninguna
+    pista de por que. Ahora se anuncia, una sola vez por mensaje distinto.
+    """
+
+    def observador_roto(resultado, instante):
+        raise RuntimeError("el evaluador se atraganto")
+
+    sesion = sesion_falsa()
+    sesion.registrar_observador(observador_roto)
+    sesion.iniciar()
+    time.sleep(0.3)
+    sesion.detener()
+
+    salida = capsys.readouterr().out
+    assert "observador_roto" in salida
+    assert "RuntimeError" in salida
+    assert "el evaluador se atraganto" in salida
+    # Una sola linea, aunque el analisis publique a unos 47 Hz.
+    assert salida.count("el evaluador se atraganto") == 1
+
+
+def test_suscribirse_y_desuscribirse_mientras_el_analisis_corre_no_revienta():
+    """La lista se muta desde el hilo HTTP y se recorre desde el de analisis."""
+    import threading
+
+    sesion = sesion_falsa()
+    sesion.iniciar()
+    parar = threading.Event()
+    fallos = []
+
+    def observador(resultado, instante):
+        pass
+
+    def alternar():
+        while not parar.is_set():
+            try:
+                sesion.registrar_observador(observador)
+                sesion.quitar_observador(observador)
+            except Exception as error:  # pragma: no cover
+                fallos.append(error)
+                return
+
+    hilo = threading.Thread(target=alternar, daemon=True)
+    hilo.start()
+    time.sleep(0.4)
+    parar.set()
+    hilo.join(timeout=2.0)
+    sesion.detener()
+
+    assert fallos == []

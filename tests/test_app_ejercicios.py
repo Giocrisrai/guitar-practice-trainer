@@ -155,3 +155,34 @@ def test_el_websocket_emite_aunque_no_haya_ejercicio(cliente):
     with cliente.websocket_connect("/ws/ejercicios") as socket:
         mensaje = socket.receive_json()
         assert mensaje["ejercicio"] is None
+
+
+def test_un_tipo_de_parametro_erroneo_da_400_y_no_500(cliente):
+    """Spec §5: la configuracion invalida se rechaza explicando el problema. Un
+    valor del tipo equivocado sale de Python como TypeError, no ValueError, y
+    dejarlo subir lo convertia en un 500: "el servidor se ha roto", que es
+    mentira y no dice al usuario que tiene que corregir.
+    """
+    respuesta = cliente.post(
+        "/api/ejercicios/generar",
+        json={"familia": "escala", "parametros": {"traste_minimo": "x"}},
+    )
+    assert respuesta.status_code == 400
+    assert respuesta.json()["detail"]
+
+
+def test_un_parametro_que_no_existe_da_400(cliente):
+    respuesta = cliente.post(
+        "/api/ejercicios/generar",
+        json={"familia": "lectura", "parametros": {"repeticion": 3}},
+    )
+    assert respuesta.status_code == 400
+    assert "repeticion" in respuesta.json()["detail"]
+
+
+def test_iniciar_con_un_parametro_del_tipo_erroneo_tambien_da_400(cliente):
+    respuesta = cliente.post(
+        "/api/ejercicios/iniciar",
+        json={"familia": "lectura", "parametros": {"repeticiones": "tres"}},
+    )
+    assert respuesta.status_code == 400

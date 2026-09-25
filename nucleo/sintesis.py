@@ -171,6 +171,143 @@ class SalidaAudio:
 
 TEMPO_MAXIMO_PPM = 300
 
+# Cada cuanto vuelve a mirar un hilo que esta esperando algo (una peticion de
+# tono, o que se levante la pausa). Corto para que la respuesta se note
+# inmediata, largo para no gastar CPU en girar.
+INTERVALO_SONDEO_S = 0.01
+
+
+class ReproductorTonos:
+    """Hace sonar notas sueltas sin bloquear a quien las pide.
+
+    Lo necesita el tono de referencia de los ejercicios de intervalo: la spec
+    §4.5 y §4.1 piden que el software haga sonar la nota de referencia antes de
+    pedir la nota objetivo, y sin eso el ejercicio de intervalos es uno de
+    lectura con la respuesta escrita en pantalla.
+
+    Existe como clase con hilo propio porque quien pide el tono es el hilo de
+    analisis (es ahi donde se ve que la nota del ejercicio cambio) y
+    `SalidaAudio.reproducir()` es BLOQUEANTE: escribir seis decimas de audio
+    tarda seis decimas de segundo. El hilo de analisis no puede pararse ese
+    tiempo, porque la deteccion de ataques trabaja sobre la evolucion de la
+    energia y perder cuadros la ciega. `pedir()` deja la peticion en un buzon y
+    vuelve en el acto.
+
+    El buzon tiene UNA sola plaza a proposito: si llega una peticion nueva antes
+    de que suene la anterior, la sustituye. Encolarlas haria sonar la referencia
+    de una nota que el alumno ya dejo atras.
+
+    Contra el hilo huerfano usa el mismo contador de generacion que `Metronomo`,
+    comprobado antes y despues de la escritura bloqueante (ver `_trabajar`).
+    """
+
+    def __init__(
+        self,
+        salida: SalidaAudio | None = None,
+        duracion_s: float = 0.6,
+    ) -> None:
+        self._salida = salida or SalidaAudio()
+        self.duracion_s = duracion_s
+        self._hilo: threading.Thread | None = None
+        self._parar = threading.Event()
+        self._aviso = threading.Event()
+        self._candado = threading.Lock()
+        self._pendiente: tuple[int, float] | None = None
+        self._generacion = 0
+        # Las ondas se generan una vez por (nota, referencia): un ejercicio de
+        # intervalos repite las mismas pocas referencias muchas veces.
+        self._ondas: dict[tuple[int, float], np.ndarray] = {}
+        self._sonados = 0
+
+    @property
+    def activo(self) -> bool:
+        return self._hilo is not None and self._hilo.is_alive()
+
+    @property
+    def tonos_sonados(self) -> int:
+        """Cuantos tonos se han escrito de verdad en la salida."""
+        return self._sonados
+
+    def iniciar(self) -> bool:
+        """Arranca el hilo. Devuelve False si no hay salida de audio abierta."""
+        if self.activo:
+            return True
+        if not self._salida.activa:
+            return False
+        self._parar.clear()
+        self._aviso.clear()
+        with self._candado:
+            self._pendiente = None
+        self._hilo = threading.Thread(target=self._trabajar, daemon=True)
+        self._hilo.start()
+        return True
+
+    def pedir(self, midi: int, referencia_a4: float = 440.0) -> bool:
+        """Pide que suene esa nota. NO bloquea. False si no hay hilo vivo.
+
+        Se puede llamar desde el hilo de analisis sin miedo: lo unico que hace es
+        dejar la peticion en el buzon y levantar el aviso.
+        """
+        if not self.activo:
+            return False
+        with self._candado:
+            self._pendiente = (int(midi), float(referencia_a4))
+        self._aviso.set()
+        return True
+
+    def _onda(self, midi: int, referencia_a4: float) -> np.ndarray:
+        clave = (midi, referencia_a4)
+        if clave not in self._ondas:
+            self._ondas[clave] = tono_de_midi(
+                midi,
+                self.duracion_s,
+                referencia_a4,
+                frecuencia_muestreo=self._salida.frecuencia_muestreo,
+            )
+        return self._ondas[clave]
+
+    def _trabajar(self) -> None:
+        """Hilo del reproductor: espera peticiones y las hace sonar.
+
+        Lee su generacion al arrancar y la comprueba, junto con la peticion de
+        parada, JUSTO ANTES y JUSTO DESPUES de la escritura bloqueante. El motivo
+        es el mismo que en `Metronomo._trabajar`: `reproducir()` puede seguir
+        dentro de `stream.write()` cuando `detener()` ya se rindio en su
+        `join(timeout=1.0)` y devolvio el control, y ese hilo huerfano no debe
+        escribir sobre una salida que la sesion ya pudo haber cerrado, ni contar
+        como sonado un tono que nadie llego a oir.
+        """
+        generacion = self._generacion
+        while not self._parar.is_set() and self._generacion == generacion:
+            if not self._aviso.wait(INTERVALO_SONDEO_S):
+                continue
+            self._aviso.clear()
+            with self._candado:
+                peticion, self._pendiente = self._pendiente, None
+            if peticion is None:
+                continue
+            if self._parar.is_set() or self._generacion != generacion:
+                return
+            self._salida.reproducir(self._onda(*peticion))
+            if self._parar.is_set() or self._generacion != generacion:
+                return
+            self._sonados += 1
+
+    def detener(self) -> None:
+        """Para el hilo y olvida lo pendiente. Seguro de llamar varias veces.
+
+        Incrementa la generacion ANTES de tocar cualquier otra cosa, por lo mismo
+        que `Metronomo.detener()`.
+        """
+        self._generacion += 1
+        self._parar.set()
+        self._aviso.set()
+        if self._hilo is not None:
+            self._hilo.join(timeout=1.0)
+            self._hilo = None
+        with self._candado:
+            self._pendiente = None
+
 
 class Metronomo:
     """Emite un click por pulso en un hilo aparte."""
@@ -191,6 +328,7 @@ class Metronomo:
         self._salida = salida or SalidaAudio()
         self._hilo: threading.Thread | None = None
         self._parar = threading.Event()
+        self._pausado = threading.Event()
         self._pulsos = 0
         # Contador de generacion: detener() lo incrementa antes de tocar
         # cualquier otra cosa. Protege contra el hilo huerfano que sobrevive a un
@@ -207,6 +345,26 @@ class Metronomo:
     def pulsos_emitidos(self) -> int:
         return self._pulsos
 
+    @property
+    def pausado(self) -> bool:
+        return self._pausado.is_set()
+
+    def pausar(self) -> None:
+        """Deja de emitir clicks sin matar el hilo. Seguro de llamar varias veces.
+
+        La spec §5 pide que al perder la senal el ejercicio se PAUSE, y un
+        metronomo que sigue marcando el compas mientras el cable esta
+        desenchufado es justo lo contrario. Se hace con una bandera y no con
+        `detener()` porque quien lo pide es el hilo de analisis, y `detener()`
+        hace `join(timeout=1.0)`: bloquear ahi hasta un segundo cegaria la
+        deteccion de ataques. Levantar una bandera no bloquea nada.
+        """
+        self._pausado.set()
+
+    def reanudar(self) -> None:
+        """Vuelve a emitir. Seguro de llamar varias veces."""
+        self._pausado.clear()
+
     def iniciar(self) -> bool:
         """Arranca el metronomo. Devuelve False si no hay salida de audio."""
         if self.sonando:
@@ -214,6 +372,7 @@ class Metronomo:
         if not self._salida.activa:
             return False
         self._parar.clear()
+        self._pausado.clear()
         self._pulsos = 0
         self._hilo = threading.Thread(target=self._trabajar, daemon=True)
         self._hilo.start()
@@ -233,11 +392,20 @@ class Metronomo:
         (huerfano); cuando por fin se desbloquea, esta segunda comprobacion evita
         que cuente ese click como emitido o que de otra vuelta llamando de nuevo a
         reproducir() sobre una salida que la sesion ya pudo haber cerrado.
+
+        Mientras `pausar()` este puesto no emite nada y no cuenta pulsos. Al
+        reanudar realinea `siguiente` con el reloj: si lo arrastrara, volveria
+        con tantos clicks pegados como pulsos hubieran cabido en la pausa.
         """
         intervalo = 60.0 / self.tempo
         generacion = self._generacion
         siguiente = time.monotonic()
         while not self._parar.is_set() and self._generacion == generacion:
+            if self._pausado.is_set():
+                if self._parar.wait(INTERVALO_SONDEO_S):
+                    return
+                siguiente = time.monotonic()
+                continue
             acentuado = self._pulsos % self.compas == 0
             self._salida.reproducir(self._click_acentuado if acentuado else self._click_normal)
             if self._parar.is_set() or self._generacion != generacion:

@@ -75,6 +75,14 @@ class Sesion:
         # necesita quien no puede permitirse perder cuadros, como el evaluador
         # de ejercicios. Ver registrar_observador().
         self._observadores: list[Callable] = []
+        # La lista se muta desde el hilo HTTP (iniciar o detener un ejercicio) y
+        # se recorre desde el hilo de análisis. Candado propio y no `_candado`:
+        # ese protege `_ultimo`, y compartirlo obligaría a retenerlo mientras
+        # corre el código de un observador ajeno.
+        self._candado_observadores = threading.Lock()
+        # Fallos de observador ya anunciados, para no repetir la misma línea en
+        # cada cuadro: el análisis publica a unos 47 Hz.
+        self._fallos_observador_anunciados: set[str] = set()
         # Protege el ciclo de vida de la captura: el hilo de trabajo la abre y la
         # cierra, pero `aplicar()` y `detener()` también la tocan desde el hilo
         # del servidor.
@@ -156,6 +164,17 @@ class Sesion:
         if self._instante_bajo_umbral is None:
             return False
         return time.monotonic() - self._instante_bajo_umbral > self.segundos_sin_senal
+
+    @property
+    def senal_ausente(self) -> bool:
+        """Lo mismo que el diagnóstico llama `sin_senal`, pero barato de consultar.
+
+        `diagnostico()` enumera los dispositivos del sistema, que es caro
+        comparado con analizar una ventana; quien necesite saber si hay señal en
+        cada cuadro (la sesión de práctica, para pausar el ejercicio como pide la
+        spec §5) tiene que poder preguntarlo sin pagar esa enumeración.
+        """
+        return self._falta_senal_confirmada()
 
     def diagnostico(self, nivel_db: float | None = None) -> Diagnostico:
         """Estado actual del montaje.
@@ -336,6 +355,13 @@ class Sesion:
         propio try/except: un observador roto no puede tumbar el análisis del
         afinador ni impedir que se avise a los demás (esto vive dentro del
         try/except general de `_trabajar`, que ya cubre esta llamada).
+
+        Ese fallo se **registra**, no se traga. Antes se hacía
+        `except Exception: continue` y un error dentro del evaluador de
+        ejercicios se veía como "el ejercicio no avanza", sin ninguna pista de
+        por qué: el síntoma más caro de diagnosticar que puede tener este
+        programa. Se anuncia una sola vez por mensaje distinto, porque a 47
+        cuadros por segundo repetirlo llenaría la terminal y escondería lo demás.
         """
         publicado = False
         with self._candado:
@@ -344,12 +370,23 @@ class Sesion:
                 publicado = True
         if publicado:
             instante = time.monotonic()
-            for observador in list(self._observadores):
+            with self._candado_observadores:
+                observadores = list(self._observadores)
+            for observador in observadores:
                 try:
                     observador(resultado, instante)
-                except Exception:
-                    continue
+                except Exception as error:
+                    self._anunciar_fallo_observador(observador, error)
         self._anotar_nivel(resultado.nivel_db)
+
+    def _anunciar_fallo_observador(self, observador: Callable, error: Exception) -> None:
+        """Imprime el fallo de un observador la primera vez que se ve ese mensaje."""
+        nombre = getattr(observador, "__qualname__", repr(observador))
+        aviso = f"Fallo en el observador {nombre}: {type(error).__name__}: {error}"
+        if aviso in self._fallos_observador_anunciados:
+            return
+        self._fallos_observador_anunciados.add(aviso)
+        print(aviso)
 
     def _trabajar(self) -> None:
         """Hilo de trabajo: abre, vigila y analiza.
@@ -474,13 +511,15 @@ class Sesion:
         El observador se invoca DENTRO del hilo de análisis, así que debe ser
         rápido: nada de red, nada de disco, nada que bloquee.
         """
-        if observador not in self._observadores:
-            self._observadores.append(observador)
+        with self._candado_observadores:
+            if observador not in self._observadores:
+                self._observadores.append(observador)
 
     def quitar_observador(self, observador: Callable) -> None:
         """Desuscribe un observador. No falla si no estaba."""
-        if observador in self._observadores:
-            self._observadores.remove(observador)
+        with self._candado_observadores:
+            if observador in self._observadores:
+                self._observadores.remove(observador)
 
     def aplicar(self, configuracion: Configuracion) -> Diagnostico:
         """Cambia la configuración en caliente y devuelve el diagnóstico resultante.

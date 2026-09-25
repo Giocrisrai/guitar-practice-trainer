@@ -64,6 +64,16 @@ bloquea el avance—, y su desviación en cents queda registrada para el informe
 final. Si fallas la misma nota cinco veces seguidas, el mástil la resalta
 para ayudarte a encontrarla.
 
+En los ejercicios de intervalo el software **hace sonar la nota de referencia**
+por los altavoces al entrar en cada nota, y tú tocas la que está al intervalo
+pedido: eso es lo que los convierte en entrenamiento de oído y no en otro
+ejercicio de lectura. Si no hay salida de audio disponible, el ejercicio sigue
+sin el tono, igual que sigue sin metrónomo.
+
+Al perder la señal (el cable desenchufado, por ejemplo) el ejercicio se
+**pausa**: el metrónomo calla y el temporizador de la ayuda deja de contar.
+Ambos vuelven solos en cuanto reaparece la señal.
+
 Al terminar el ejercicio, el informe muestra los aciertos a la primera, las
 notas que costaron más intentos y la desviación mediana en cents.
 

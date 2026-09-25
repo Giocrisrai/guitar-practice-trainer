@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from nucleo.captura import NOMBRE_ROCKSMITH, DispositivoAudio
+from nucleo.musica import midi_a_frecuencia
 from nucleo.sintesis import SalidaAudio
 from servidor.configuracion import Configuracion
 from servidor.ejercicios import GENERADORES, SesionPractica
@@ -11,6 +12,12 @@ from servidor.sesion import Sesion
 
 CABLE = DispositivoAudio(3, NOMBRE_ROCKSMITH, 1, 48000.0)
 FS = 48000
+
+
+def frecuencia_dominante(muestras: np.ndarray, fs: int = FS) -> float:
+    """Frecuencia del pico del espectro, para comprobar que el tono suena donde debe."""
+    espectro = np.abs(np.fft.rfft(np.asarray(muestras, dtype=np.float64)))
+    return float(np.fft.rfftfreq(np.size(muestras), 1 / fs)[np.argmax(espectro)])
 
 
 class CapturaFalsa:
@@ -153,4 +160,151 @@ def test_iniciar_dos_veces_reemplaza_el_ejercicio_anterior():
 def test_detener_dos_veces_no_falla():
     sesion = practica()
     sesion.detener()
+    sesion.detener()
+
+
+def test_el_ejercicio_de_intervalos_hace_sonar_la_nota_de_referencia():
+    """Spec §4.5 y §4.1: el software suena la referencia antes de pedir la nota
+    objetivo. Sin eso el ejercicio de intervalos es uno de lectura con la
+    respuesta escrita en pantalla, y el entrenamiento de oido no existe.
+    """
+    escritos = []
+
+    class StreamQueApunta(StreamSalidaFalso):
+        def write(self, muestras):
+            escritos.append(np.asarray(muestras).copy())
+
+    sesion_audio = Sesion(
+        Configuracion(dispositivo=3),
+        crear_captura=lambda **kw: CapturaFalsa(**kw),
+        listar=lambda: [CABLE],
+    )
+    sesion_audio.iniciar()
+    sesion = SesionPractica(
+        sesion_audio, salida=SalidaAudio(abrir_stream=lambda **kw: StreamQueApunta())
+    )
+    ejercicio = sesion.generar("intervalo", repeticiones=3, semilla=1)
+    assert ejercicio.notas[0].referencia_midi is not None
+
+    sesion.iniciar(ejercicio, con_metronomo=False)
+    for _ in range(100):
+        if escritos:
+            break
+        time.sleep(0.01)
+    sesion.detener()
+
+    assert len(escritos) == 1
+    esperada = midi_a_frecuencia(ejercicio.notas[0].referencia_midi)
+    assert frecuencia_dominante(escritos[0]) == pytest.approx(esperada, rel=0.03)
+
+
+def test_la_referencia_suena_una_sola_vez_por_nota():
+    """Se pide al entrar en la nota, no en cada cuadro de analisis."""
+    escritos = []
+
+    class StreamQueCuenta(StreamSalidaFalso):
+        def write(self, muestras):
+            escritos.append(1)
+
+    sesion_audio = Sesion(
+        Configuracion(dispositivo=3),
+        crear_captura=lambda **kw: CapturaFalsa(**kw),
+        listar=lambda: [CABLE],
+    )
+    sesion_audio.iniciar()
+    sesion = SesionPractica(
+        sesion_audio, salida=SalidaAudio(abrir_stream=lambda **kw: StreamQueCuenta())
+    )
+    ejercicio = sesion.generar("intervalo", repeticiones=3, semilla=2)
+    sesion.iniciar(ejercicio, con_metronomo=False)
+    time.sleep(0.5)  # unos 24 cuadros de analisis
+    sesion.detener()
+
+    assert len(escritos) == 1
+
+
+def test_el_ejercicio_de_lectura_no_hace_sonar_nada():
+    """En lectura `referencia_midi` es None: no se abre la salida ni suena nada."""
+    escritos = []
+
+    class StreamQueCuenta(StreamSalidaFalso):
+        def write(self, muestras):
+            escritos.append(1)
+
+    sesion_audio = Sesion(
+        Configuracion(dispositivo=3),
+        crear_captura=lambda **kw: CapturaFalsa(**kw),
+        listar=lambda: [CABLE],
+    )
+    sesion_audio.iniciar()
+    sesion = SesionPractica(
+        sesion_audio, salida=SalidaAudio(abrir_stream=lambda **kw: StreamQueCuenta())
+    )
+    ejercicio = sesion.generar("lectura", repeticiones=3, semilla=1)
+    sesion.iniciar(ejercicio, con_metronomo=False)
+    time.sleep(0.3)
+    sesion.detener()
+
+    assert escritos == []
+
+
+def test_sin_salida_de_audio_el_ejercicio_de_intervalos_sigue_sin_tono():
+    """Degrada suave, igual que el metronomo: la spec dice que quedarse sin
+    altavoces no impide practicar.
+    """
+    def abrir_que_falla(**kwargs):
+        raise OSError("No output device")
+
+    sesion_audio = Sesion(
+        Configuracion(dispositivo=3),
+        crear_captura=lambda **kw: CapturaFalsa(**kw),
+        listar=lambda: [CABLE],
+    )
+    sesion_audio.iniciar()
+    sesion = SesionPractica(sesion_audio, salida=SalidaAudio(abrir_stream=abrir_que_falla))
+    ejercicio = sesion.generar("intervalo", repeticiones=2, semilla=1)
+    sesion.iniciar(ejercicio, con_metronomo=False)
+    assert sesion.activa is True
+    time.sleep(0.2)
+    assert sesion.estado()["evaluacion"]["total"] == 2
+    sesion.detener()
+
+
+def test_al_perder_la_senal_el_metronomo_se_pausa_y_al_volver_se_reanuda():
+    """Spec §5: al perder la senal el ejercicio se pausa. La otra mitad de la
+    pausa (el temporizador de la ayuda) vive en el evaluador.
+    """
+    sesion_audio = Sesion(
+        Configuracion(dispositivo=3),
+        crear_captura=lambda **kw: CapturaFalsa(**kw),
+        listar=lambda: [CABLE],
+    )
+    sesion_audio.segundos_sin_senal = 0.05
+    sesion_audio.iniciar()
+    sesion = SesionPractica(
+        sesion_audio, salida=SalidaAudio(abrir_stream=lambda **kw: StreamSalidaFalso())
+    )
+    ejercicio = sesion.generar("escala", traste_maximo=4)
+    estado = sesion.iniciar(ejercicio)
+    assert estado["metronomo"] is True
+
+    # La captura falsa entrega una senoide a -10 dBFS: hay senal, nada se pausa.
+    time.sleep(0.2)
+    assert sesion.estado()["metronomo_pausado"] is False
+
+    # Se desenchufa el cable: el hilo de analisis publica silencio.
+    sesion_audio._listar = lambda: []
+    for _ in range(200):
+        if sesion.estado()["metronomo_pausado"]:
+            break
+        time.sleep(0.02)
+    assert sesion.estado()["metronomo_pausado"] is True
+
+    # Y al volver a aparecer, se reanuda solo.
+    sesion_audio._listar = lambda: [CABLE]
+    for _ in range(300):
+        if not sesion.estado()["metronomo_pausado"]:
+            break
+        time.sleep(0.02)
+    assert sesion.estado()["metronomo_pausado"] is False
     sesion.detener()

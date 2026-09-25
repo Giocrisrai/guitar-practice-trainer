@@ -170,26 +170,35 @@ def crear_app(
             },
         ]
 
+    def _generar_o_400(datos: dict):
+        """Genera el ejercicio pedido, o responde 400 explicando el problema.
+
+        Se capturan `ValueError` **y** `TypeError`. Los generadores lanzan
+        `ValueError` con un mensaje bueno cuando el VALOR no sirve ("el intervalo
+        no existe", "el perfil no existe"), pero un parametro con un nombre que
+        no existe, o con un tipo que no es el suyo, sale de Python como
+        `TypeError` (`traste_minimo="x"` o `repeticion=3`). Esos son
+        configuraciones mal pedidas igual que los otros, y la spec §5 dice que se
+        rechacen explicando el problema: dejarlos subir los convertia en un 500,
+        es decir en "el servidor se ha roto", que es mentira y no dice nada de lo
+        que el usuario tiene que corregir.
+        """
+        try:
+            return app.state.practica.generar(
+                datos.get("familia", ""), **datos.get("parametros", {})
+            )
+        except (ValueError, TypeError) as error:
+            raise HTTPException(status_code=400, detail=str(error))
+
     @app.post("/api/ejercicios/generar")
     def generar_ejercicio(datos: dict = Body(...)) -> dict:
         """Genera un ejercicio sin iniciarlo, para previsualizarlo."""
-        try:
-            ejercicio = app.state.practica.generar(
-                datos.get("familia", ""), **datos.get("parametros", {})
-            )
-        except ValueError as error:
-            raise HTTPException(status_code=400, detail=str(error))
-        return ejercicio.a_dict()
+        return _generar_o_400(datos).a_dict()
 
     @app.post("/api/ejercicios/iniciar")
     def iniciar_ejercicio(datos: dict = Body(...)) -> dict:
         """Genera un ejercicio y lo pone en marcha."""
-        try:
-            ejercicio = app.state.practica.generar(
-                datos.get("familia", ""), **datos.get("parametros", {})
-            )
-        except ValueError as error:
-            raise HTTPException(status_code=400, detail=str(error))
+        ejercicio = _generar_o_400(datos)
         return app.state.practica.iniciar(ejercicio, datos.get("con_metronomo", True))
 
     @app.post("/api/ejercicios/detener")
