@@ -79,6 +79,21 @@ def test_a_la_primera_exige_acierto_y_un_solo_intento():
     assert IntentoNota(0, 40, 1, None, None).a_la_primera is False
 
 
+def test_acertar_con_la_ayuda_puesta_no_es_acertar_a_la_primera():
+    """La ayuda tiene un disparador temporal ademas del de los cinco fallos, asi
+    que puede estar visible con un solo intento. Acertar leyendo la respuesta
+    resaltada en el mastil no cuenta, o `aciertos_a_la_primera` mentiria.
+    """
+    con_ayuda = IntentoNota(0, 40, 1, 0.0, 1.0, ayuda_mostrada=True)
+    assert con_ayuda.a_la_primera is False
+    informe = ResultadoEjercicio(
+        ejercicio="prueba",
+        notas=(con_ayuda, IntentoNota(1, 42, 1, 0.0, 2.0)),
+        completado=True,
+    )
+    assert informe.aciertos_a_la_primera == 1
+
+
 def test_el_informe_cuenta_los_aciertos_a_la_primera():
     resultado = ResultadoEjercicio(
         ejercicio="prueba",

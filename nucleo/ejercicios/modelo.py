@@ -105,7 +105,15 @@ class IntentoNota:
 
     @property
     def a_la_primera(self) -> bool:
-        return self.acertada and self.intentos == 1
+        """Acertada al primer intento y SIN la ayuda del mastil puesta.
+
+        La ayuda tiene un disparador temporal, no solo el de los cinco fallos,
+        asi que puede estar visible con `intentos == 1`. Acertar leyendo la
+        respuesta resaltada en el mastil no es acertar a la primera, y contarlo
+        como tal falsearia `aciertos_a_la_primera`, que es la cifra con la que el
+        alumno mide su progreso.
+        """
+        return self.acertada and self.intentos == 1 and not self.ayuda_mostrada
 
     def a_dict(self) -> dict:
         return {
@@ -155,14 +163,32 @@ class ResultadoEjercicio:
 
     @property
     def regularidad_ms(self) -> float | None:
-        """Desviacion tipica de los intervalos entre ataques, en milisegundos.
+        """Desviacion tipica de los intervalos entre onsets, en milisegundos.
 
-            regularidad = desv_tipica( t[i+1] - t[i] ) · 1000
+            regularidad = sqrt( (1/n) · Σ (Δt_i − mean(Δt))² ) · 1000
+            con Δt_i = t[i+1] − t[i],  n = len(Δt)
 
         Mide constancia, no velocidad: tocar lento y parejo da un numero bajo, que
         es justo lo que interesa al practicar. Devuelve None con menos de tres
         notas acertadas, porque con dos solo hay un intervalo y su desviacion
         tipica es siempre cero, lo que fingiria una regularidad perfecta.
+
+        Es la desviacion tipica POBLACIONAL: `np.std` usa `ddof=0`, es decir
+        divide por n y no por n−1. Con 2 o 3 intervalos la diferencia frente a
+        `ddof=1` no es un detalle (el factor sqrt(n/(n−1)) vale 1.41 con n=2 y
+        1.22 con n=3), asi que la cifra del informe no es comparable con la
+        desviacion cuasi-insesgada que da, por ejemplo, una hoja de calculo con
+        DESVEST. Se elige `ddof=0` porque aqui los intervalos tocados NO son una
+        muestra de una poblacion mayor: son todos los intervalos de este
+        ejercicio, y lo que se describe es exactamente esa ejecucion.
+
+        Todos los `instante` que entran aqui son el MISMO tipo de onset,
+        independientemente del camino por el que el evaluador resolviera cada
+        nota: el instante del ataque de energia siempre que hubo uno (ver
+        `_onset_camino_b` en `evaluacion.py`). Mezclar el ataque con el primer
+        cuadro de tono creible, que en una guitarra real llega decenas de
+        milisegundos despues, metia en esta cifra un sesgo del orden de lo que
+        pretende medir.
         """
         instantes = [n.instante for n in self._acertadas if n.instante is not None]
         if len(instantes) < MINIMO_NOTAS_REGULARIDAD:

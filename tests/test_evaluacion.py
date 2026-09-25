@@ -661,3 +661,148 @@ def test_el_silencio_absoluto_durante_el_mismo_tiempo_no_dispara_la_ayuda():
         instante += PASO
 
     assert estado.ayuda_visible is False
+
+
+def test_acertar_y_luego_silencio_no_dispara_la_ayuda():
+    """La ventana temporal de la nota nueva solo debe avanzar si hay senal que
+    pueda ser un intento de ELLA. Tras acertar la nota anterior y soltar la
+    guitarra, pasen los segundos que pasen, la ayuda no aparece: nadie ha
+    tocado nada contra la nota nueva.
+
+    Las otras dos pruebas de no-ayuda arrancan en la nota 0, donde no hay nota
+    anterior ni cola que la rearme; por eso este fallo paso desapercibido.
+    """
+    evaluador = EvaluadorEjercicio(ejercicio_de([40, 42, 44]), segundos_para_ayuda=1.0)
+    estado, instante = tocar(evaluador, suena(40), 0.0)
+    assert estado.indice == 1
+    assert estado.ayuda_visible is False
+
+    fin = instante + 3.0
+    while instante < fin:
+        estado = evaluador.procesar(silencio(), instante)
+        instante += PASO
+
+    assert estado.indice == 1
+    assert estado.ayuda_visible is False
+
+
+def test_acertar_dejar_sonar_la_cola_y_luego_silencio_tampoco_dispara_la_ayuda():
+    """La cola de la nota ya resuelta sigue dando cuadros creibles con SU nombre.
+    Eso no es un intento de la nota nueva y no debe armar el disparador
+    temporal: si lo armara, una pausa para pensar regalaria la respuesta
+    resaltada en el mastil y el informe anotaria ayuda_mostrada en una nota
+    acertada a la primera.
+    """
+    evaluador = EvaluadorEjercicio(ejercicio_de([40, 42, 44]), segundos_para_ayuda=1.0)
+    estado, instante = tocar(evaluador, suena(40), 0.0)
+    assert estado.indice == 1
+
+    # La nota 0 sigue sonando un buen rato despues de haberse resuelto.
+    for _ in range(20):
+        estado = evaluador.procesar(suena(40), instante)
+        instante += PASO
+    assert estado.indice == 1
+
+    fin = instante + 3.0
+    while instante < fin:
+        estado = evaluador.procesar(silencio(), instante)
+        instante += PASO
+
+    assert estado.ayuda_visible is False
+
+
+def test_la_cola_de_la_nota_anterior_no_ensucia_el_informe_de_la_siguiente():
+    """Comprobacion del efecto visible del defecto anterior: la nota que se
+    acierta despues de una pausa larga debe seguir contando como acierto a la
+    primera, sin ayuda mostrada.
+    """
+    evaluador = EvaluadorEjercicio(ejercicio_de([40, 42]), segundos_para_ayuda=1.0)
+    estado, instante = tocar(evaluador, suena(40), 0.0)
+    for _ in range(20):
+        evaluador.procesar(suena(40), instante)
+        instante += PASO
+    fin = instante + 3.0
+    while instante < fin:
+        evaluador.procesar(silencio(), instante)
+        instante += PASO
+
+    estado, instante = tocar(evaluador, suena(42), instante)
+    assert estado.completado is True
+    segunda = evaluador.resultado().notas[1]
+    assert segunda.ayuda_mostrada is False
+    assert segunda.a_la_primera is True
+
+
+def test_el_camino_b_anota_el_ataque_cuando_el_tono_tarda_en_ser_creible():
+    """Los dos caminos deben anotar el MISMO onset: el del ataque de energia.
+
+    En una guitarra real el detector de tono tarda decenas de milisegundos en
+    dar una lectura creible tras el ataque, asi que la lectura diferida del
+    camino A puede caer sobre un cuadro dudoso y descartarse; entonces resuelve
+    el camino B, y el comienzo de su racha estable llega bastante despues del
+    ataque. Si el camino B anotara ese comienzo, `regularidad_ms` mediria el
+    retraso del detector de tono como si fuera irregularidad del alumno.
+
+    A diferencia de `test_camino_b_registra_cuando_empezo_la_racha_no_cuando_termino`,
+    aqui los dos instantes NO coinciden por construccion: el ataque esta en
+    1.000 y la racha creible no empieza hasta 1.105.
+    """
+    evaluador = EvaluadorEjercicio(ejercicio_de([40]))
+    instante = 0.0
+    while instante < 1.0:
+        evaluador.procesar(silencio(), instante)
+        instante += PASO
+
+    # Ataque de energia real en t=1.000. Los cinco primeros cuadros traen
+    # confianza insuficiente, asi que la lectura diferida del camino A (1.060)
+    # cae sobre un cuadro dudoso y se descarta.
+    instante = 1.000
+    for _ in range(5):
+        evaluador.procesar(suena(40, nivel=-15.0, confianza=0.3), instante)
+        instante += PASO
+    assert evaluador.estado.indice == 0
+
+    # Ahora si: la racha creible empieza en 1.105 y el camino B resuelve.
+    for _ in range(CUADROS_PARA_NOTA_ESTABLE + 1):
+        estado = evaluador.procesar(suena(40, nivel=-15.0), instante)
+        instante += PASO
+
+    assert estado.indice == 1
+    intento = evaluador.resultado().notas[0]
+    assert intento.instante == pytest.approx(1.000)
+
+
+def test_la_instantanea_es_coherente_mientras_el_analisis_avanza():
+    """El hilo HTTP/WS pide `estado` a 30 Hz mientras el hilo de analisis muta el
+    evaluador. Cada instantanea tiene que describir un solo momento: sin candado
+    podia traer `indice=n` con la `nota_actual` de n+1, o `completado=False` con
+    `nota_actual=None`.
+    """
+    import threading
+
+    evaluador = EvaluadorEjercicio(ejercicio_de(list(range(40, 60))))
+    parar = threading.Event()
+    incoherencias: list[str] = []
+
+    def mirar():
+        while not parar.is_set():
+            estado = evaluador.estado
+            if estado.completado != (estado.nota_actual is None):
+                incoherencias.append(f"completado={estado.completado} nota={estado.nota_actual}")
+            elif estado.nota_actual is not None:
+                esperada = evaluador.ejercicio.notas[estado.indice]
+                if estado.nota_actual is not esperada:
+                    incoherencias.append(f"indice={estado.indice} nota={estado.nota_actual}")
+
+    vigilante = threading.Thread(target=mirar, daemon=True)
+    vigilante.start()
+    try:
+        instante = 0.0
+        for midi in range(40, 60):
+            _, instante = tocar(evaluador, suena(midi), instante)
+    finally:
+        parar.set()
+        vigilante.join(timeout=2.0)
+
+    assert evaluador.estado.completado is True
+    assert incoherencias == []
