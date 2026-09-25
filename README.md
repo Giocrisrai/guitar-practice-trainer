@@ -1,7 +1,9 @@
 # proyecto_musica
 
 Software libre para practicar guitarra en macOS con el cable Rocksmith Real Tone.
-Etapa 1: afinador y monitor de notas en el mástil.
+Etapa 1: afinador y monitor de notas en el mástil. Etapa 2a: ejercicios
+monofónicos (escalas, arpegios, intervalos y lectura) con corrección de nota,
+afinación y tempo.
 
 ## Requisitos
 
@@ -51,6 +53,27 @@ El botón **Calibrar ruido** mide el piso de ruido de tu equipo durante dos
 segundos —no toques nada mientras dura— y guarda el umbral resultante en la
 configuración. El valor vigente se muestra siempre junto al botón.
 
+### Ejercicios
+
+Junto al afinador hay un módulo de ejercicios con cuatro familias: escalas,
+arpegios, intervalos y lectura (posiciones sueltas en el mástil). Cada
+ejercicio se resuelve nota a nota: mientras no toques la nota pedida el
+ejercicio no avanza, y si te equivocas se te dice qué nota sonó en su lugar.
+Una nota correcta pero desafinada **sí** cuenta como acierto —la afinación no
+bloquea el avance—, y su desviación en cents queda registrada para el informe
+final. Si fallas la misma nota cinco veces seguidas, el mástil la resalta
+para ayudarte a encontrarla.
+
+Al terminar el ejercicio, el informe muestra los aciertos a la primera, las
+notas que costaron más intentos y la desviación mediana en cents.
+
+**Límite conocido del detector de ataques:** dos pulsaciones seguidas de la
+misma nota, sin ninguna caída de nivel real entre ellas, no se distinguen por
+energía sola. El evaluador lo compensa con un segundo disparador basado en el
+cambio de nota detectada, así que en el uso normal (tocando con articulación)
+esto no se nota; solo afecta al caso límite de picar la misma nota una y otra
+vez sin dejar que el nivel caiga entre pulsaciones.
+
 ## Verificar el cable
 
 ```bash
@@ -59,6 +82,16 @@ uv run python -m herramientas.verificar_cable
 
 Comprueba que el dispositivo aparece, mide la latencia y reconoce las notas que toques.
 
+## Calibrar la deteccion de ataques
+
+```bash
+uv run python -m herramientas.calibrar_ataques
+```
+
+Pulsa una cuerda ocho veces separadas y la herramienta propone el salto y el
+refractario que mejor cuentan tus pulsaciones. Los valores por defecto estan
+elegidos a ojo; esto los ajusta a tu pua y tu pastilla.
+
 ## Pruebas
 
 ```bash
@@ -66,10 +99,11 @@ uv run pytest             # núcleo y servidor
 cd interfaz && pnpm test  # interfaz
 ```
 
-Las pruebas de `tests/test_audio_real.py` usan grabaciones reales en `tests/audio/`.
-En un checkout nuevo esas grabaciones todavía no existen, así que esas pruebas
-aparecen como saltadas (`skipped`): es lo esperado, no un fallo. Para
-regenerarlas: `uv run python -m herramientas.grabar_muestras`.
+Las pruebas de `tests/test_audio_real.py` y `tests/test_ataques_reales.py` usan
+las mismas grabaciones reales de `tests/audio/`. En un checkout nuevo esas
+grabaciones todavía no existen, así que esas pruebas aparecen como saltadas
+(`skipped`): es lo esperado, no un fallo. Para regenerarlas:
+`uv run python -m herramientas.grabar_muestras`.
 
 ## Estructura
 
@@ -84,8 +118,8 @@ regenerarlas: `uv run python -m herramientas.grabar_muestras`.
 
 ## Estado
 
-Etapa 1 completa. Las siguientes, según el diseño:
+Etapas 1 y 2a completas. Las siguientes, según el diseño:
 
-2. Ejercicios generados con corrección de nota, afinación y tempo
+2b. Ejercicios de acordes
 3. Grabación de sesiones y medición de progreso
 4. Canciones desde tablatura, entrenamiento de oído y efectos
