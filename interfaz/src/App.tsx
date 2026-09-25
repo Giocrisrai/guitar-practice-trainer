@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { Afinador } from "./Afinador";
+import { Ejercicios } from "./Ejercicios";
 import "./estilos.css";
 import type { Diagnostico, Modulo } from "./tipos";
 
@@ -56,7 +57,10 @@ export function App() {
         </div>
       )}
 
-      <main>{activo === "afinador" && <Afinador />}</main>
+      <main>
+        {activo === "afinador" && <Afinador />}
+        {activo === "ejercicios" && <Ejercicios />}
+      </main>
     </div>
   );
 }
