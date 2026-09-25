@@ -1,7 +1,8 @@
 import pytest
 
+from nucleo.afinaciones import PERFILES
 from nucleo.ejercicios.generadores.escalas import generar_escala
-from nucleo.ejercicios.teoria import ESCALAS, clases_del_patron
+from nucleo.ejercicios.teoria import ESCALAS, clases_del_patron, notas_alcanzables
 
 DO3 = 48
 
@@ -42,8 +43,18 @@ def test_descendente_es_la_ascendente_al_reves():
 
 
 def test_cada_nota_trae_sus_posiciones_en_el_mastil():
+    """Cada nota debe tener exactamente las posiciones que devuelve notas_alcanzables."""
     ejercicio = generar_escala()
-    assert all(len(n.posiciones) >= 1 for n in ejercicio.notas)
+    perfil = PERFILES["guitarra_estandar"]
+    alcanzables = notas_alcanzables(perfil, traste_minimo=0, traste_maximo=4)
+
+    # Verificar que cada nota tiene exactamente las posiciones esperadas
+    for nota in ejercicio.notas:
+        assert nota.posiciones == alcanzables[nota.midi]
+
+    # Verificar que al menos una nota tiene más de una posición
+    # (con guitarra estándar entre trastes 0 y 4, el Si3 se toca en dos lugares)
+    assert any(len(n.posiciones) > 1 for n in ejercicio.notas)
 
 
 def test_la_pentatonica_tiene_menos_notas_que_la_mayor():

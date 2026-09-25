@@ -67,6 +67,16 @@ def nombre_de_midi(midi: int) -> str:
     return f"{NOMBRES_NOTAS[midi % 12]}{octava}"
 
 
+def nombre_de_clase(midi: int) -> str:
+    """Nombre de la nota sin su octava: 40 -> "E", 42 -> "F#", 0 -> "C".
+
+    Recortar el ultimo caracter de nombre_de_midi no sirve: la octava -1 ocupa
+    dos caracteres ("C-1") y dejaria "C-". Se quitan por la derecha los digitos
+    y el signo, que es lo que compone el sufijo de octava en notacion cientifica.
+    """
+    return nombre_de_midi(midi).rstrip("-0123456789")
+
+
 def frecuencia_a_nota(frecuencia: float, referencia_a4: float = 440.0) -> NotaDetectada:
     """Nota más cercana a una frecuencia, con su desviación en cents."""
     midi_exacto = frecuencia_a_midi(frecuencia, referencia_a4)

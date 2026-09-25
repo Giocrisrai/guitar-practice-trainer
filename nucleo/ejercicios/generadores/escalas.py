@@ -8,7 +8,7 @@ escritos a mano.
 from nucleo.afinaciones import PERFILES
 from nucleo.ejercicios.modelo import Ejercicio, NotaEsperada
 from nucleo.ejercicios.teoria import ESCALAS, clases_del_patron, notas_alcanzables
-from nucleo.musica import nombre_de_midi
+from nucleo.musica import nombre_de_clase, nombre_de_midi
 
 DIRECCIONES: tuple[str, ...] = ("ascendente", "descendente", "ambas")
 
@@ -73,7 +73,7 @@ def generar_escala(
         NotaEsperada(midi=midi, posiciones=alcanzables[midi], pulsos=1.0) for midi in secuencia
     )
 
-    nombre_raiz = nombre_de_midi(raiz_midi)[:-1]  # sin el numero de octava
+    nombre_raiz = nombre_de_clase(raiz_midi)
     return Ejercicio(
         clave=f"escala_{tipo}_{nombre_raiz.lower()}_{traste_minimo}_{traste_maximo}",
         nombre=f"Escala {NOMBRES_TIPOS[tipo]} de {nombre_raiz}",

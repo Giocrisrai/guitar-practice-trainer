@@ -8,6 +8,7 @@ from nucleo.musica import (
     frecuencia_a_midi,
     frecuencia_a_nota,
     midi_a_frecuencia,
+    nombre_de_clase,
     nombre_de_midi,
     posiciones_en_mastil,
 )
@@ -88,3 +89,18 @@ def test_referencia_alternativa_desplaza_todo():
 )
 def test_tolerancia_de_afinacion(cents, esperado):
     assert esta_afinada(cents) is esperado
+
+
+def test_nombre_de_clase_nota_natural():
+    """Nota natural sin octava: 40 (E2) -> "E"."""
+    assert nombre_de_clase(40) == "E"
+
+
+def test_nombre_de_clase_con_sostenido():
+    """Nota con sostenido sin octava: 42 (F#2) -> "F#"."""
+    assert nombre_de_clase(42) == "F#"
+
+
+def test_nombre_de_clase_octava_negativa():
+    """Octava -1 sin sufijo: 0 (C-1) -> "C" (no "C-")."""
+    assert nombre_de_clase(0) == "C"
