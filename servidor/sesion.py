@@ -71,6 +71,10 @@ class Sesion:
         self._parar = threading.Event()
         self._ultimo: ResultadoAnalisis | None = None
         self._candado = threading.Lock()
+        # Funciones suscritas a cada resultado publicado (no muestreado): las
+        # necesita quien no puede permitirse perder cuadros, como el evaluador
+        # de ejercicios. Ver registrar_observador().
+        self._observadores: list[Callable] = []
         # Protege el ciclo de vida de la captura: el hilo de trabajo la abre y la
         # cierra, pero `aplicar()` y `detener()` también la tocan desde el hilo
         # del servidor.
@@ -323,10 +327,28 @@ class Sesion:
         return self.diagnostico()
 
     def _publicar(self, resultado: ResultadoAnalisis, generacion: int) -> None:
-        """Guarda el resultado si sigue siendo el de la generación vigente."""
+        """Guarda el resultado si sigue siendo el de la generación vigente.
+
+        Los observadores se avisan solo cuando el resultado se publica de
+        verdad (la generación no cambió y no se pidió parar), nunca cuando se
+        descarta por obsoleto. Se invocan fuera del candado, para no retener
+        el lock de `_ultimo` mientras corre código ajeno, y cada uno en su
+        propio try/except: un observador roto no puede tumbar el análisis del
+        afinador ni impedir que se avise a los demás (esto vive dentro del
+        try/except general de `_trabajar`, que ya cubre esta llamada).
+        """
+        publicado = False
         with self._candado:
             if generacion == self._generacion and not self._parar.is_set():
                 self._ultimo = resultado
+                publicado = True
+        if publicado:
+            instante = time.monotonic()
+            for observador in list(self._observadores):
+                try:
+                    observador(resultado, instante)
+                except Exception:
+                    continue
         self._anotar_nivel(resultado.nivel_db)
 
     def _trabajar(self) -> None:
@@ -440,6 +462,25 @@ class Sesion:
         """Resultado más reciente, o None si aún no hay ninguno."""
         with self._candado:
             return self._ultimo
+
+    def registrar_observador(self, observador: Callable) -> None:
+        """Suscribe una función que recibirá (resultado, instante) de cada análisis.
+
+        El afinador lee el último resultado y le basta; el evaluador de
+        ejercicios necesita TODOS los resultados, porque la detección de
+        ataques trabaja sobre la evolución de la energía y muestrear perdería
+        cuadros.
+
+        El observador se invoca DENTRO del hilo de análisis, así que debe ser
+        rápido: nada de red, nada de disco, nada que bloquee.
+        """
+        if observador not in self._observadores:
+            self._observadores.append(observador)
+
+    def quitar_observador(self, observador: Callable) -> None:
+        """Desuscribe un observador. No falla si no estaba."""
+        if observador in self._observadores:
+            self._observadores.remove(observador)
 
     def aplicar(self, configuracion: Configuracion) -> Diagnostico:
         """Cambia la configuración en caliente y devuelve el diagnóstico resultante.
