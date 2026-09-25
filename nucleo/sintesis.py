@@ -151,14 +151,25 @@ class SalidaAudio:
             return False
 
     def cerrar(self) -> None:
-        """Cierra el stream. Seguro de llamar varias veces."""
-        if self._stream is None:
+        """Cierra el stream. Seguro de llamar varias veces.
+
+        Toma la referencia en una variable local y pone `self._stream = None`
+        ANTES de detener y cerrar esa copia local, no despues. Si el orden fuera
+        al reves (detener, cerrar y solo entonces poner None, como antes), un
+        `reproducir()` que entrara justo mientras el stream se esta deteniendo o
+        cerrando lo veria todavia no nulo e intentaria escribir sobre un stream a
+        medio cerrar. Con el orden invertido, cualquier `reproducir()` concurrente
+        ve None de inmediato en cuanto `cerrar()` empieza y devuelve False sin
+        tocar el objeto.
+        """
+        stream, self._stream = self._stream, None
+        if stream is None:
             return
-        try:
-            self._stream.stop()
-            self._stream.close()
-        finally:
-            self._stream = None
+        stream.stop()
+        stream.close()
+
+
+TEMPO_MAXIMO_PPM = 300
 
 
 class Metronomo:
@@ -167,12 +178,24 @@ class Metronomo:
     def __init__(self, tempo: int, compas: int = 4, salida: SalidaAudio | None = None) -> None:
         if tempo < 1:
             raise ValueError("El tempo debe ser al menos 1 pulso por minuto")
+        if tempo > TEMPO_MAXIMO_PPM:
+            # Por encima de esto el intervalo entre pulsos (60/tempo) baja de los
+            # 30 ms que dura el propio click: la escritura bloqueante se come el
+            # intervalo y los clicks salen pegados. 300 ppm es mas de lo que
+            # cualquier ejercicio de guitarra necesita.
+            raise ValueError(
+                f"El tempo no puede superar {TEMPO_MAXIMO_PPM} pulsos por minuto"
+            )
         self.tempo = tempo
         self.compas = compas
         self._salida = salida or SalidaAudio()
         self._hilo: threading.Thread | None = None
         self._parar = threading.Event()
         self._pulsos = 0
+        # Contador de generacion: detener() lo incrementa antes de tocar
+        # cualquier otra cosa. Protege contra el hilo huerfano que sobrevive a un
+        # join(timeout=...) vencido (ver detener() y _trabajar()).
+        self._generacion = 0
         self._click_normal = click(self._salida.frecuencia_muestreo)
         self._click_acentuado = click(self._salida.frecuencia_muestreo, acentuado=True)
 
@@ -197,12 +220,28 @@ class Metronomo:
         return True
 
     def _trabajar(self) -> None:
-        """Hilo del metronomo: un click cada 60/tempo segundos."""
+        """Hilo del metronomo: un click cada 60/tempo segundos.
+
+        Lee su generacion al arrancar. En cada vuelta comprueba, antes de llamar
+        a reproducir(), que esa generacion sigue siendo la vigente y que no se
+        pidio parar; si cualquiera cambio, sale sin emitir. Vuelve a comprobar
+        las dos cosas justo despues de que reproducir() retorne, antes de contar
+        el pulso: reproducir() puede quedarse bloqueada dentro de
+        SalidaAudio.reproducir() (que a su vez espera a stream.write()) mas
+        tiempo del que detener() esta dispuesto a esperar en su join(timeout=1.0).
+        Si eso pasa, detener() ya devolvio el control con este hilo todavia vivo
+        (huerfano); cuando por fin se desbloquea, esta segunda comprobacion evita
+        que cuente ese click como emitido o que de otra vuelta llamando de nuevo a
+        reproducir() sobre una salida que la sesion ya pudo haber cerrado.
+        """
         intervalo = 60.0 / self.tempo
+        generacion = self._generacion
         siguiente = time.monotonic()
-        while not self._parar.is_set():
+        while not self._parar.is_set() and self._generacion == generacion:
             acentuado = self._pulsos % self.compas == 0
             self._salida.reproducir(self._click_acentuado if acentuado else self._click_normal)
+            if self._parar.is_set() or self._generacion != generacion:
+                return
             self._pulsos += 1
             siguiente += intervalo
             espera = max(0.0, siguiente - time.monotonic())
@@ -210,7 +249,19 @@ class Metronomo:
                 return
 
     def detener(self) -> None:
-        """Para el metronomo. Seguro de llamar varias veces."""
+        """Para el metronomo. Seguro de llamar varias veces.
+
+        Incrementa la generacion ANTES de tocar cualquier otra cosa (incluido
+        `_parar.set()`). Ese contador es lo que protege contra el hilo huerfano
+        que sobrevive a un `join(timeout=1.0)` vencido: si `reproducir()` seguia
+        bloqueada dentro de `stream.write()` cuando el join expiro, este metodo
+        ya devolvio el control como si el metronomo estuviera parado, pero el
+        hilo real sigue vivo. Al desbloquearse, `_trabajar()` compara su
+        generacion capturada al arrancar con `self._generacion` (ver ahi) y, como
+        ya no coincide, se retira sin emitir un click mas ni volver a tocar la
+        salida, aunque para entonces `SalidaAudio.cerrar()` ya se haya llamado.
+        """
+        self._generacion += 1
         self._parar.set()
         if self._hilo is not None:
             self._hilo.join(timeout=1.0)
