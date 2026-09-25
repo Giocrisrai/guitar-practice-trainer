@@ -36,10 +36,13 @@ ultima nota ya resuelta (`_ultima_nota_resuelta`) no vuelve a contarse. Eso
 evita que un segundo pico de energia sobre una nota que ya sonaba (un hinchado
 de volumen, un vibrato) se lea contra la nota siguiente, y evita que una racha
 estable ya resuelta por el camino B se cuente otra vez cuando el camino A
-llega tarde a leer el mismo sonido. Ese registro se limpia en cuanto un cuadro
-deja de traer una nota creible (silencio o confianza insuficiente): el
-silencio es la frontera natural entre pulsaciones y le devuelve a ambos
-caminos la capacidad de volver a contar la misma nota.
+llega tarde a leer el mismo sonido. Ese registro se libera cuando se acumulan
+`cuadros_para_olvidar_nota` cuadros SEGUIDOS sin nota creible (silencio o
+confianza insuficiente): un hueco real es la frontera entre pulsaciones y le
+devuelve a ambos caminos la capacidad de volver a contar la misma nota. No
+basta un solo cuadro dudoso: el detector de tono flaquea a mitad de una nota
+sostenida sin que la pulsacion haya terminado, y limpiar al primer bache
+resolveria dos veces la misma pulsacion (ver CUADROS_PARA_OLVIDAR_NOTA).
 """
 
 from dataclasses import dataclass
@@ -68,6 +71,14 @@ CONFIANZA_MINIMA = 0.75
 # cambie la tasa de analisis debe revisar si `cuadros_para_nota_estable` sigue
 # teniendo sentido.
 CUADROS_PARA_NOTA_ESTABLE = 3
+
+# Cuadros seguidos sin nota creible antes de olvidar la ultima nota resuelta.
+# Uno solo no basta: el detector de tono flaquea a mitad de una nota sostenida y
+# el pipeline emite "silencio" con el nivel intacto, asi que limpiar al primer
+# bache haria que una misma pulsacion se resolviera dos veces. Se usa el mismo
+# criterio de estabilidad que el camino B: tres cuadros, unos 63 ms al intervalo
+# de analisis habitual.
+CUADROS_PARA_OLVIDAR_NOTA = 3
 
 # Segundos que la nota actual puede estar sin acertarse antes de mostrar la ayuda,
 # aunque no se hayan contado cinco intentos. El conteo de intentos depende de
@@ -125,8 +136,11 @@ class EvaluadorEjercicio:
     nota (ver CUADROS_PARA_NOTA_ESTABLE en el modulo). Cuando uno de los dos
     resuelve una lectura creible, la nota leida pasa a ser
     `_ultima_nota_resuelta`, y ni el camino A ni el camino B vuelven a
-    dispararse con ella hasta que un cuadro sin nota creible (silencio o
-    confianza insuficiente) la libere.
+    dispararse con ella hasta que se acumulan `cuadros_para_olvidar_nota`
+    cuadros SEGUIDOS sin nota creible (ver CUADROS_PARA_OLVIDAR_NOTA en el
+    modulo). Un solo cuadro dudoso a mitad de una nota sostenida no basta: el
+    detector de tono puede flaquear sin que la pulsacion haya terminado, y
+    limpiar el registro ahi mismo resolveria la misma pulsacion dos veces.
 
     Limitacion conocida: dos pulsaciones seguidas de la MISMA nota, sin
     ninguna caida de nivel real entre ellas, no se distinguen. Ni la altura
@@ -151,6 +165,7 @@ class EvaluadorEjercicio:
         intentos_para_ayuda: int = INTENTOS_PARA_AYUDA,
         cuadros_para_nota_estable: int = CUADROS_PARA_NOTA_ESTABLE,
         segundos_para_ayuda: float = SEGUNDOS_PARA_AYUDA,
+        cuadros_para_olvidar_nota: int = CUADROS_PARA_OLVIDAR_NOTA,
     ) -> None:
         self.ejercicio = ejercicio
         self._detector = detector_ataques or DetectorAtaques()
@@ -159,6 +174,7 @@ class EvaluadorEjercicio:
         self.intentos_para_ayuda = intentos_para_ayuda
         self.cuadros_para_nota_estable = cuadros_para_nota_estable
         self.segundos_para_ayuda = segundos_para_ayuda
+        self.cuadros_para_olvidar_nota = cuadros_para_olvidar_nota
         self.reiniciar()
 
     def reiniciar(self) -> None:
@@ -176,9 +192,11 @@ class EvaluadorEjercicio:
         self._nota_candidata: str | None = None
         self._contador_candidata = 0
         self._instante_inicio_candidata: float | None = None
-        # Ultima nota resuelta por cualquiera de los dos caminos; se limpia en
-        # cuanto un cuadro deja de traer una nota creible.
+        # Ultima nota resuelta por cualquiera de los dos caminos; se libera
+        # cuando se acumulan cuadros_para_olvidar_nota cuadros SEGUIDOS sin
+        # nota creible (ver _cuadros_sin_nota_creible mas abajo).
         self._ultima_nota_resuelta: str | None = None
+        self._cuadros_sin_nota_creible = 0
         # Regla 3, disparador por tiempo: cuando paso a ser actual la nota que
         # se esta pidiendo ahora mismo.
         self._instante_nota_actual: float | None = None
@@ -217,11 +235,15 @@ class EvaluadorEjercicio:
         cualquier lectura pendiente del camino A para esa misma nota
         sostenida, evitando contar el mismo evento dos veces.
 
-        Ademas, un cuadro sin nota creible (silencio o confianza insuficiente)
-        libera `_ultima_nota_resuelta`: el silencio es la frontera natural
-        entre pulsaciones, y sin esa liberacion una nota equivocada repetida
+        Ademas, cuando se acumulan `cuadros_para_olvidar_nota` cuadros SEGUIDOS
+        sin nota creible (silencio o confianza insuficiente) se libera
+        `_ultima_nota_resuelta`: un hueco real es la frontera entre
+        pulsaciones, y sin esa liberacion una nota equivocada repetida
         bloquearia ambos caminos para siempre (ver la limitacion documentada
-        en la clase).
+        en la clase). Un solo cuadro dudoso no cuenta como hueco: el contador
+        se reinicia en cuanto vuelve un cuadro con nota creible, para no
+        resolver dos veces la misma pulsacion solo porque el detector de tono
+        flaqueo un instante a mitad de la nota.
         """
         if self._indice >= len(self.ejercicio):
             return self.estado
@@ -229,8 +251,12 @@ class EvaluadorEjercicio:
         if self._instante_nota_actual is None:
             self._instante_nota_actual = instante
 
-        if not self._es_creible(resultado):
-            self._ultima_nota_resuelta = None
+        if self._es_creible(resultado):
+            self._cuadros_sin_nota_creible = 0
+        else:
+            self._cuadros_sin_nota_creible += 1
+            if self._cuadros_sin_nota_creible >= self.cuadros_para_olvidar_nota:
+                self._ultima_nota_resuelta = None
 
         ataque = self._detector.procesar(resultado.nivel_db, instante)
         if ataque is not None:

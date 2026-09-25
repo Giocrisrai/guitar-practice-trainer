@@ -1,7 +1,11 @@
 import pytest
 
 from nucleo.analisis.pipeline import ResultadoAnalisis
-from nucleo.ejercicios.evaluacion import CUADROS_PARA_NOTA_ESTABLE, EvaluadorEjercicio
+from nucleo.ejercicios.evaluacion import (
+    CUADROS_PARA_NOTA_ESTABLE,
+    CUADROS_PARA_OLVIDAR_NOTA,
+    EvaluadorEjercicio,
+)
 from nucleo.ejercicios.modelo import Ejercicio, NotaEsperada
 from nucleo.musica import Posicion, nombre_de_midi
 
@@ -484,3 +488,63 @@ def test_un_segundo_pico_de_energia_sobre_la_nota_aceptada_no_cuenta_como_fallo(
     # pico de energia sobre la nota ya aceptada no la completo de mas.
     assert estado.indice == 1
     assert len(evaluador.resultado().notas) == 1
+
+
+# --- Ronda de correccion 2: un cuadro dudoso no debe resolver la misma
+# pulsacion dos veces -------------------------------------------------------
+#
+# La correccion 1a de la ronda anterior liberaba `_ultima_nota_resuelta` ante
+# CUALQUIER cuadro sin nota creible. Eso era demasiado agresivo: el detector
+# de tono puede flaquear un instante a mitad de una nota sostenida sin que la
+# pulsacion haya terminado (el pipeline emite "silencio" con el nivel
+# intacto), y limpiar el registro justo ahi hacia que la racha se cortara,
+# se liberara el registro, y los cuadros siguientes de la MISMA pulsacion
+# volvieran a formar racha y se resolvieran otra vez -esta vez contra la nota
+# esperada siguiente, como un fallo fantasma. `CUADROS_PARA_OLVIDAR_NOTA`
+# exige un hueco de varios cuadros seguidos, no uno solo.
+
+
+def _pulsacion_con_bache(evaluador: EvaluadorEjercicio, cuadros_dudosos: int):
+    """Una unica pulsacion sostenida de la nota 40, con `cuadros_dudosos`
+    cuadros de "silencio" (nivel intacto, como haria el pipeline si el
+    detector de tono flaquea) insertados a mitad del sostenimiento.
+    """
+    instante = 0.0
+    estado = None
+    for _ in range(3):
+        evaluador.procesar(silencio(), instante)
+        instante += PASO
+    for i in range(40):
+        if 6 <= i < 6 + cuadros_dudosos:
+            # "Silencio" con el nivel intacto: el pipeline no ve energia de
+            # menos, solo pierde la confianza en la nota.
+            estado = evaluador.procesar(silencio(nivel=-20.0), instante)
+        else:
+            estado = evaluador.procesar(suena(40), instante)
+        instante += PASO
+    return estado
+
+
+def test_un_solo_cuadro_dudoso_a_mitad_de_una_pulsacion_no_la_resuelve_dos_veces():
+    """Un unico cuadro sin nota creible en medio del sostenimiento de una
+    misma pulsacion no debe contar ningun intento ni fijar `ultimo_fallo`:
+    sigue siendo la misma nota que ya se acerto, no una pulsacion nueva.
+    """
+    evaluador = EvaluadorEjercicio(ejercicio_de([40, 42, 44]))
+    estado = _pulsacion_con_bache(evaluador, cuadros_dudosos=1)
+    assert estado.indice == 1
+    assert estado.intentos == 0
+    assert estado.ultimo_fallo is None
+
+
+def test_tres_cuadros_dudosos_seguidos_si_cuentan_como_hueco_real():
+    """A partir de CUADROS_PARA_OLVIDAR_NOTA cuadros sin nota creible
+    seguidos, el hueco es real: la nota que suena despues -aunque sea la
+    misma altura- vuelve a poder resolverse, y si no coincide con la nota
+    esperada en ese momento del ejercicio, cuenta como un fallo nuevo.
+    """
+    evaluador = EvaluadorEjercicio(ejercicio_de([40, 42, 44]))
+    estado = _pulsacion_con_bache(evaluador, cuadros_dudosos=CUADROS_PARA_OLVIDAR_NOTA)
+    assert estado.indice == 1
+    assert estado.intentos == 1
+    assert estado.ultimo_fallo == "E2"
