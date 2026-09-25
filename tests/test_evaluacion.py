@@ -6,7 +6,6 @@ from nucleo.ejercicios.modelo import Ejercicio, NotaEsperada
 from nucleo.musica import Posicion, nombre_de_midi
 
 PASO = 0.021
-ESPERA = 0.060
 
 
 def ejercicio_de(midis: list[int], tempo: int = 80) -> Ejercicio:
@@ -192,11 +191,25 @@ def test_un_ejercicio_a_medias_da_un_informe_incompleto():
 
 def test_reiniciar_devuelve_el_evaluador_al_principio():
     evaluador = EvaluadorEjercicio(ejercicio_de([40, 42]))
-    tocar(evaluador, suena(40), 0.0)
+    instante = 0.0
+    for _ in range(5):
+        _, instante = tocar(evaluador, suena(45), instante)
+    assert evaluador.estado.ayuda_visible is True
+    assert evaluador.estado.ultimo_fallo == "A2"
+
     evaluador.reiniciar()
+
     assert evaluador.estado.indice == 0
     assert evaluador.estado.intentos == 0
+    assert evaluador.estado.ayuda_visible is False
+    assert evaluador.estado.ultimo_fallo is None
     assert evaluador.resultado().notas == ()
+
+    # El estado interno del camino B tambien debe quedar limpio: la misma
+    # nota equivocada que antes del reinicio ya habia quedado registrada como
+    # "ultima nota resuelta" debe poder contar de nuevo como un fallo nuevo.
+    estado, _ = tocar(evaluador, suena(45), 0.0)
+    assert estado.intentos == 1
 
 
 def test_el_estado_se_serializa_para_la_interfaz():
@@ -317,8 +330,157 @@ def test_dos_notas_iguales_seguidas_sin_ataque_no_avanza():
         instante += PASO
 
     # La primera nota si se resuelve (fue el primer cambio de "nada" a "Mi").
+    # La segunda, identica y sin ataque de energia, no se distingue: el
+    # ejercicio se queda pidiendola sin llegar a la tercera nota.
     assert estado.indice == 1
     assert estado.nota_actual.midi == 40
-    # La segunda, identica y sin ataque de energia, no se distingue: el
-    # ejercicio no llega a la tercera nota.
-    assert estado.indice != 2
+
+
+# --- Ronda de correccion 1: regla 3 inalcanzable, instante mal sellado,
+# fallos fantasma del camino A --------------------------------------------
+#
+# La revision encontro que el diseno del camino B, tal como se penso al
+# principio, dejaba tres agujeros: (1) "_ultima_nota_resuelta" no se liberaba
+# nunca salvo al reiniciar, asi que una nota equivocada repetida bloqueaba
+# ambos caminos para siempre y la regla 3 (mostrar ayuda) se volvia
+# inalcanzable; (2) el camino B sellaba el instante en que TERMINABA la
+# racha de estabilidad, no en el que EMPEZABA, corrompiendo la regularidad
+# calculada sobre el informe; (3) el camino A no tenia el mismo filtro que el
+# B contra leer dos veces la misma nota sostenida, asi que un segundo pico de
+# energia sobre una nota ya aceptada podia contarse como un fallo fantasma
+# contra la nota siguiente, o completar dos notas iguales con una sola
+# pulsacion.
+
+
+def test_la_ayuda_por_tiempo_aparece_aunque_los_intentos_no_lleguen_a_cinco():
+    """Respaldo temporal de la regla 3: si ninguno de los dos caminos logra
+    volver a contar un intento (nota equivocada repetida sin ninguna caida de
+    nivel real de por medio), pasados `segundos_para_ayuda` la ayuda aparece
+    igual, con tal de que haya habido al menos un fallo.
+    """
+    evaluador = EvaluadorEjercicio(ejercicio_de([40, 42]), segundos_para_ayuda=1.0)
+    estado, instante = tocar(evaluador, suena(45), 0.0)  # un fallo real
+    assert estado.intentos == 1
+    assert estado.ayuda_visible is False
+
+    # Deja pasar el tiempo sin que se detecte ninguna pulsacion nueva (nivel
+    # constante, sin ataques, y la misma nota ya resuelta bloquea el camino B).
+    for _ in range(80):
+        estado = evaluador.procesar(suena(45), instante)
+        instante += PASO
+
+    assert estado.ayuda_visible is True
+
+
+def test_la_ayuda_por_tiempo_no_aparece_sin_ningun_intento_fallido():
+    """Exigir un fallo evita que la ayuda salte sola mientras el alumno
+    todavia esta leyendo el ejercicio sin haber tocado nada.
+    """
+    evaluador = EvaluadorEjercicio(ejercicio_de([40]), segundos_para_ayuda=0.5)
+    instante = 0.0
+    estado = None
+    for _ in range(60):
+        estado = evaluador.procesar(silencio(), instante)
+        instante += PASO
+    assert estado.ayuda_visible is False
+
+
+def test_camino_b_registra_cuando_empezo_la_racha_no_cuando_termino():
+    """El instante que guarda IntentoNota debe ser el del ataque real (camino
+    A) o el del comienzo de la racha estable (camino B), nunca el momento en
+    que el camino B confirma la racha (unos `cuadros_para_nota_estable - 1`
+    cuadros despues). Si no fuera asi, mezclar ambos caminos en una misma
+    secuencia perfectamente regular ensuciaria `regularidad_ms` con el
+    retraso de confirmacion del camino B.
+
+    Se construye una secuencia con tempo exacto de 0.5 s: la nota A y la nota
+    C se resuelven por el camino B (nivel constante, sin ataque alguno) y la
+    nota B se resuelve por el camino A (ataque de energia real, con cuadros
+    de confianza insuficiente de por medio para que el camino B no se
+    adelante). Los tres instantes registrados deben quedar en 0.5, 1.0 y 1.5
+    exactos, y la regularidad, en cero.
+    """
+    evaluador = EvaluadorEjercicio(ejercicio_de([40, 42, 44]))
+
+    # Nota A (40): pura camino B. Silencio hasta t=0.500, luego cuadros
+    # consecutivos a nivel constante: nunca hay salto de energia.
+    instante = 0.0
+    while instante < 0.500:
+        evaluador.procesar(silencio(), instante)
+        instante += 0.05
+    instante = 0.500
+    for _ in range(6):
+        estado = evaluador.procesar(suena(40, nivel=-20.0), instante)
+        instante += PASO
+    assert estado.indice == 1
+
+    instante = 0.7
+    while instante < 0.999:
+        evaluador.procesar(silencio(), instante)
+        instante += 0.05
+
+    # Nota B (42): pura camino A. Ataque de energia exacto en t=1.000; los
+    # cuadros intermedios traen confianza insuficiente para que el camino B
+    # no acumule una racha propia antes de que el camino A resuelva en 1.060.
+    instante = 1.000
+    evaluador.procesar(suena(42, nivel=-15.0, confianza=0.95), instante)
+    instante += 0.02
+    for _ in range(2):
+        evaluador.procesar(suena(42, nivel=-15.0, confianza=0.3), instante)
+        instante += 0.02
+    instante = 1.060
+    estado = evaluador.procesar(suena(42, nivel=-15.0, confianza=0.95), instante)
+    assert estado.indice == 2
+
+    # Nota C (44): pura camino B otra vez, en t=1.500.
+    instante = 1.2
+    while instante < 1.499:
+        evaluador.procesar(silencio(), instante)
+        instante += 0.05
+    instante = 1.500
+    for _ in range(6):
+        estado = evaluador.procesar(suena(44, nivel=-20.0), instante)
+        instante += PASO
+
+    assert estado.completado is True
+    resultado = evaluador.resultado()
+    instantes = [n.instante for n in resultado.notas]
+    assert instantes == pytest.approx([0.5, 1.0, 1.5])
+    assert resultado.regularidad_ms == pytest.approx(0.0, abs=1e-6)
+
+
+def test_un_segundo_pico_de_energia_sobre_la_nota_aceptada_no_cuenta_como_fallo():
+    """Un hinchado de volumen o un vibrato marcado sobre la nota que ya se
+    acepto puede generar un segundo ataque de energia legitimo (el nivel baja
+    un poco, entra en la referencia del detector, y luego sube mas de 6 dB).
+    Sin ningun cuadro sin nota creible de por medio, ese segundo ataque no
+    debe leerse contra la nota siguiente del ejercicio.
+    """
+    evaluador = EvaluadorEjercicio(ejercicio_de([40, 40]))
+    instante = 0.0
+    nivel = -20.0
+    estado = None
+
+    # Primera pulsacion: del silencio a nivel normal, se resuelve la primera
+    # de las dos notas iguales.
+    for _ in range(6):
+        estado = evaluador.procesar(suena(40, nivel=nivel), instante)
+        instante += PASO
+    assert estado.indice == 1
+
+    # La nota sigue sonando sin silencio real de por medio: el nivel baja
+    # poco a poco (para que la mediana de referencia del detector baje con
+    # el) y luego sube de golpe, como un hinchado de volumen.
+    for _ in range(6):
+        nivel -= 2.0
+        estado = evaluador.procesar(suena(40, nivel=nivel), instante)
+        instante += PASO
+    nivel += 10.0
+    for _ in range(3):
+        estado = evaluador.procesar(suena(40, nivel=nivel), instante)
+        instante += PASO
+
+    # Sigue esperando la segunda nota (identica a la primera): el segundo
+    # pico de energia sobre la nota ya aceptada no la completo de mas.
+    assert estado.indice == 1
+    assert len(evaluador.resultado().notas) == 1
