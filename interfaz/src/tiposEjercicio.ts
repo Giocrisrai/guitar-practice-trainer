@@ -57,7 +57,13 @@ export interface EstadoEjercicio {
   ejercicio: EjercicioServidor | null;
   evaluacion: EvaluacionServidor | null;
   informe: InformeServidor | null;
+  /** Si el metronomo llego a sonar. Sigue siendo true mientras esta pausado. */
   metronomo: boolean;
+  /**
+   * Pausado por falta de senal (spec §5). Va aparte de `metronomo` a proposito:
+   * `metronomo` no cambia de significado al pausarse, la pausa se lee aqui.
+   */
+  metronomo_pausado: boolean;
 }
 
 /** Una familia de ejercicios, tal y como la describe /api/ejercicios/familias. */

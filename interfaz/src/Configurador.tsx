@@ -1,26 +1,85 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
+import { cuerdasElegibles, raicesElegibles } from "./presentacionEjercicio";
+import type { PerfilAfinacion } from "./tipos";
 import type { FamiliaEjercicio } from "./tiposEjercicio";
 
-/** Valores de partida de los parametros comunes, antes de que el usuario los toque. */
-const TEMPO_POR_DEFECTO = 80;
-const TRASTE_MINIMO_POR_DEFECTO = 0;
-const TRASTE_MAXIMO_POR_DEFECTO = 12;
+/**
+ * Direcciones admitidas.
+ *
+ * Es el único catálogo que esta pantalla todavía tiene escrito: el endpoint de
+ * familias publica el NOMBRE del parámetro `direccion` pero no sus valores
+ * admisibles (los tiene `nucleo/ejercicios/generadores/comun.py`). Mientras el
+ * servidor no los publique, esta lista puede quedarse obsoleta sin que nada
+ * avise; está anotado en el informe de esta ola.
+ */
+const DIRECCIONES = ["ascendente", "descendente", "ambas"];
+
+/** De qué se sacan las opciones de un desplegable, cuando no es un campo libre. */
+type Catalogo = "raices" | "cuerdas" | "direcciones";
+
+interface Control {
+  etiqueta: string;
+  /** Si el valor viaja al servidor como número. */
+  numerico: boolean;
+  catalogo?: Catalogo;
+}
+
+/**
+ * Los controles que esta pantalla sabe pintar, por nombre de parámetro.
+ *
+ * La lista de parámetros de cada familia la manda el servidor; esto solo dice
+ * cómo se pinta cada uno. Un parámetro declarado que no esté aquí no se pinta y
+ * no se envía: es mejor que el usuario no lo vea que mandar una clave inventada.
+ * Ningún valor por defecto vive aquí: los valores por defecto son de los
+ * generadores (escala 80 y 0-4, intervalo 70 y 0-7, lectura 60 y 0-12) y se
+ * consiguen NO mandando el parámetro.
+ */
+const CONTROLES: Record<string, Control> = {
+  raiz_midi: { etiqueta: "Raíz", numerico: true, catalogo: "raices" },
+  cuerda: { etiqueta: "Cuerda", numerico: true, catalogo: "cuerdas" },
+  direccion: { etiqueta: "Dirección", numerico: false, catalogo: "direcciones" },
+  tempo: { etiqueta: "Tempo (ppm)", numerico: true },
+  traste_minimo: { etiqueta: "Traste mínimo", numerico: true },
+  traste_maximo: { etiqueta: "Traste máximo", numerico: true },
+  repeticiones: { etiqueta: "Repeticiones", numerico: true },
+};
+
+/**
+ * Bajo qué clave manda esta familia el valor elegido en el desplegable de tipos.
+ *
+ * No se supone que sea `tipo`: es el parámetro declarado por la familia que no
+ * tiene control propio, que para escalas y arpegios es `tipo` y para intervalos
+ * es `intervalo`. Mandar `tipo` a la familia de intervalos era un 500 fijo, y
+ * volvería a serlo en cuanto una familia nueva llame de otra forma a su tipo.
+ */
+function claveDeTipos(familia: FamiliaEjercicio): string | null {
+  if (familia.tipos.length === 0) return null;
+  return familia.parametros.find((nombre) => !(nombre in CONTROLES)) ?? null;
+}
+
+interface Props {
+  /** Perfiles del servidor: de ahí salen las raíces y las cuerdas elegibles. */
+  perfiles: PerfilAfinacion[];
+}
 
 /**
  * Configurador del ejercicio.
  *
- * Las familias y sus tipos salen de `/api/ejercicios/familias`, no de una lista
- * escrita aqui: anadir una escala nueva en el nucleo no debe obligar a tocar
- * esta pantalla.
+ * Las familias, sus tipos y sus PARÁMETROS salen de `/api/ejercicios/familias`,
+ * no de una lista escrita aquí: añadir una escala nueva —o una familia con otros
+ * parámetros— en el núcleo no debe obligar a tocar esta pantalla.
+ *
+ * Solo viajan al servidor los parámetros que el usuario haya cambiado. Los que
+ * no toque se omiten del cuerpo, para que cada generador aplique su propio valor
+ * por defecto: el tempo y los trastes de un ejercicio son una decisión musical
+ * del núcleo, y repetirla aquí la tapaba (era la tercera vez en este proyecto).
  */
-export function Configurador() {
+export function Configurador({ perfiles }: Props) {
   const [familias, setFamilias] = useState<FamiliaEjercicio[]>([]);
   const [clave, setClave] = useState("");
-  const [tipo, setTipo] = useState("");
-  const [tempo, setTempo] = useState(TEMPO_POR_DEFECTO);
-  const [trasteMinimo, setTrasteMinimo] = useState(TRASTE_MINIMO_POR_DEFECTO);
-  const [trasteMaximo, setTrasteMaximo] = useState(TRASTE_MAXIMO_POR_DEFECTO);
+  /** Solo los parámetros que el usuario ha tocado. Vacío = todo por defecto. */
+  const [valores, setValores] = useState<Record<string, string>>({});
   const [conMetronomo, setConMetronomo] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [enviando, setEnviando] = useState(false);
@@ -30,36 +89,62 @@ export function Configurador() {
       .then((r) => r.json())
       .then((datos: FamiliaEjercicio[]) => {
         setFamilias(datos);
-        if (datos.length > 0) {
-          setClave(datos[0].clave);
-          setTipo(datos[0].tipos[0] ?? "");
-        }
+        if (datos.length > 0) setClave(datos[0].clave);
       });
   }, []);
 
   const familia = familias.find((f) => f.clave === clave);
+  const raices = useMemo(() => raicesElegibles(perfiles), [perfiles]);
+  const cuerdas = useMemo(() => cuerdasElegibles(perfiles), [perfiles]);
 
   const elegirFamilia = (nuevaClave: string) => {
     setClave(nuevaClave);
-    const nueva = familias.find((f) => f.clave === nuevaClave);
-    setTipo(nueva?.tipos[0] ?? "");
+    // Los parámetros de la familia anterior no valen para la nueva: arrastrarlos
+    // podría mandar una clave que esta familia no declara.
+    setValores({});
+  };
+
+  const cambiar = (nombre: string, valor: string) => {
+    setValores((anteriores) => {
+      const siguientes = { ...anteriores };
+      // Vaciar un control es volver al valor por defecto del generador, así que
+      // la clave desaparece en vez de viajar vacía.
+      if (valor === "") delete siguientes[nombre];
+      else siguientes[nombre] = valor;
+      return siguientes;
+    });
+  };
+
+  const opcionesDe = (catalogo: Catalogo): { valor: string; texto: string }[] => {
+    if (catalogo === "raices") return raices.map((r) => ({ valor: String(r.midi), texto: r.nombre }));
+    if (catalogo === "cuerdas") return cuerdas.map((n) => ({ valor: String(n), texto: `${n}ª` }));
+    return DIRECCIONES.map((d) => ({ valor: d, texto: d }));
+  };
+
+  /** El cuerpo que viaja: solo claves que esta familia declara y el usuario tocó. */
+  const cuerpoParametros = (elegida: FamiliaEjercicio): Record<string, unknown> => {
+    const parametros: Record<string, unknown> = {};
+    for (const nombre of elegida.parametros) {
+      const valor = valores[nombre];
+      if (valor === undefined || valor === "") continue;
+      parametros[nombre] = CONTROLES[nombre]?.numerico ? Number(valor) : valor;
+    }
+    return parametros;
   };
 
   const empezar = async () => {
+    if (!familia) return;
     setEnviando(true);
     setError(null);
     try {
-      const parametros: Record<string, unknown> = {
-        tempo,
-        traste_minimo: trasteMinimo,
-        traste_maximo: trasteMaximo,
-      };
-      if (familia && familia.tipos.length > 0) parametros.tipo = tipo;
-
       const respuesta = await fetch("/api/ejercicios/iniciar", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ familia: clave, parametros, con_metronomo: conMetronomo }),
+        body: JSON.stringify({
+          familia: clave,
+          parametros: cuerpoParametros(familia),
+          con_metronomo: conMetronomo,
+        }),
       });
       const cuerpo = (await respuesta.json().catch(() => null)) as { detail?: string } | null;
       if (!respuesta.ok) {
@@ -74,6 +159,8 @@ export function Configurador() {
     }
   };
 
+  const claveTipos = familia ? claveDeTipos(familia) : null;
+
   return (
     <div className="configurador">
       <div className="selector">
@@ -86,42 +173,61 @@ export function Configurador() {
           ))}
         </select>
 
-        {familia && familia.tipos.length > 0 && (
-          <>
-            <label htmlFor="tipo">Tipo</label>
-            <select id="tipo" value={tipo} onChange={(evento) => setTipo(evento.target.value)}>
-              {familia.tipos.map((t) => (
-                <option key={t} value={t}>
-                  {t}
-                </option>
-              ))}
-            </select>
-          </>
-        )}
+        {familia &&
+          familia.parametros.map((nombre) => {
+            if (nombre === claveTipos) {
+              return (
+                <div className="control" key={nombre}>
+                  <label htmlFor={`parametro-${nombre}`}>Tipo</label>
+                  <select
+                    id={`parametro-${nombre}`}
+                    value={valores[nombre] ?? ""}
+                    onChange={(evento) => cambiar(nombre, evento.target.value)}
+                  >
+                    <option value="">Por defecto</option>
+                    {familia.tipos.map((t) => (
+                      <option key={t} value={t}>
+                        {t}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              );
+            }
 
-        <label htmlFor="tempo">Tempo (ppm)</label>
-        <input
-          id="tempo"
-          type="number"
-          value={tempo}
-          onChange={(evento) => setTempo(Number(evento.target.value))}
-        />
+            const control = CONTROLES[nombre];
+            if (control === undefined) return null;
 
-        <label htmlFor="traste-minimo">Traste mínimo</label>
-        <input
-          id="traste-minimo"
-          type="number"
-          value={trasteMinimo}
-          onChange={(evento) => setTrasteMinimo(Number(evento.target.value))}
-        />
-
-        <label htmlFor="traste-maximo">Traste máximo</label>
-        <input
-          id="traste-maximo"
-          type="number"
-          value={trasteMaximo}
-          onChange={(evento) => setTrasteMaximo(Number(evento.target.value))}
-        />
+            return (
+              <div className="control" key={nombre}>
+                <label htmlFor={`parametro-${nombre}`}>{control.etiqueta}</label>
+                {control.catalogo === undefined ? (
+                  <input
+                    id={`parametro-${nombre}`}
+                    type="number"
+                    // Sin valor de partida: el hueco significa "el que decida el
+                    // generador", y no hay ningún número de la interfaz que tapar.
+                    placeholder="por defecto"
+                    value={valores[nombre] ?? ""}
+                    onChange={(evento) => cambiar(nombre, evento.target.value)}
+                  />
+                ) : (
+                  <select
+                    id={`parametro-${nombre}`}
+                    value={valores[nombre] ?? ""}
+                    onChange={(evento) => cambiar(nombre, evento.target.value)}
+                  >
+                    <option value="">Por defecto</option>
+                    {opcionesDe(control.catalogo).map((o) => (
+                      <option key={o.valor} value={o.valor}>
+                        {o.texto}
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </div>
+            );
+          })}
 
         <label htmlFor="con-metronomo" className="con-metronomo">
           <input

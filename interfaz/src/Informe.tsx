@@ -1,4 +1,4 @@
-import { calificacion } from "./presentacionEjercicio";
+import { calificacion, textoDesviacion } from "./presentacionEjercicio";
 import type { InformeServidor } from "./tiposEjercicio";
 
 interface Props {
@@ -38,6 +38,22 @@ export function Informe({ informe, onReiniciar }: Props) {
             {dificiles.map((n) => (
               <li key={n.indice}>
                 {n.nombre} — {n.intentos} intentos
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* "En que notas te fuiste" (spec §4.6). Se listan todas y cada una dice su
+          desviacion, sin umbral propio: cuanto es "irse" de afinacion no lo decide
+          esta pantalla. `cents === null` es "no acertada", no un cero afinado. */}
+      {informe.notas.length > 0 && (
+        <div className="desviaciones">
+          <h3>Afinación nota a nota</h3>
+          <ul>
+            {informe.notas.map((n) => (
+              <li key={n.indice} className={n.cents === null ? "no-acertada" : undefined}>
+                {n.nombre} — {textoDesviacion(n.cents)}
               </li>
             ))}
           </ul>

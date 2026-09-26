@@ -90,6 +90,10 @@ body {
 }
 .traste.al-aire { flex: 0 0 14px; min-width: 14px; }
 .traste.activo { background: var(--afinada); }
+/* Capa tenue del mástil: las notas ya acertadas se quedan como rastro, sin
+   competir con la nota que toca ahora (spec §4.6). */
+.traste.tenue { background: color-mix(in srgb, var(--afinada) 28%, transparent); }
+.nota-objetivo { color: var(--tenue); font-size: 13px; margin: 0 0 8px; }
 .numeros { display: flex; gap: 2px; padding-left: 22px; width: max-content; min-width: 100%; }
 .numero { flex: 1 0 20px; min-width: 20px; text-align: right; color: var(--tenue); font-size: 11px; }
 
@@ -113,6 +117,7 @@ body {
   background: var(--panel); color: var(--texto);
   border: 1px solid var(--borde); border-radius: 6px; padding: 6px 10px;
 }
+.configurador .control { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
 .configurador .con-metronomo { display: flex; align-items: center; gap: 6px; }
 .configurador button {
   margin-top: 12px; background: var(--afinada); color: var(--fondo); border: none;
@@ -141,3 +146,12 @@ body {
 .notas-dificiles { margin-top: 16px; }
 .notas-dificiles h3 { font-size: 14px; color: var(--tenue); font-weight: 600; }
 .notas-dificiles ul { margin: 4px 0; padding-left: 20px; }
+.desviaciones { margin-top: 16px; }
+.desviaciones h3 { font-size: 14px; color: var(--tenue); font-weight: 600; }
+.desviaciones ul { margin: 4px 0; padding-left: 20px; font-variant-numeric: tabular-nums; }
+.desviaciones .no-acertada { color: var(--desviada); }
+
+/* Los dos avisos del metrónomo: el permanente (no hubo salida de audio) en tono
+   apagado, y la pausa por falta de señal destacada, porque es reversible. */
+.aviso-metronomo { color: var(--tenue); font-size: 13px; margin: 4px 0; }
+.aviso-metronomo.pausado { color: var(--desviada); }
