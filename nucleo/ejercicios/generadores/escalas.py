@@ -44,7 +44,7 @@ def generar_escala(
     Lanza ValueError si la configuracion es imposible. Detectarlo aqui y no
     mientras se toca es lo que pide la spec: descubrirlo tocando seria tarde.
     """
-    perfil = validar_parametros(perfil_clave, direccion)
+    perfil = validar_parametros(perfil_clave, direccion, tempo)
     if tipo not in ESCALAS:
         disponibles = ", ".join(sorted(ESCALAS))
         raise ValueError(f"La escala '{tipo}' no existe. Opciones: {disponibles}")

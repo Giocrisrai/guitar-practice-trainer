@@ -7,6 +7,7 @@ la spec §5: desconectar el cable es algo que pasa a menudo y obligar a reinicia
 el programa sería un castigo desproporcionado.
 """
 
+import logging
 import threading
 import time
 from typing import Callable
@@ -17,6 +18,8 @@ from nucleo.analisis.pipeline import Analizador, ResultadoAnalisis
 from nucleo.captura import CapturaAudio, buscar_rocksmith, listar_dispositivos_entrada
 from servidor.configuracion import Configuracion, calibrar_umbral
 from servidor.diagnostico import Diagnostico, diagnosticar
+
+_registro = logging.getLogger(__name__)
 
 # Cada cuánto analiza el hilo de trabajo. 512/48000 ≈ 10,67 ms es lo que tarda en
 # llegar un bloque; 21 ms son unos 1024, es decir dos bloques. No hace falta
@@ -80,8 +83,8 @@ class Sesion:
         # ese protege `_ultimo`, y compartirlo obligaría a retenerlo mientras
         # corre el código de un observador ajeno.
         self._candado_observadores = threading.Lock()
-        # Fallos de observador ya anunciados, para no repetir la misma línea en
-        # cada cuadro: el análisis publica a unos 47 Hz.
+        # Fallos de observador ya anunciados (observador + tipo de error), para
+        # no repetir la misma línea en cada cuadro: el análisis publica a 47 Hz.
         self._fallos_observador_anunciados: set[str] = set()
         # Protege el ciclo de vida de la captura: el hilo de trabajo la abre y la
         # cierra, pero `aplicar()` y `detener()` también la tocan desde el hilo
@@ -380,13 +383,20 @@ class Sesion:
         self._anotar_nivel(resultado.nivel_db)
 
     def _anunciar_fallo_observador(self, observador: Callable, error: Exception) -> None:
-        """Imprime el fallo de un observador la primera vez que se ve ese mensaje."""
+        """Anuncia el fallo de un observador la primera vez que se ve.
+
+        Se recuerda por observador y tipo de error, no por mensaje completo: un
+        error cuyo texto cambia en cada cuadro (porque lleva un indice o un
+        valor) llenaria la terminal a 47 lineas por segundo y haria crecer el
+        conjunto sin cota. El mensaje concreto del primero si se imprime, que es
+        el que sirve para diagnosticar.
+        """
         nombre = getattr(observador, "__qualname__", repr(observador))
-        aviso = f"Fallo en el observador {nombre}: {type(error).__name__}: {error}"
-        if aviso in self._fallos_observador_anunciados:
+        clave = f"{nombre}:{type(error).__name__}"
+        if clave in self._fallos_observador_anunciados:
             return
-        self._fallos_observador_anunciados.add(aviso)
-        print(aviso)
+        self._fallos_observador_anunciados.add(clave)
+        _registro.error("Fallo en el observador %s: %s: %s", nombre, type(error).__name__, error)
 
     def _trabajar(self) -> None:
         """Hilo de trabajo: abre, vigila y analiza.

@@ -16,18 +16,37 @@ import numpy as np
 from nucleo.afinaciones import PERFILES, PerfilAfinacion
 from nucleo.ejercicios.teoria import clases_del_patron, notas_alcanzables
 from nucleo.musica import Posicion
+from nucleo.sintesis import TEMPO_MAXIMO_PPM
 
 DIRECCIONES: tuple[str, ...] = ("ascendente", "descendente", "ambas")
 
+# Por debajo de esto un pulso dura mas de tres segundos: ya no es un tempo que
+# se pueda seguir, y un tempo de cero o negativo no es un tempo en absoluto.
+TEMPO_MINIMO_PPM = 20
 
-def validar_parametros(perfil_clave: str, direccion: str) -> PerfilAfinacion:
-    """Comprueba perfil y direccion, y devuelve el perfil resuelto."""
+
+def validar_parametros(
+    perfil_clave: str, direccion: str, tempo: int | float
+) -> PerfilAfinacion:
+    """Comprueba perfil, direccion y tempo, y devuelve el perfil resuelto.
+
+    El tempo se valida aqui, con los otros parametros, y no en el metronomo: la
+    spec §5 pide que una configuracion imposible se rechace explicando el
+    problema. Dejarla pasar producia un ejercicio con tempo 0 o negativo que
+    arrancaba con un "Sin metronomo" silencioso, es decir un fallo disfrazado de
+    degradacion.
+    """
     if perfil_clave not in PERFILES:
         disponibles = ", ".join(sorted(PERFILES))
         raise ValueError(f"El perfil '{perfil_clave}' no existe. Opciones: {disponibles}")
     if direccion not in DIRECCIONES:
         disponibles = ", ".join(DIRECCIONES)
         raise ValueError(f"La direccion '{direccion}' no existe. Opciones: {disponibles}")
+    if not TEMPO_MINIMO_PPM <= tempo <= TEMPO_MAXIMO_PPM:
+        raise ValueError(
+            f"El tempo {tempo} esta fuera de rango: tiene que estar entre "
+            f"{TEMPO_MINIMO_PPM} y {TEMPO_MAXIMO_PPM} pulsos por minuto"
+        )
     return PERFILES[perfil_clave]
 
 
@@ -49,16 +68,21 @@ def elegir_sin_repetir_adyacentes(
     `_ultima_nota_resuelta`, y ninguno de los dos caminos de disparo vuelve a
     contar esa nota (ver la limitacion documentada en `EvaluadorEjercicio`).
 
-    Con una sola candidata la repeticion es inevitable: en ese caso se deja
-    pasar el duplicado en vez de girar para siempre en el rechazo. Es el unico
-    resultado de esta funcion que contiene valores iguales adyacentes, y ocurre
-    solo cuando el mastil ofrece exactamente una nota alcanzable.
+    Con una sola candidata no hay forma de alternar, asi que se devuelve UNA
+    sola vez en lugar de `cuantas` copias: un ejercicio de una nota se puede
+    terminar, y cuatro copias de la misma nota no. Devolver el duplicado seria
+    peor que quedarse corto, porque el alumno se atascaria en la segunda sin que
+    ninguno de los dos caminos de disparo pueda contarla, y sin que el aviso por
+    tiempo llegue a saltar (la cola de la nota ya resuelta impide que se arme la
+    bandera de senal creible). Es el unico caso en que la lista devuelta es mas
+    corta que `cuantas`, y ocurre solo cuando el mastil ofrece exactamente una
+    nota alcanzable: un rango de un traste en una cuerda.
     """
     opciones = [int(valor) for valor in candidatas]
     if not opciones:
         raise ValueError("No hay ninguna candidata que muestrear")
     if len(opciones) == 1:
-        return opciones * cuantas
+        return opciones
 
     elegidas: list[int] = []
     anterior: int | None = None

@@ -38,7 +38,7 @@ def generar_arpegio(
     Lanza ValueError si la configuracion es imposible, igual que el generador de
     escalas: la spec exige detectarlo al generar, no mientras se toca.
     """
-    perfil = validar_parametros(perfil_clave, direccion)
+    perfil = validar_parametros(perfil_clave, direccion, tempo)
     if tipo not in ACORDES:
         disponibles = ", ".join(sorted(ACORDES))
         raise ValueError(f"El acorde '{tipo}' no existe. Opciones: {disponibles}")

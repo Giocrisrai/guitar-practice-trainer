@@ -34,7 +34,7 @@ def generar_lectura(
     adyacentes no se puede terminar, porque el evaluador no distingue la segunda
     pulsacion de la primera (ver `elegir_sin_repetir_adyacentes`).
     """
-    perfil = validar_parametros(perfil_clave, "ascendente")
+    perfil = validar_parametros(perfil_clave, "ascendente", tempo)
     if repeticiones < 1:
         raise ValueError("Las repeticiones deben ser al menos 1")
 

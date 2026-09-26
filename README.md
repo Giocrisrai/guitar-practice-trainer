@@ -79,15 +79,17 @@ notas que costaron más intentos y la desviación mediana en cents.
 
 **Límite conocido del evaluador:** dos pulsaciones seguidas de la misma nota
 solo se distinguen si entre ellas hay un hueco de unos 63 ms en el que el
-detector de tono deja de dar esa nota como creíble. La caída de volumen no
-ayuda: el evaluador compara **nombres de nota**, no niveles, así que por muy
-articulada que sea la segunda pulsación queda descartada mientras el tono siga
-siendo creíble. Cuando la nota pedida cambia el problema no existe, porque la
-altura nueva sí es algo que el evaluador ve. Los ejercicios generados nunca
-piden la misma nota dos veces seguidas, precisamente por esto; si aun así te
-quedas sin poder avanzar, lo que evita que te atasques es el aviso por tiempo,
-que resalta la nota en el mástil a los doce segundos de haber detectado señal
-sin resolver ninguna pulsación.
+detector no dé **ninguna** nota como creíble. La caída de volumen no ayuda: el
+evaluador compara **nombres de nota**, no niveles, así que por muy articulada
+que sea la segunda pulsación queda descartada mientras el tono siga siendo
+creíble. Cuando la nota pedida cambia el problema no existe, porque la altura
+nueva sí es algo que el evaluador ve. Los ejercicios generados no piden nunca la
+misma nota dos veces seguidas, precisamente por esto: cuando el mástil solo
+ofrece una nota alcanzable —un único traste de una única cuerda— el ejercicio
+sale de una sola nota en lugar de repetirla. Si aun así te quedas sin poder
+avanzar, lo que evita que te atasques es el aviso por tiempo: resalta la nota en
+el mástil a los doce segundos de haber detectado señal que pudiera ser un intento
+de la nota pedida. Ese reloj se reinicia al acertar, no al fallar.
 
 ## Verificar el cable
 

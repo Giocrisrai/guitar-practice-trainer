@@ -40,7 +40,7 @@ def generar_intervalo(
     puede terminar: el evaluador no distingue la segunda pulsacion de la primera
     (ver `elegir_sin_repetir_adyacentes`).
     """
-    perfil = validar_parametros(perfil_clave, "ascendente")
+    perfil = validar_parametros(perfil_clave, "ascendente", tempo)
     if intervalo not in INTERVALOS:
         disponibles = ", ".join(sorted(INTERVALOS))
         raise ValueError(f"El intervalo '{intervalo}' no existe. Opciones: {disponibles}")

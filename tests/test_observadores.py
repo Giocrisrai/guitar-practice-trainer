@@ -1,3 +1,4 @@
+import logging
 import time
 
 import numpy as np
@@ -98,10 +99,10 @@ def test_sin_observadores_la_sesion_funciona_igual():
     sesion.detener()
 
 
-def test_el_fallo_de_un_observador_se_registra(capsys):
+def test_el_fallo_de_un_observador_se_registra(caplog):
     """`except Exception: continue` se tragaba el fallo: un error dentro del
     evaluador de ejercicios se veia como "el ejercicio no avanza" sin ninguna
-    pista de por que. Ahora se anuncia, una sola vez por mensaje distinto.
+    pista de por que. Ahora se registra, una sola vez por observador y tipo.
     """
 
     def observador_roto(resultado, instante):
@@ -109,16 +110,39 @@ def test_el_fallo_de_un_observador_se_registra(capsys):
 
     sesion = sesion_falsa()
     sesion.registrar_observador(observador_roto)
-    sesion.iniciar()
-    time.sleep(0.3)
-    sesion.detener()
+    with caplog.at_level(logging.ERROR, logger="servidor.sesion"):
+        sesion.iniciar()
+        time.sleep(0.3)
+        sesion.detener()
 
-    salida = capsys.readouterr().out
-    assert "observador_roto" in salida
-    assert "RuntimeError" in salida
-    assert "el evaluador se atraganto" in salida
+    registrado = caplog.text
+    assert "observador_roto" in registrado
+    assert "RuntimeError" in registrado
+    assert "el evaluador se atraganto" in registrado
     # Una sola linea, aunque el analisis publique a unos 47 Hz.
-    assert salida.count("el evaluador se atraganto") == 1
+    assert registrado.count("el evaluador se atraganto") == 1
+
+
+def test_un_observador_cuyo_error_cambia_de_texto_solo_se_registra_una_vez(caplog):
+    """Se recuerda por observador y tipo de error, no por mensaje: un error que
+    lleva un contador en el texto llenaria la terminal a 47 lineas por segundo y
+    haria crecer sin cota el conjunto de fallos ya anunciados.
+    """
+    cuenta = {"n": 0}
+
+    def observador_parlanchin(resultado, instante):
+        cuenta["n"] += 1
+        raise RuntimeError(f"fallo numero {cuenta['n']}")
+
+    sesion = sesion_falsa()
+    sesion.registrar_observador(observador_parlanchin)
+    with caplog.at_level(logging.ERROR, logger="servidor.sesion"):
+        sesion.iniciar()
+        time.sleep(0.3)
+        sesion.detener()
+
+    assert cuenta["n"] > 1, "el observador tiene que haber fallado varias veces"
+    assert caplog.text.count("observador_parlanchin") == 1
 
 
 def test_suscribirse_y_desuscribirse_mientras_el_analisis_corre_no_revienta():

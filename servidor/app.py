@@ -130,6 +130,25 @@ def crear_app(
         except WebSocketDisconnect:
             return
 
+    @app.get("/api/ejercicios/instrumento")
+    def leer_instrumento() -> dict:
+        """El instrumento con el que se van a generar los ejercicios.
+
+        Es el perfil que el usuario tiene activo en el afinador, porque es el que
+        hereda `SesionPractica.generar`. La interfaz lo necesita para no ofrecer
+        una cuerda que el instrumento no tiene: con el bajo de 4 puesto, ofrecer
+        la 5a o la 6a produce un 400 que el usuario tiene que descifrar.
+        """
+        perfil = PERFILES[app.state.sesion.configuracion.perfil]
+        return {
+            "clave": app.state.sesion.configuracion.perfil,
+            "nombre": perfil.nombre,
+            "trastes": perfil.trastes,
+            "cuerdas": [
+                {"numero": cuerda.numero, "nota": cuerda.nota} for cuerda in perfil.cuerdas
+            ],
+        }
+
     @app.get("/api/ejercicios/familias")
     def leer_familias() -> list[dict]:
         """Familias con sus parametros y valores admitidos.

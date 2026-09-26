@@ -70,6 +70,38 @@ def test_el_modulo_de_ejercicios_aparece_junto_al_afinador(cliente):
     assert "ejercicios" in claves
 
 
+def test_el_instrumento_publicado_es_el_perfil_activo(cliente):
+    """La interfaz no puede ofrecer una cuerda que el instrumento no tiene."""
+    instrumento = cliente.get("/api/ejercicios/instrumento").json()
+    assert instrumento["clave"] == "guitarra_estandar"
+    assert [c["numero"] for c in instrumento["cuerdas"]] == [6, 5, 4, 3, 2, 1]
+    assert instrumento["trastes"] == 22
+
+
+def test_con_el_bajo_activo_el_instrumento_publicado_tiene_cuatro_cuerdas(cliente):
+    assert cliente.put("/api/config", json={"perfil": "bajo_4"}).status_code == 200
+    instrumento = cliente.get("/api/ejercicios/instrumento").json()
+    assert instrumento["clave"] == "bajo_4"
+    assert [c["numero"] for c in instrumento["cuerdas"]] == [4, 3, 2, 1]
+    assert instrumento["trastes"] == 24
+
+
+def test_el_estado_dice_si_el_metronomo_se_pidio(cliente):
+    """"metronomo: False" solo es un aviso cuando se habia pedido."""
+    cliente.post(
+        "/api/ejercicios/iniciar",
+        json={"familia": "lectura", "parametros": {"repeticiones": 2}, "con_metronomo": False},
+    )
+    assert cliente.get("/api/ejercicios/estado").json()["metronomo_pedido"] is False
+    cliente.post("/api/ejercicios/detener")
+    cliente.post(
+        "/api/ejercicios/iniciar",
+        json={"familia": "lectura", "parametros": {"repeticiones": 2}, "con_metronomo": True},
+    )
+    assert cliente.get("/api/ejercicios/estado").json()["metronomo_pedido"] is True
+    cliente.post("/api/ejercicios/detener")
+
+
 def test_las_familias_traen_sus_parametros_y_valores_admitidos(cliente):
     """Asi el configurador se construye solo, sin listas escritas a mano."""
     familias = cliente.get("/api/ejercicios/familias").json()

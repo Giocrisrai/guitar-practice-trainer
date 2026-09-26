@@ -226,6 +226,53 @@ class StreamSalidaBloqueante:
         self._liberar.set()
 
 
+def test_cerrar_espera_a_que_termine_la_escritura_en_curso():
+    """`close()` sobre un stream que otro hilo esta escribiendo es un choque real.
+
+    Un tono de referencia dura hasta 0,6 s dentro de `write()`. Poner
+    `_stream = None` antes de cerrar evita que entren escrituras NUEVAS, pero no
+    saca de `write()` a la que ya esta dentro: hace falta que `cerrar()` tome el
+    mismo candado que serializa las escrituras.
+    """
+    stream = StreamSalidaBloqueante()
+    salida = SalidaAudio(abrir_stream=lambda **kw: stream)
+    salida.abrir()
+
+    escribiendo = threading.Event()
+    terminada = threading.Event()
+
+    def escribir():
+        escribiendo.set()
+        salida.reproducir(tono(440.0, 0.1))
+        terminada.set()
+
+    hilo = threading.Thread(target=escribir, daemon=True)
+    hilo.start()
+    assert escribiendo.wait(1.0)
+    time.sleep(0.05)  # el hilo ya esta dentro de write(), bloqueado
+
+    cerrado = threading.Event()
+
+    def cerrar():
+        salida.cerrar()
+        cerrado.set()
+
+    hilo_cierre = threading.Thread(target=cerrar, daemon=True)
+    hilo_cierre.start()
+    # Mientras la escritura sigue dentro de write(), el cierre no puede haber
+    # llamado a close(): esta esperando el candado.
+    time.sleep(0.05)
+    assert stream.cerrado is False, "close() corrio mientras write() seguia dentro"
+    assert cerrado.is_set() is False
+
+    stream.liberar()
+    assert terminada.wait(1.0)
+    assert cerrado.wait(1.0)
+    assert stream.cerrado is True
+    hilo.join(timeout=1.0)
+    hilo_cierre.join(timeout=1.0)
+
+
 def test_el_hilo_huerfano_no_emite_tras_un_join_vencido():
     """Si write() sigue bloqueada mas alla del timeout del join, detener()
     devuelve el control con el hilo todavia vivo. Cuando por fin se libera, ese
@@ -313,15 +360,20 @@ def test_al_reanudar_no_salen_los_clicks_de_la_pausa_pegados():
     """
     salida = SalidaAudio(abrir_stream=lambda **kw: StreamSalidaFalso())
     salida.abrir()
-    metronomo = Metronomo(tempo=60, salida=salida)  # un pulso por segundo
+    # Tempo rapido a proposito: la pausa tiene que durar VARIOS intervalos para
+    # que el hilo despierte dentro de ella y ejecute de verdad la rama de pausa.
+    # Con tempo 60 el hilo seguia dormido en su espera de ~1 s y la prueba
+    # pasaba sin ejercitar la realineacion que dice comprobar.
+    metronomo = Metronomo(tempo=240, salida=salida)  # un pulso cada 0,25 s
     metronomo.iniciar()
     time.sleep(0.05)
     metronomo.pausar()
     emitidos = metronomo.pulsos_emitidos
-    time.sleep(0.5)  # caben medio pulso; con tempo 60 y 5 s caberian 5
+    time.sleep(1.0)  # caben cuatro pulsos: si los arrastrara, saldrian de golpe
     metronomo.reanudar()
-    time.sleep(0.1)
-    assert metronomo.pulsos_emitidos == emitidos
+    time.sleep(0.05)  # menos de un intervalo: solo cabe el pulso de la reanudacion
+    nuevos = metronomo.pulsos_emitidos - emitidos
+    assert nuevos <= 1, f"{nuevos} pulsos de golpe al reanudar: el reloj arrastra la pausa"
     metronomo.detener()
 
 

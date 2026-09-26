@@ -1,5 +1,6 @@
 """La sesion de practica: une el generador, el evaluador, el metronomo y el tono."""
 
+import threading
 from typing import Callable
 
 from nucleo.ejercicios.evaluacion import EstadoEvaluacion, EvaluadorEjercicio
@@ -35,7 +36,15 @@ class SesionPractica:
         self._reproductor: ReproductorTonos | None = None
         # Indice de la nota cuya referencia ya se pidio, para no repetirla en
         # cada cuadro. -1 es "ninguna todavia": el indice 0 es una nota real.
+        # Lo escriben dos hilos: el de analisis (por cada cuadro, via _observar)
+        # y el del servidor (iniciar y detener), asi que va bajo candado junto
+        # con el reproductor al que acompaña.
         self._indice_referencia = -1
+        self._candado_referencia = threading.Lock()
+        # Si el usuario pidio metronomo al arrancar. Sin esto, "metronomo: False"
+        # no distingue "no hay salida de audio" (hay que avisar) de "no lo quise"
+        # (no hay nada que avisar), y la interfaz no puede decir la verdad.
+        self._metronomo_pedido = False
 
     @property
     def activa(self) -> bool:
@@ -90,15 +99,19 @@ class SesionPractica:
         de intervalos que la spec §4.1 describe como entrenamiento de oido era en
         realidad uno de lectura con la respuesta escrita en la pantalla.
         """
-        if estado.indice == self._indice_referencia:
-            return
-        self._indice_referencia = estado.indice
+        with self._candado_referencia:
+            if estado.indice == self._indice_referencia:
+                return
+            self._indice_referencia = estado.indice
+            # Se lee una sola vez dentro del candado: leerlo para comprobar que
+            # no es None y otra vez para llamar a `pedir` deja hueco a que
+            # `detener()` lo anule en medio, y eso es un AttributeError que el
+            # guardian de observadores solo puede registrar.
+            reproductor = self._reproductor
         nota = estado.nota_actual
-        if nota is None or nota.referencia_midi is None or self._reproductor is None:
+        if nota is None or nota.referencia_midi is None or reproductor is None:
             return
-        self._reproductor.pedir(
-            nota.referencia_midi, self._sesion_audio.configuracion.referencia_a4
-        )
+        reproductor.pedir(nota.referencia_midi, self._sesion_audio.configuracion.referencia_a4)
 
     def _ajustar_metronomo(self) -> None:
         """Pausa el metronomo mientras no hay senal, y lo reanuda al volver.
@@ -129,9 +142,11 @@ class SesionPractica:
         tumbar `iniciar()`.
         """
         self.detener()
+        self._metronomo_pedido = con_metronomo
         self._ejercicio = ejercicio
         self._evaluador = EvaluadorEjercicio(ejercicio)
-        self._indice_referencia = -1
+        with self._candado_referencia:
+            self._indice_referencia = -1
 
         # La salida se abre tambien sin metronomo cuando el ejercicio trae notas
         # de referencia: es lo que hace sonar el entrenamiento de oido. Si el
@@ -182,7 +197,8 @@ class SesionPractica:
         self._salida.cerrar()
         self._evaluador = None
         self._ejercicio = None
-        self._indice_referencia = -1
+        with self._candado_referencia:
+            self._indice_referencia = -1
 
     def estado(self) -> dict:
         """Lo que la interfaz necesita: el ejercicio, el avance y el informe.
@@ -209,4 +225,7 @@ class SesionPractica:
             # "metronomo" para no cambiar el significado de un campo que la
             # interfaz ya lee: el hilo sigue vivo, solo no emite.
             "metronomo_pausado": metronomo is not None and metronomo.pausado,
+            # Si se pidio, para que la interfaz sepa si "metronomo: False" es un
+            # problema del que avisar o simplemente lo que el usuario eligio.
+            "metronomo_pedido": self._metronomo_pedido,
         }

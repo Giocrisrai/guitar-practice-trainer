@@ -174,17 +174,19 @@ class EvaluadorEjercicio:
 
     Limitacion conocida: dos pulsaciones seguidas de la MISMA nota no se
     distinguen si entre ellas no hay un hueco de `cuadros_para_olvidar_nota`
-    cuadros (unos 63 ms al intervalo de analisis habitual) en los que el tono
-    deje de ser creible. El nivel no interviene: el filtro compara NOMBRES DE
-    NOTA, no niveles, asi que por muy marcada que sea la caida de volumen entre
-    las dos pulsaciones el camino A queda filtrado igual, y el camino B no ve
-    ninguna altura nueva. Lo unico que libera el filtro es que el detector de
-    tono deje de dar esa nota como creible durante esos cuadros seguidos; con
-    una nota de guitarra que sigue sonando, eso puede no llegar nunca.
+    cuadros (unos 63 ms al intervalo de analisis habitual) SEGUIDOS sin ninguna
+    nota creible. El nivel no interviene: el filtro compara NOMBRES DE NOTA, no
+    niveles, asi que por muy marcada que sea la caida de volumen entre las dos
+    pulsaciones el camino A queda filtrado igual, y el camino B no ve ninguna
+    altura nueva. Ojo con el detalle: no basta con que deje de darse ESA nota,
+    porque cualquier otra lectura creible reinicia el contador del hueco; con una
+    nota de guitarra que sigue sonando, eso puede no llegar nunca.
 
     Lo que evita que el alumno se quede atascado en ese caso es el disparador
-    temporal de la regla 3: pasados `segundos_para_ayuda` con senal creible, la
-    ayuda aparece aunque no se haya podido contar ni un solo intento. Y los
+    temporal de la regla 3: pasados `segundos_para_ayuda` desde que se detecto
+    senal que pudiera ser un intento de la nota actual -no la cola de la que ya
+    se resolvio-, la ayuda aparece aunque no se haya podido contar ni un solo
+    intento. Ese reloj lo reinicia el acierto, no el fallo. Y los
     generadores de lectura e intervalos ya no producen notas repetidas
     adyacentes (ver `elegir_sin_repetir_adyacentes`), asi que este escenario
     solo aparece con un ejercicio escrito a mano que las contenga.
@@ -479,6 +481,13 @@ class EvaluadorEjercicio:
         # mismo sonido que ya se conto (un segundo pico de energia sobre la
         # nota aceptada, o el resto de la racha que el camino B ya resolvio).
         if resultado.nota == self._ultima_nota_resuelta:
+            # Este ataque pertenece a una pulsacion que ya se conto (un hinchado,
+            # un vibrato o un roce sobre la nota aceptada). Si se quedara puesto,
+            # `_onset_camino_b` lo firmaria como onset de la pulsacion SIGUIENTE
+            # y falsearia `regularidad_ms` hasta en VENTANA_ATAQUE_COMO_ONSET_S.
+            # Ojo: esto NO vale para el descarte por la regla 1 de arriba, donde
+            # el ataque es real y su lectura solo llego antes de tiempo.
+            self._instante_ataque = None
             return False
 
         self._intentos += 1

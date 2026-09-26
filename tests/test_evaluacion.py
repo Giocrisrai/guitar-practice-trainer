@@ -772,6 +772,58 @@ def test_el_camino_b_anota_el_ataque_cuando_el_tono_tarda_en_ser_creible():
     assert intento.instante == pytest.approx(1.000)
 
 
+def test_un_ataque_sobre_la_nota_ya_resuelta_no_firma_el_onset_de_la_siguiente():
+    """Un hinchado o un roce sobre la nota que ya se conto no es un onset.
+
+    La lectura de ese ataque se descarta por el filtro de nombre (es la misma
+    nota que la ultima resuelta). Si su instante se quedara guardado,
+    `_onset_camino_b` lo firmaria como onset de la pulsacion SIGUIENTE mientras
+    siguiera dentro de VENTANA_ATAQUE_COMO_ONSET_S, y el informe diria que esa
+    nota se toco antes de sonar. La diferencia -de hasta 250 ms- es del orden de
+    lo que `regularidad_ms` mide.
+
+    La nota siguiente entra SIN salto de nivel (ligado, o el alumno que pasa de
+    una cuerda a otra sin variar la fuerza), asi que no genera ataque propio y
+    la resuelve el camino B: es justo el caso en el que un instante viejo
+    sobreviviente se usaria.
+    """
+    evaluador = EvaluadorEjercicio(ejercicio_de([40, 45]))
+    instante = 0.0
+    while instante < 0.5:
+        evaluador.procesar(silencio(), instante)
+        instante += PASO
+
+    for _ in range(8):
+        evaluador.procesar(suena(40, nivel=-25.0), instante)
+        instante += PASO
+    assert evaluador.estado.indice == 1
+
+    # Hinchado sobre la misma nota: +20 dB, suficiente para que el detector
+    # marque un ataque, pero la lectura se descarta por el filtro de nombre.
+    for _ in range(4):
+        evaluador.procesar(suena(40, nivel=-5.0), instante)
+        instante += PASO
+    instante_hinchado = instante
+
+    # Hueco de cuadros dudosos (el tono deja de ser creible pero el nivel se
+    # mantiene): libera el filtro de nombre sin provocar ningun ataque nuevo.
+    for _ in range(CUADROS_PARA_OLVIDAR_NOTA):
+        evaluador.procesar(suena(40, nivel=-5.0, confianza=0.3), instante)
+        instante += PASO
+
+    inicio_segunda = instante
+    for _ in range(CUADROS_PARA_NOTA_ESTABLE + 2):
+        evaluador.procesar(suena(45, nivel=-5.0), instante)
+        instante += PASO
+
+    assert evaluador.estado.indice == 2
+    onset = evaluador.resultado().notas[1].instante
+    assert onset >= inicio_segunda - PASO, (
+        f"onset {onset:.3f} anterior a la pulsacion ({inicio_segunda:.3f}): "
+        f"se firmo con el hinchado de {instante_hinchado:.3f}"
+    )
+
+
 def test_la_instantanea_es_coherente_mientras_el_analisis_avanza():
     """El hilo HTTP/WS pide `estado` a 30 Hz mientras el hilo de analisis muta el
     evaluador. Cada instantanea tiene que describir un solo momento: sin candado

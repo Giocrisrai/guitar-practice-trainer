@@ -169,16 +169,17 @@ class SalidaAudio:
     def cerrar(self) -> None:
         """Cierra el stream. Seguro de llamar varias veces.
 
-        Toma la referencia en una variable local y pone `self._stream = None`
-        ANTES de detener y cerrar esa copia local, no despues. Si el orden fuera
-        al reves (detener, cerrar y solo entonces poner None, como antes), un
-        `reproducir()` que entrara justo mientras el stream se esta deteniendo o
-        cerrando lo veria todavia no nulo e intentaria escribir sobre un stream a
-        medio cerrar. Con el orden invertido, cualquier `reproducir()` concurrente
-        ve None de inmediato en cuanto `cerrar()` empieza y devuelve False sin
-        tocar el objeto.
+        Cierra bajo `_candado_escritura`, el mismo que serializa las escrituras.
+        Poner `self._stream = None` antes de cerrar evita que un `reproducir()`
+        POSTERIOR toque el objeto, pero no basta: un tono de referencia dura
+        hasta 0,6 s dentro de `stream.write()`, y sin el candado `cerrar()`
+        llamaria a `stop()` y `close()` sobre el mismo objeto mientras ese hilo
+        sigue escribiendo en el. Con el candado, el cierre espera a que la
+        escritura en curso termine, y cualquier escritura que llegue despues ve
+        None y se retira sin tocar nada.
         """
-        stream, self._stream = self._stream, None
+        with self._candado_escritura:
+            stream, self._stream = self._stream, None
         if stream is None:
             return
         stream.stop()

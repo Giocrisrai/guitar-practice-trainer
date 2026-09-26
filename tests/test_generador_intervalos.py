@@ -78,12 +78,12 @@ def test_nunca_hay_dos_notas_iguales_seguidas():
         assert all(a != b for a, b in zip(referencias, referencias[1:])), f"semilla {semilla}"
 
 
-def test_con_un_solo_par_valido_se_deja_pasar_el_duplicado():
-    """Con una sola referencia posible la repeticion es inevitable: el generador
-    devuelve el ejercicio en vez de girar para siempre en el rechazo.
+def test_con_un_solo_par_valido_el_ejercicio_es_de_una_nota():
+    """Con una sola referencia posible se pide UNA vez, no `repeticiones` veces:
+    repetir la misma nota seguida da un ejercicio que no se puede terminar.
     """
     ejercicio = generar_intervalo(
         intervalo="tercera_mayor", traste_minimo=2, traste_maximo=2, repeticiones=3, semilla=1
     )
-    assert len({n.referencia_midi for n in ejercicio.notas}) == 1
-    assert len(ejercicio.notas) == 3
+    assert len(ejercicio.notas) == 1
+    assert ejercicio.notas[0].referencia_midi is not None

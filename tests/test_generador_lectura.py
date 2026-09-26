@@ -77,11 +77,21 @@ def test_nunca_hay_dos_notas_iguales_seguidas():
         assert all(a != b for a, b in zip(midis, midis[1:])), f"semilla {semilla}"
 
 
-def test_con_una_sola_nota_alcanzable_se_deja_pasar_el_duplicado():
-    """Preferible a colgarse: con un solo traste de una sola cuerda no hay otra
-    nota que elegir, y el generador debe devolver el ejercicio igualmente.
+def test_con_una_sola_nota_alcanzable_el_ejercicio_es_de_una_nota():
+    """Un solo traste de una sola cuerda da un ejercicio de UNA nota, no cuatro
+    copias de la misma: cuatro copias no se pueden terminar, porque el alumno se
+    atasca en la segunda sin que ningun camino de disparo pueda contarla y sin
+    que el aviso por tiempo llegue a saltar.
     """
     ejercicio = generar_lectura(cuerda=6, traste_minimo=5, traste_maximo=5, repeticiones=4, semilla=1)
     midis = [n.midi for n in ejercicio.notas]
-    assert len(set(midis)) == 1
-    assert len(midis) == 4
+    assert midis == [45]
+
+
+@pytest.mark.parametrize("tempo", [0, -5, 400])
+def test_un_tempo_imposible_se_rechaza_en_vez_de_degradar_en_silencio(tempo):
+    """Antes salia un ejercicio con ese tempo y un "Sin metronomo" callado, que
+    es un fallo disfrazado de degradacion. La spec §5 pide explicar el problema.
+    """
+    with pytest.raises(ValueError, match="tempo"):
+        generar_lectura(tempo=tempo)
