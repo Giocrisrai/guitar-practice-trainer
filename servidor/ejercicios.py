@@ -48,12 +48,19 @@ class SesionPractica:
     def generar(self, familia: str, **parametros) -> Ejercicio:
         """Genera un ejercicio de la familia pedida.
 
+        Si nadie pide un perfil de afinacion se usa el que el usuario tiene
+        activo en el afinador: pedir notas de guitarra en afinacion estandar a
+        quien tiene el bajo enchufado, o la guitarra en Drop D, es pedir notas
+        que no estan en su mastil. El perfil viaja igual que los demas
+        parametros, asi que quien quiera otro puede mandarlo.
+
         Los errores de parametros suben tal cual desde el generador: sus mensajes
         ya explican que escala o que perfil no existe.
         """
         if familia not in GENERADORES:
             disponibles = ", ".join(sorted(GENERADORES))
             raise ValueError(f"La familia '{familia}' no existe. Opciones: {disponibles}")
+        parametros.setdefault("perfil_clave", self._sesion_audio.configuracion.perfil)
         return GENERADORES[familia](**parametros)
 
     def _observar(self, resultado, instante: float) -> None:

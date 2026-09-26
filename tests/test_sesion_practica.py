@@ -55,9 +55,9 @@ class StreamSalidaFalso:
         self.cerrado = True
 
 
-def practica() -> SesionPractica:
+def practica(perfil: str = "guitarra_estandar") -> SesionPractica:
     sesion = Sesion(
-        Configuracion(dispositivo=3),
+        Configuracion(dispositivo=3, perfil=perfil),
         crear_captura=lambda **kw: CapturaFalsa(**kw),
         listar=lambda: [CABLE],
     )
@@ -74,6 +74,27 @@ def test_generar_devuelve_un_ejercicio_de_la_familia_pedida():
     ejercicio = sesion.generar("escala", raiz_midi=48, tipo="mayor")
     assert len(ejercicio) > 0
     assert "escala" in ejercicio.clave
+    sesion.detener()
+
+
+def test_el_ejercicio_hereda_el_perfil_activo_del_afinador():
+    """Con el bajo enchufado, las notas pedidas tienen que estar en su mastil.
+
+    El bajo de 4 cuerdas llega hasta E1 (MIDI 28) y no pasa de G3 (MIDI 55) en
+    el traste 24; la guitarra estandar empieza en E2 (MIDI 40). Si el generador
+    ignorase el perfil, pediria notas que el instrumento no tiene.
+    """
+    sesion = practica(perfil="bajo_4")
+    ejercicio = sesion.generar("lectura")
+    assert ejercicio.perfil == "bajo_4"
+    assert all(28 <= nota.midi <= 55 for nota in ejercicio.notas)
+    sesion.detener()
+
+
+def test_quien_pide_un_perfil_concreto_manda_sobre_el_activo():
+    sesion = practica(perfil="bajo_4")
+    ejercicio = sesion.generar("lectura", perfil_clave="guitarra_estandar")
+    assert ejercicio.perfil == "guitarra_estandar"
     sesion.detener()
 
 
