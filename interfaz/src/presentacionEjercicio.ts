@@ -1,7 +1,7 @@
 /** Traducciones de datos a pantalla para los ejercicios. Funciones puras. */
 
-import type { PerfilAfinacion, Posicion } from "./tipos";
-import type { EjercicioServidor, InformeServidor } from "./tiposEjercicio";
+import type { Posicion } from "./tipos";
+import type { EjercicioServidor, InformeServidor, InstrumentoEjercicio } from "./tiposEjercicio";
 
 /**
  * Nombres de las doce clases de nota, en el orden del estándar MIDI.
@@ -30,39 +30,42 @@ export function midiDeNombre(nombre: string): number | null {
 }
 
 /**
- * Raíces que se pueden ofrecer, derivadas de los perfiles del servidor.
+ * Raíces que se pueden ofrecer, derivadas del instrumento ACTIVO.
  *
- * El rango no se escribe aquí: va de la cuerda más grave de cualquier perfil a
- * la más aguda más sus trastes, todo dato que el servidor publica en
- * `/api/perfiles`. Elegir a mano "de C2 a C6" sería inventar un rango musical en
- * la interfaz, que es justo el defecto que este proyecto ya arrastró tres veces.
+ * El rango no se escribe aquí: va de la cuerda más grave del instrumento a la
+ * más aguda más sus trastes, dato que el servidor publica en
+ * `/api/ejercicios/instrumento`. Elegir a mano "de C2 a C6" sería inventar un
+ * rango musical en la interfaz, que es justo el defecto que este proyecto ya
+ * arrastró tres veces.
+ *
+ * Se deriva del instrumento activo, no de todos los perfiles que el servidor
+ * conoce: los ejercicios se generan con el perfil que el usuario tiene puesto
+ * en el afinador, así que ofrecer raíces de OTRO instrumento (por ejemplo la
+ * guitarra, con el bajo enchufado) es ofrecer algo que luego el servidor
+ * rechaza con un 400.
  */
-export function raicesElegibles(perfiles: PerfilAfinacion[]): { midi: number; nombre: string }[] {
+export function raicesElegibles(
+  instrumento: InstrumentoEjercicio | null
+): { midi: number; nombre: string }[] {
+  if (instrumento === null) return [];
   const midis: number[] = [];
-  let trastes = 0;
-  for (const perfil of perfiles) {
-    trastes = Math.max(trastes, perfil.trastes);
-    for (const cuerda of perfil.cuerdas) {
-      const midi = midiDeNombre(cuerda.nota);
-      if (midi !== null) midis.push(midi);
-    }
+  for (const cuerda of instrumento.cuerdas) {
+    const midi = midiDeNombre(cuerda.nota);
+    if (midi !== null) midis.push(midi);
   }
   if (midis.length === 0) return [];
   const desde = Math.min(...midis);
-  const hasta = Math.max(...midis) + trastes;
+  const hasta = Math.max(...midis) + instrumento.trastes;
   return Array.from({ length: hasta - desde + 1 }, (_, i) => ({
     midi: desde + i,
     nombre: nombreDeMidi(desde + i),
   }));
 }
 
-/** Números de cuerda que existen en algún perfil del servidor, de aguda a grave. */
-export function cuerdasElegibles(perfiles: PerfilAfinacion[]): number[] {
-  const numeros = new Set<number>();
-  for (const perfil of perfiles) {
-    for (const cuerda of perfil.cuerdas) numeros.add(cuerda.numero);
-  }
-  return [...numeros].sort((a, b) => a - b);
+/** Números de cuerda que tiene el instrumento activo, de aguda a grave. */
+export function cuerdasElegibles(instrumento: InstrumentoEjercicio | null): number[] {
+  if (instrumento === null) return [];
+  return instrumento.cuerdas.map((cuerda) => cuerda.numero).sort((a, b) => a - b);
 }
 
 /** Fraccion completada del ejercicio, entre 0 y 1. */

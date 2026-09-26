@@ -64,6 +64,12 @@ export interface EstadoEjercicio {
    * `metronomo` no cambia de significado al pausarse, la pausa se lee aqui.
    */
   metronomo_pausado: boolean;
+  /**
+   * Si el usuario pidio metronomo al arrancar. Sin este campo, `metronomo:
+   * false` no distingue "no habia salida de audio" (hay que avisar, spec §5)
+   * de "el usuario lo desmarco" (no hay nada que avisar).
+   */
+  metronomo_pedido: boolean;
 }
 
 /** Una familia de ejercicios, tal y como la describe /api/ejercicios/familias. */
@@ -73,4 +79,22 @@ export interface FamiliaEjercicio {
   descripcion: string;
   tipos: string[];
   parametros: string[];
+}
+
+/** Una cuerda del instrumento activo, tal y como la manda /api/ejercicios/instrumento. */
+export interface CuerdaInstrumento {
+  numero: number;
+  nota: string;
+}
+
+/**
+ * El instrumento con el que se van a generar los ejercicios, tal y como lo
+ * publica /api/ejercicios/instrumento: el perfil de afinacion ACTIVO en el
+ * afinador, no todos los perfiles que el servidor conoce.
+ */
+export interface InstrumentoEjercicio {
+  clave: string;
+  nombre: string;
+  trastes: number;
+  cuerdas: CuerdaInstrumento[];
 }

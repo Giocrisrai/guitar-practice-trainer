@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { cuerdasElegibles, raicesElegibles } from "./presentacionEjercicio";
-import type { PerfilAfinacion } from "./tipos";
-import type { FamiliaEjercicio } from "./tiposEjercicio";
+import type { FamiliaEjercicio, InstrumentoEjercicio } from "./tiposEjercicio";
 
 /**
  * Direcciones admitidas.
@@ -46,21 +45,25 @@ const CONTROLES: Record<string, Control> = {
 };
 
 /**
- * Bajo qué clave manda esta familia el valor elegido en el desplegable de tipos.
+ * Bajo qué clave manda cada familia el valor elegido en el desplegable de tipos.
  *
- * No se supone que sea `tipo`: es el parámetro declarado por la familia que no
- * tiene control propio, que para escalas y arpegios es `tipo` y para intervalos
- * es `intervalo`. Mandar `tipo` a la familia de intervalos era un 500 fijo, y
- * volvería a serlo en cuanto una familia nueva llame de otra forma a su tipo.
+ * `/api/ejercicios/familias` publica el NOMBRE de cada parámetro, pero no su
+ * PAPEL (cuál de ellos hace de "tipo"), así que no hay dato del servidor del
+ * que derivarlo sin adivinar. Antes se adivinaba tomando "el primer parámetro
+ * sin control propio", y eso elegía la clave equivocada en silencio si una
+ * familia llegaba a declarar dos parámetros sin control. Se escribe a mano,
+ * por clave de familia, hasta que el endpoint publique el papel de cada
+ * parámetro además de su nombre; ese día esta tabla se borra.
  */
-function claveDeTipos(familia: FamiliaEjercicio): string | null {
-  if (familia.tipos.length === 0) return null;
-  return familia.parametros.find((nombre) => !(nombre in CONTROLES)) ?? null;
-}
+const CLAVE_DE_TIPOS: Record<string, string> = {
+  escala: "tipo",
+  arpegio: "tipo",
+  intervalo: "intervalo",
+  // "lectura" no tiene tipo: no aparece aquí y claveDeTipos devuelve null.
+};
 
-interface Props {
-  /** Perfiles del servidor: de ahí salen las raíces y las cuerdas elegibles. */
-  perfiles: PerfilAfinacion[];
+function claveDeTipos(familia: FamiliaEjercicio): string | null {
+  return CLAVE_DE_TIPOS[familia.clave] ?? null;
 }
 
 /**
@@ -74,9 +77,16 @@ interface Props {
  * no toque se omiten del cuerpo, para que cada generador aplique su propio valor
  * por defecto: el tempo y los trastes de un ejercicio son una decisión musical
  * del núcleo, y repetirla aquí la tapaba (era la tercera vez en este proyecto).
+ *
+ * Las raíces y las cuerdas elegibles salen de `/api/ejercicios/instrumento`, el
+ * perfil de afinación ACTIVO en el afinador, no de la lista completa de
+ * `/api/perfiles`: los ejercicios se generan con ese perfil, así que ofrecer
+ * cuerdas de otro instrumento (la 5ª o 6ª con el bajo de 4 puesto) es ofrecer
+ * algo que el servidor rechaza con un 400 al pulsar "Empezar".
  */
-export function Configurador({ perfiles }: Props) {
+export function Configurador() {
   const [familias, setFamilias] = useState<FamiliaEjercicio[]>([]);
+  const [instrumento, setInstrumento] = useState<InstrumentoEjercicio | null>(null);
   const [clave, setClave] = useState("");
   /** Solo los parámetros que el usuario ha tocado. Vacío = todo por defecto. */
   const [valores, setValores] = useState<Record<string, string>>({});
@@ -93,9 +103,15 @@ export function Configurador({ perfiles }: Props) {
       });
   }, []);
 
+  useEffect(() => {
+    fetch("/api/ejercicios/instrumento")
+      .then((r) => r.json())
+      .then(setInstrumento);
+  }, []);
+
   const familia = familias.find((f) => f.clave === clave);
-  const raices = useMemo(() => raicesElegibles(perfiles), [perfiles]);
-  const cuerdas = useMemo(() => cuerdasElegibles(perfiles), [perfiles]);
+  const raices = useMemo(() => raicesElegibles(instrumento), [instrumento]);
+  const cuerdas = useMemo(() => cuerdasElegibles(instrumento), [instrumento]);
 
   const elegirFamilia = (nuevaClave: string) => {
     setClave(nuevaClave);

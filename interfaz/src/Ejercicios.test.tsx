@@ -56,12 +56,24 @@ const PERFILES = [
   },
 ];
 
+/** El instrumento ACTIVO que publica /api/ejercicios/instrumento. */
+const INSTRUMENTO = {
+  clave: "guitarra_estandar",
+  nombre: "Guitarra estandar",
+  trastes: 22,
+  cuerdas: [
+    { numero: 6, nota: "E2" },
+    { numero: 1, nota: "E4" },
+  ],
+};
+
 const ESTADO_VACIO = {
   ejercicio: null,
   evaluacion: null,
   informe: null,
   metronomo: false,
   metronomo_pausado: false,
+  metronomo_pedido: false,
 };
 
 class WebSocketFalso {
@@ -146,6 +158,7 @@ function estadoEnCurso(cambios: Partial<EstadoEjercicio> = {}): EstadoEjercicio 
     },
     metronomo: true,
     metronomo_pausado: false,
+    metronomo_pedido: true,
     ...cambios,
   };
 }
@@ -157,6 +170,7 @@ describe("Ejercicios", () => {
     vi.stubGlobal("WebSocket", WebSocketFalso);
     fetchFalso = vi.fn((url: string) => {
       if (url.includes("/api/ejercicios/familias")) return responder(FAMILIAS);
+      if (url.includes("/api/ejercicios/instrumento")) return responder(INSTRUMENTO);
       if (url.includes("/api/perfiles")) return responder(PERFILES);
       if (url.includes("/api/ejercicios/estado")) return responder(ESTADO_VACIO);
       return responder(ESTADO_VACIO);
@@ -183,6 +197,57 @@ describe("Ejercicios", () => {
     await waitFor(() => expect(screen.getByText("Escalas")).toBeTruthy());
     expect(screen.getByText("Lectura del mastil")).toBeTruthy();
     expect(screen.getByText("Intervalos")).toBeTruthy();
+  });
+
+  it("con el bajo activo no ofrece cuerdas ni raices que solo tiene la guitarra", async () => {
+    // El defecto: el Configurador derivaba las opciones de TODOS los perfiles
+    // que el servidor conoce (/api/perfiles), no del que el usuario tiene
+    // activo. Aqui /api/perfiles sigue publicando la guitarra (la necesita el
+    // mastil), pero el instrumento ACTIVO es un bajo de 4 cuerdas: las opciones
+    // deben salir de ese, o "Empezar" termina en un 400 al pedir la 5a/6a
+    // cuerda o una raiz que el bajo no alcanza.
+    const BAJO_4 = {
+      clave: "bajo_4",
+      nombre: "Bajo 4 cuerdas",
+      trastes: 24,
+      cuerdas: [
+        { numero: 4, nota: "E1" },
+        { numero: 3, nota: "A1" },
+        { numero: 2, nota: "D2" },
+        { numero: 1, nota: "G2" },
+      ],
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        if (url.includes("/api/ejercicios/familias")) return responder(FAMILIAS);
+        if (url.includes("/api/ejercicios/instrumento")) return responder(BAJO_4);
+        if (url.includes("/api/perfiles")) return responder(PERFILES);
+        return responder(ESTADO_VACIO);
+      })
+    );
+
+    render(<Ejercicios />);
+    await waitFor(() => expect(screen.getByText("Escalas")).toBeTruthy());
+    await waitFor(() => {
+      const opciones = [...screen.getByLabelText("Raíz").querySelectorAll("option")];
+      expect(opciones.length).toBeGreaterThan(1);
+    });
+
+    const opcionesRaiz = [...screen.getByLabelText("Raíz").querySelectorAll("option")]
+      .map((o) => o.textContent)
+      .filter((texto) => texto !== "Por defecto");
+    // Del E1 del bajo al G2 (su cuerda mas aguda) mas sus 24 trastes: G4. La
+    // guitarra sube hasta D6, que aqui no debe aparecer.
+    expect(opcionesRaiz[opcionesRaiz.length - 1]).toBe("G4");
+    expect(opcionesRaiz).not.toContain("D6");
+
+    fireEvent.change(screen.getByLabelText("Ejercicio"), { target: { value: "lectura" } });
+    await waitFor(() => expect(screen.getByLabelText("Cuerda")).toBeTruthy());
+    const opcionesCuerda = [...screen.getByLabelText("Cuerda").querySelectorAll("option")]
+      .map((o) => o.textContent)
+      .filter((texto) => texto !== "Por defecto");
+    expect(opcionesCuerda).toEqual(["1ª", "2ª", "3ª", "4ª"]);
   });
 
   it("muestra los tipos de la familia elegida, no una lista escrita a mano", async () => {
@@ -260,6 +325,43 @@ describe("Ejercicios", () => {
     expect(ultimoCuerpoEnviado().parametros).not.toHaveProperty("tipo");
   });
 
+  it("la clave del tipo no se adivina: no se confunde con otro parametro sin control propio", async () => {
+    // Si claveDeTipos "adivinara" tomando el primer parametro sin control, esta
+    // familia (con un parametro extra, sin control, declarado ANTES de 'tipo')
+    // elegiria el equivocado en silencio: pintaria "Tipo" sobre
+    // 'extra_sin_control' y el verdadero 'tipo' -que tampoco tiene control
+    // propio- desaparecia sin mandarse nunca.
+    const escalaConParametroExtra = {
+      ...FAMILIAS[0],
+      parametros: ["raiz_midi", "extra_sin_control", "tipo", "traste_minimo"],
+    };
+    const fetchDeEstaPrueba = vi.fn((url: string, _opciones?: RequestInit) => {
+      if (url.includes("/api/ejercicios/familias")) return responder([escalaConParametroExtra]);
+      if (url.includes("/api/ejercicios/instrumento")) return responder(INSTRUMENTO);
+      if (url.includes("/api/perfiles")) return responder(PERFILES);
+      return responder(ESTADO_VACIO);
+    });
+    vi.stubGlobal("fetch", fetchDeEstaPrueba);
+
+    render(<Ejercicios />);
+    await waitFor(() => expect(screen.getByText("Escalas")).toBeTruthy());
+
+    // Solo debe existir un desplegable "Tipo", y debe ser el del parametro 'tipo'.
+    fireEvent.change(screen.getByLabelText("Tipo"), { target: { value: "mayor" } });
+    await pulsarEmpezar();
+
+    await waitFor(() => {
+      const llamadas = fetchDeEstaPrueba.mock.calls.filter(
+        ([url, opciones]) =>
+          String(url).includes("/api/ejercicios/iniciar") &&
+          (opciones as RequestInit | undefined)?.method === "POST"
+      );
+      expect(llamadas.length).toBeGreaterThan(0);
+      const cuerpo = JSON.parse(String((llamadas[llamadas.length - 1][1] as RequestInit).body));
+      expect(cuerpo.parametros).toEqual({ tipo: "mayor" });
+    });
+  });
+
   it("cada familia manda solo claves que ella declara", async () => {
     render(<Ejercicios />);
     await waitFor(() => expect(screen.getByText("Escalas")).toBeTruthy());
@@ -322,12 +424,23 @@ describe("Ejercicios", () => {
     await waitFor(() => expect(screen.getByText(/A2/)).toBeTruthy());
   });
 
-  it("avisa de que el ejercicio va sin metronomo", async () => {
+  it("avisa de que el ejercicio va sin metronomo cuando se pidio y no sono", async () => {
     render(<Ejercicios />);
     await waitFor(() => expect(WebSocketFalso.ultimo).not.toBeNull());
-    WebSocketFalso.ultimo!.enviar(estadoEnCurso({ metronomo: false }));
+    WebSocketFalso.ultimo!.enviar(estadoEnCurso({ metronomo: false, metronomo_pedido: true }));
     await waitFor(() => expect(screen.getByText(/Sin metrónomo/)).toBeTruthy());
     expect(screen.queryByText(/en pausa/)).toBeNull();
+  });
+
+  it("no avisa de falta de metronomo cuando el usuario lo desmarco", async () => {
+    render(<Ejercicios />);
+    await waitFor(() => expect(WebSocketFalso.ultimo).not.toBeNull());
+    // metronomo_pedido: false es "el usuario lo desmarco": no hubo salida de
+    // audio que faltara, asi que no hay nada que avisar (a diferencia del caso
+    // de arriba, donde se pidio y no sono).
+    WebSocketFalso.ultimo!.enviar(estadoEnCurso({ metronomo: false, metronomo_pedido: false }));
+    await waitFor(() => expect(screen.getByText("C3")).toBeTruthy());
+    expect(screen.queryByText(/Sin metrónomo/)).toBeNull();
   });
 
   it("la pausa del metronomo se distingue de no tenerlo", async () => {
@@ -388,6 +501,7 @@ describe("Ejercicios", () => {
       },
       metronomo: false,
       metronomo_pausado: false,
+      metronomo_pedido: false,
     });
 
     await waitFor(() => expect(screen.getByText(/-8.0 cents/)).toBeTruthy());
@@ -401,6 +515,7 @@ describe("Ejercicios", () => {
       "fetch",
       vi.fn((url: string, opciones?: RequestInit) => {
         if (url.includes("/api/ejercicios/familias")) return responder(FAMILIAS);
+        if (url.includes("/api/ejercicios/instrumento")) return responder(INSTRUMENTO);
         if (url.includes("/api/perfiles")) return responder(PERFILES);
         if (opciones?.method === "POST") {
           return responder({ detail: "No cae ninguna nota de la escala" }, false, 400);

@@ -56,8 +56,11 @@ export function Ejercicios() {
 
         {/* Los dos estados del metronomo son distintos y se dicen distintos: no
             haber tenido salida de audio es definitivo para este ejercicio; estar
-            pausado por falta de senal se arregla volviendo a tocar (spec §5). */}
-        {estado !== null && !estado.metronomo && (
+            pausado por falta de senal se arregla volviendo a tocar (spec §5).
+            El aviso solo vale cuando el metronomo se PIDIO y no sono: si el
+            usuario lo desmarco (metronomo_pedido === false) no hubo salida de
+            audio que faltara, y no hay nada que avisar. */}
+        {estado !== null && estado.metronomo_pedido && !estado.metronomo && (
           <p className="aviso-metronomo">
             Sin metrónomo: el ejercicio funciona igual, pero nadie marca el compás.
           </p>
@@ -98,5 +101,5 @@ export function Ejercicios() {
     );
   }
 
-  return <Configurador perfiles={perfiles} />;
+  return <Configurador />;
 }

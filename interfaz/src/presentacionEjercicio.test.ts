@@ -99,31 +99,59 @@ describe("nombres de nota", () => {
 });
 
 describe("raicesElegibles y cuerdasElegibles", () => {
-  const PERFILES = [
-    {
-      clave: "guitarra_estandar",
-      nombre: "Guitarra estandar",
-      trastes: 22,
-      cuerdas: [
-        { numero: 6, nota: "E2", frecuencia: 82.41 },
-        { numero: 1, nota: "E4", frecuencia: 329.63 },
-      ],
-    },
-  ];
+  const GUITARRA = {
+    clave: "guitarra_estandar",
+    nombre: "Guitarra estandar",
+    trastes: 22,
+    cuerdas: [
+      { numero: 6, nota: "E2" },
+      { numero: 1, nota: "E4" },
+    ],
+  };
 
-  it("el rango de raices sale del perfil, no de una constante", () => {
-    const raices = raicesElegibles(PERFILES);
+  // El bajo de 4 cuerdas: menos cuerdas y otro rango que la guitarra. Ningun
+  // otro perfil que el servidor conozca debe filtrarse en estos calculos.
+  const BAJO_4 = {
+    clave: "bajo_4",
+    nombre: "Bajo 4 cuerdas",
+    trastes: 24,
+    cuerdas: [
+      { numero: 4, nota: "E1" },
+      { numero: 3, nota: "A1" },
+      { numero: 2, nota: "D2" },
+      { numero: 1, nota: "G2" },
+    ],
+  };
+
+  it("el rango de raices sale del instrumento activo, no de una constante", () => {
+    const raices = raicesElegibles(GUITARRA);
     // De la cuerda mas grave (E2 = 40) a la mas aguda mas sus trastes (64 + 22).
     expect(raices[0]).toEqual({ midi: 40, nombre: "E2" });
     expect(raices[raices.length - 1].midi).toBe(86);
   });
 
-  it("sin perfiles no se ofrece ninguna raiz inventada", () => {
-    expect(raicesElegibles([])).toEqual([]);
+  it("sin instrumento no se ofrece ninguna raiz inventada", () => {
+    expect(raicesElegibles(null)).toEqual([]);
   });
 
-  it("las cuerdas elegibles son las que el perfil tiene", () => {
-    expect(cuerdasElegibles(PERFILES)).toEqual([1, 6]);
+  it("las cuerdas elegibles son las del instrumento activo", () => {
+    expect(cuerdasElegibles(GUITARRA)).toEqual([1, 6]);
+  });
+
+  it("con el bajo activo no se ofrecen la 5a ni la 6a cuerda de la guitarra", () => {
+    // Este es el defecto: antes se derivaba de TODOS los perfiles del
+    // servidor, asi que con el bajo puesto la interfaz seguia ofreciendo
+    // cuerdas y raices de la guitarra, que el bajo no tiene.
+    expect(cuerdasElegibles(BAJO_4)).toEqual([1, 2, 3, 4]);
+    const raices = raicesElegibles(BAJO_4);
+    // De la cuerda mas grave del bajo (E1 = 28) a la mas aguda mas sus trastes
+    // (43 + 24 = 67), nunca hasta E4 (64) de la guitarra.
+    expect(raices[0]).toEqual({ midi: 28, nombre: "E1" });
+    expect(raices[raices.length - 1].midi).toBe(67);
+  });
+
+  it("sin cuerdas en el instrumento no se ofrece ninguna raiz inventada", () => {
+    expect(raicesElegibles({ ...GUITARRA, cuerdas: [] })).toEqual([]);
   });
 });
 
