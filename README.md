@@ -32,11 +32,11 @@ dependencias de ejecución y el proyecto en modo editable, según lo fijado en
 uv run guitarra
 ```
 
-Abre `http://127.0.0.1:8000` en el navegador.
+Abre `http://127.0.0.1:8420` en el navegador.
 
 Opciones del comando:
 
-- `--puerto`: cambia el puerto en el que escucha el servidor (por defecto 8000).
+- `--puerto`: cambia el puerto en el que escucha el servidor (por defecto 8420).
   Ejemplo: `uv run guitarra --puerto 8080`.
 - `--sin-navegador`: levanta el servidor sin abrir el navegador automáticamente.
 

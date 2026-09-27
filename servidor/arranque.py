@@ -17,7 +17,11 @@ from servidor.sesion import Sesion
 
 RUTA_INTERFAZ = Path(__file__).resolve().parent.parent / "interfaz" / "dist"
 
-PUERTO_POR_DEFECTO = 8000
+# 8000 es el puerto por defecto de medio mundo (contenedores, otros proyectos),
+# y chocar con uno ajeno da un sintoma desconcertante: el navegador abre en 8000 y
+# muestra OTRA aplicacion, porque quien escucha en 127.0.0.1 gana sobre quien
+# escucha en *. 8420 no es el puerto por defecto de nada conocido.
+PUERTO_POR_DEFECTO = 8420
 
 
 def _esperar_al_servidor(puerto: int, limite_espera: float = 15.0) -> bool:
