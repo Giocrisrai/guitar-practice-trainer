@@ -10,6 +10,7 @@ el programa sería un castigo desproporcionado.
 import logging
 import threading
 import time
+from dataclasses import replace
 from typing import Callable
 
 from nucleo.afinaciones import PERFILES
@@ -198,17 +199,15 @@ class Sesion:
         dispositivos = self._listar()
         rocksmith = buscar_rocksmith(dispositivos)
         cable = rocksmith
+        sustituido = False
         if self.configuracion.dispositivo is not None:
-            elegido = next(
-                (d for d in dispositivos if d.indice == self.configuracion.dispositivo), None
-            )
-            if elegido is None:
-                # El dispositivo elegido a mano ya no está: decirlo, no sustituirlo
-                # en silencio por el Rocksmith.
+            elegido = self._elegido(dispositivos)
+            if elegido is None and rocksmith is None:
+                # Ni lo elegido ni el cable: no hay nada que abrir.
                 return Diagnostico(
                     estado="sin_dispositivo",
                     mensaje=(
-                        f"El dispositivo elegido (índice {self.configuracion.dispositivo}) "
+                        f"El dispositivo elegido ({self.configuracion.dispositivo}) "
                         "ya no está disponible."
                     ),
                     accion=(
@@ -217,7 +216,13 @@ class Sesion:
                     ),
                     dispositivos=dispositivos,
                 )
-            cable = elegido
+            # Si lo elegido no está pero el cable sí, se sigue adelante con el
+            # cable. NO se devuelve aquí un "ok" propio: eso diría que todo va
+            # bien sin haber comprobado que la captura está viva, que es el fallo
+            # que la etapa 1 tuvo que corregir. El camino normal de abajo mira
+            # `self.activa` antes de decir nada.
+            cable = elegido if elegido is not None else rocksmith
+            sustituido = elegido is None
 
         base = diagnosticar(
             dispositivos,
@@ -226,6 +231,15 @@ class Sesion:
             self.configuracion.umbral_ruido_dbfs,
             rocksmith,
         )
+        if sustituido:
+            # Usar otro dispositivo que el elegido no se hace en silencio.
+            base = replace(
+                base,
+                mensaje=(
+                    f"El dispositivo elegido ({self.configuracion.dispositivo}) no está; "
+                    f"se usa {cable.nombre}. {base.mensaje}"
+                ),
+            )
         if base.estado in ("sin_permiso", "sin_dispositivo"):
             return base
         if not self.activa:
@@ -263,18 +277,34 @@ class Sesion:
             nombre_detector=configuracion.detector,
         )
 
+    def _elegido(self, dispositivos: list):
+        """El dispositivo que el usuario eligió a mano, si sigue estando.
+
+        Se busca por NOMBRE. macOS reasigna los índices cada vez que se enchufa o
+        desenchufa algo, de modo que el índice guardado ayer puede ser hoy el
+        micrófono del portátil, o no existir: eso último es lo que dejaba el
+        afinador diciendo "reconéctalo" con el cable enchufado delante.
+        """
+        nombre = self.configuracion.dispositivo
+        if nombre is None:
+            return None
+        return next((d for d in dispositivos if d.nombre == nombre), None)
+
     def _indice_objetivo(self, dispositivos: list) -> int | None:
         """Índice que hay que abrir, o None si no hay ninguno utilizable.
 
-        Respeta la elección del usuario; si no eligió nada, busca el Rocksmith por
-        nombre. Nunca la entrada por defecto del sistema: en este equipo sería el
-        micrófono del portátil.
+        Por orden: lo que el usuario eligió a mano mientras siga estando, y si no
+        está -o no eligió nada- el Rocksmith buscado por nombre. Nunca la entrada
+        por defecto del sistema: en este equipo sería el micrófono del portátil.
+
+        Caer al cable cuando lo elegido desaparece es deliberado: el caso normal
+        es que el usuario no haya elegido nada, y el caso raro -desenchufar la
+        interfaz elegida- no debe dejarle sin afinador teniendo el cable ahí. El
+        diagnóstico lo dice, no lo sustituye en silencio.
         """
-        if self.configuracion.dispositivo is not None:
-            elegido = next(
-                (d for d in dispositivos if d.indice == self.configuracion.dispositivo), None
-            )
-            return None if elegido is None else elegido.indice
+        elegido = self._elegido(dispositivos)
+        if elegido is not None:
+            return elegido.indice
         cable = buscar_rocksmith(dispositivos)
         return None if cable is None else cable.indice
 

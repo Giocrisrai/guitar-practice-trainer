@@ -35,10 +35,12 @@ async function guardarConfig(datos: Partial<Configuracion>): Promise<string | nu
   if (!respuesta.ok) {
     throw new Error(cuerpo?.detail ?? `El servidor respondio ${respuesta.status}`);
   }
-  const diagnostico = cuerpo?.diagnostico;
-  if (typeof diagnostico?.estado === "string" && diagnostico.estado !== "ok") {
-    return `${diagnostico.mensaje} ${diagnostico.accion ?? ""}`.trim();
-  }
+  // El diagnostico que viene con la respuesta NO se copia aqui. Este panel solo
+  // muestra errores de su propia accion (un PUT rechazado, la red caida); el
+  // estado del dispositivo lo pinta la barra de arriba, que lo vuelve a pedir
+  // cada tres segundos. Copiarlo dejaba un mensaje congelado del momento del
+  // guardado que seguia diciendo "el dispositivo elegido no esta disponible"
+  // mucho despues de que el cable estuviera funcionando.
   return null;
 }
 
@@ -49,7 +51,7 @@ export function Afinador() {
   const [clavePerfil, setClavePerfil] = useState("guitarra_estandar");
   const [errorPerfil, setErrorPerfil] = useState<string | null>(null);
   const [dispositivos, setDispositivos] = useState<DispositivoEntrada[]>([]);
-  const [dispositivo, setDispositivo] = useState<number | null>(null);
+  const [dispositivo, setDispositivo] = useState<string | null>(null);
   const [errorDispositivo, setErrorDispositivo] = useState<string | null>(null);
   const [umbral, setUmbral] = useState<number | null>(null);
   const [calibrando, setCalibrando] = useState(false);
@@ -86,11 +88,14 @@ export function Afinador() {
 
   const cambiarDispositivo = async (valor: string) => {
     const anterior = dispositivo;
-    const indice = Number(valor);
-    setDispositivo(indice);
+    // "" es la opcion automatica: el servidor la guarda como null y busca el
+    // cable por nombre. Se manda el NOMBRE y no el indice porque macOS renumera
+    // las entradas al enchufar o desenchufar cualquier cosa.
+    const elegido = valor === "" ? null : valor;
+    setDispositivo(elegido);
     setErrorDispositivo(null);
     try {
-      setErrorDispositivo(await guardarConfig({ dispositivo: indice }));
+      setErrorDispositivo(await guardarConfig({ dispositivo: elegido }));
     } catch (error) {
       // Mismo criterio que con la afinación: si el servidor no lo aplicó, el
       // selector no debe mostrarlo como aplicado.
@@ -119,13 +124,13 @@ export function Afinador() {
       const antes = umbral;
       // La spec §4.2 pide que la calibración guarde el valor: medirlo y no
       // guardarlo deja al usuario con un número que no sirve de nada.
-      const aviso = await guardarConfig({ umbral_ruido_dbfs: umbral_sugerido });
+      await guardarConfig({ umbral_ruido_dbfs: umbral_sugerido });
       setUmbral(umbral_sugerido);
       const cambio =
         antes === null
           ? `Umbral guardado: ${umbral_sugerido.toFixed(1)} dBFS.`
           : `Umbral: ${antes.toFixed(1)} → ${umbral_sugerido.toFixed(1)} dBFS (guardado).`;
-      setMensajeCalibracion(aviso ? `${cambio} ${aviso}` : cambio);
+      setMensajeCalibracion(cambio);
     } catch (error) {
       setMensajeCalibracion(
         error instanceof Error ? error.message : "No se pudo calibrar"
@@ -160,9 +165,9 @@ export function Afinador() {
           value={dispositivo ?? ""}
           onChange={(evento) => cambiarDispositivo(evento.target.value)}
         >
-          {dispositivo === null && <option value="">Elige un dispositivo</option>}
+          <option value="">Automático (busca el cable)</option>
           {dispositivos.map((opcion) => (
-            <option key={opcion.indice} value={opcion.indice}>
+            <option key={opcion.indice} value={opcion.nombre}>
               {opcion.nombre}
             </option>
           ))}

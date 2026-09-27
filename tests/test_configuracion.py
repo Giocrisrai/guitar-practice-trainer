@@ -46,7 +46,7 @@ def test_un_umbral_de_ruido_fuera_de_rango_se_rechaza():
 
 def test_guardar_y_cargar_conserva_todo(tmp_path):
     ruta = tmp_path / "config.json"
-    original = Configuracion(dispositivo=3, perfil="bajo_5", ganancia=2.5)
+    original = Configuracion(dispositivo="Rocksmith USB Guitar Adapter", perfil="bajo_5", ganancia=2.5)
     guardar(original, ruta)
     assert cargar(ruta) == original
 

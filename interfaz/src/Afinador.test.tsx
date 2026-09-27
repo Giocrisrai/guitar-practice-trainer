@@ -49,7 +49,7 @@ const DISPOSITIVOS: DispositivoEntrada[] = [
 ];
 
 const CONFIG: Configuracion = {
-  dispositivo: 0,
+  dispositivo: "MacBook Pro Microphone",
   perfil: "guitarra_estandar",
   ganancia: 1,
   umbral_ruido_dbfs: -60,
@@ -176,16 +176,37 @@ describe("Afinador - selector de dispositivo", () => {
     render(<Afinador />);
 
     const selector = (await screen.findByLabelText("Dispositivo")) as HTMLSelectElement;
-    await waitFor(() => expect(selector.value).toBe("0"));
+    await waitFor(() => expect(selector.value).toBe("MacBook Pro Microphone"));
     expect(screen.getByText("Rocksmith USB Guitar Adapter")).toBeTruthy();
 
-    fireEvent.change(selector, { target: { value: "3" } });
+    fireEvent.change(selector, { target: { value: "Rocksmith USB Guitar Adapter" } });
 
-    await waitFor(() => expect(selector.value).toBe("3"));
+    await waitFor(() => expect(selector.value).toBe("Rocksmith USB Guitar Adapter"));
     const llamada = fetchFalso.mock.calls.find(
       ([url, opciones]) => url === "/api/config" && opciones?.method === "PUT"
     );
-    expect(JSON.parse(String(llamada?.[1]?.body))).toEqual({ dispositivo: 3 });
+    // Por NOMBRE, nunca por indice: macOS los renumera al enchufar o desenchufar.
+    expect(JSON.parse(String(llamada?.[1]?.body))).toEqual({
+      dispositivo: "Rocksmith USB Guitar Adapter",
+    });
+  });
+
+  it("la opcion automatica guarda null para que el servidor busque el cable", async () => {
+    const fetchFalso = crearFetchFalso(putCorrecto);
+    vi.stubGlobal("fetch", fetchFalso);
+
+    render(<Afinador />);
+
+    const selector = (await screen.findByLabelText("Dispositivo")) as HTMLSelectElement;
+    await waitFor(() => expect(selector.value).toBe("MacBook Pro Microphone"));
+
+    fireEvent.change(selector, { target: { value: "" } });
+
+    await waitFor(() => expect(selector.value).toBe(""));
+    const llamada = fetchFalso.mock.calls.find(
+      ([url, opciones]) => url === "/api/config" && opciones?.method === "PUT"
+    );
+    expect(JSON.parse(String(llamada?.[1]?.body))).toEqual({ dispositivo: null });
   });
 
   it("revierte y muestra el error cuando el PUT del dispositivo falla", async () => {
@@ -201,17 +222,20 @@ describe("Afinador - selector de dispositivo", () => {
     render(<Afinador />);
 
     const selector = (await screen.findByLabelText("Dispositivo")) as HTMLSelectElement;
-    await waitFor(() => expect(selector.value).toBe("0"));
+    await waitFor(() => expect(selector.value).toBe("MacBook Pro Microphone"));
 
-    fireEvent.change(selector, { target: { value: "3" } });
+    fireEvent.change(selector, { target: { value: "Rocksmith USB Guitar Adapter" } });
 
-    await waitFor(() => expect(selector.value).toBe("0"));
+    await waitFor(() => expect(selector.value).toBe("MacBook Pro Microphone"));
     expect(await screen.findByText("dispositivo desconocido")).toBeTruthy();
   });
 
-  it("avisa cuando el PUT se aplica pero el diagnóstico no es ok", async () => {
-    // El servidor adjunta el diagnóstico para que un dispositivo que no se pudo
-    // abrir llegue al usuario en vez de perderse en un 200 llano.
+  it("no congela el diagnóstico del momento del guardado", async () => {
+    // El diagnóstico viaja con la respuesta del PUT, pero este panel no lo copia:
+    // lo pinta la barra de estado, que lo vuelve a pedir cada tres segundos.
+    // Copiarlo aquí dejaba un mensaje congelado -"el dispositivo elegido (índice
+    // 0) ya no está disponible"- que seguía en pantalla con el cable ya
+    // funcionando, y que fue justo lo que confundió al usuario.
     const fetchFalso = crearFetchFalso(() =>
       Promise.resolve({
         ok: true,
@@ -232,13 +256,12 @@ describe("Afinador - selector de dispositivo", () => {
     render(<Afinador />);
 
     const selector = (await screen.findByLabelText("Dispositivo")) as HTMLSelectElement;
-    await waitFor(() => expect(selector.value).toBe("0"));
+    await waitFor(() => expect(selector.value).toBe("MacBook Pro Microphone"));
 
-    fireEvent.change(selector, { target: { value: "3" } });
+    fireEvent.change(selector, { target: { value: "Rocksmith USB Guitar Adapter" } });
 
-    expect(
-      await screen.findByText("No se pudo abrir el dispositivo. Reconecta el cable.")
-    ).toBeTruthy();
+    await waitFor(() => expect(selector.value).toBe("Rocksmith USB Guitar Adapter"));
+    expect(screen.queryByText(/No se pudo abrir el dispositivo/)).toBeNull();
   });
 });
 

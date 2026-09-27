@@ -58,7 +58,7 @@ export interface Diagnostico {
 
 /** Ajustes que el usuario elige y que el servidor persiste. */
 export interface Configuracion {
-  dispositivo: number | null;
+  dispositivo: string | null;
   perfil: string;
   ganancia: number;
   umbral_ruido_dbfs: number;

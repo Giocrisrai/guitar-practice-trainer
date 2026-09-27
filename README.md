@@ -40,11 +40,28 @@ Opciones del comando:
   Ejemplo: `uv run guitarra --puerto 8080`.
 - `--sin-navegador`: levanta el servidor sin abrir el navegador automáticamente.
 
-Si con el cable conectado el afinador avisa con el estado `otro_dispositivo`, es
-que el sistema está capturando otra entrada de audio (por ejemplo el micrófono
-del portátil) en vez del cable Rocksmith, aunque este esté enchufado. Elige el
-cable en el selector **Dispositivo** de la pantalla del afinador, junto al de
-afinación; la elección se guarda y se reutiliza en el siguiente arranque.
+### El dispositivo se detecta solo
+
+El selector **Dispositivo** viene en **Automático**: el cable Rocksmith se busca
+por su nombre en cada intento de apertura, que ocurre cada pocos segundos. Eso
+significa que puedes enchufar el cable con el servidor ya abierto y el afinador
+lo recogerá sin que toques nada, y que desenchufarlo y volver a enchufarlo
+funciona igual aunque macOS le cambie el número de entrada, cosa que hace a
+menudo.
+
+Si eliges un dispositivo concreto, se guarda **por su nombre** y se respeta
+mientras siga conectado. Guardarlo por índice, como se hacía antes, dejaba el
+afinador diciendo «reconéctalo» con el cable enchufado delante en cuanto macOS
+renumeraba las entradas. Si el que elegiste desaparece y el cable está presente,
+se usa el cable y el aviso de arriba lo dice: sustituirlo en silencio sería peor.
+
+Si el cable está conectado y aun así no captura, mira el mensaje de la barra
+superior. `otro_dispositivo` significa que se está capturando otra entrada;
+elige el cable en el selector. Un error del sistema al abrirlo
+(`PaErrorCode -9986` y parecidos) casi siempre es el permiso de micrófono sin
+conceder —**Ajustes del Sistema → Privacidad y seguridad → Micrófono**, para la
+aplicación desde la que lanzaste el servidor, y reinicia después— o bien otra
+aplicación que tiene el cable tomado.
 
 Si desconectas el cable mientras tocas, el afinador pasa a silencio y vuelve a
 abrirlo solo en cuanto lo enchufas de nuevo: no hace falta reiniciar nada.

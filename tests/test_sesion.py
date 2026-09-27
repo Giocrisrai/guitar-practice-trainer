@@ -129,7 +129,7 @@ def esperar_resultado(sesion, intentos: int = 100):
 
 def test_la_sesion_analiza_en_segundo_plano():
     sesion = Sesion(
-        Configuracion(dispositivo=3),
+        Configuracion(dispositivo=NOMBRE_ROCKSMITH),
         crear_captura=lambda **kw: CapturaFalsa(**kw),
         listar=lambda: [MICROFONO, CABLE],
     )
@@ -170,12 +170,12 @@ def test_sin_dispositivo_elegido_se_usa_el_rocksmith():
 
 def test_cambiar_de_perfil_reinicia_el_analisis():
     sesion = Sesion(
-        Configuracion(dispositivo=3),
+        Configuracion(dispositivo=NOMBRE_ROCKSMITH),
         crear_captura=lambda **kw: CapturaFalsa(frecuencia=30.87, **kw),
         listar=lambda: [CABLE],
     )
     sesion.iniciar()
-    sesion.aplicar(Configuracion(dispositivo=3, perfil="bajo_5"))
+    sesion.aplicar(Configuracion(dispositivo=NOMBRE_ROCKSMITH, perfil="bajo_5"))
     resultado = esperar_resultado(sesion)
     assert resultado.nota == "B0"
     sesion.detener()
@@ -183,7 +183,7 @@ def test_cambiar_de_perfil_reinicia_el_analisis():
 
 def test_la_calibracion_devuelve_un_umbral_sobre_el_ruido():
     sesion = Sesion(
-        Configuracion(dispositivo=3),
+        Configuracion(dispositivo=NOMBRE_ROCKSMITH),
         crear_captura=lambda **kw: CapturaFalsa(amplitud=0.0002, **kw),
         listar=lambda: [CABLE],
     )
@@ -193,12 +193,33 @@ def test_la_calibracion_devuelve_un_umbral_sobre_el_ruido():
     sesion.detener()
 
 
-def test_dispositivo_elegido_que_desaparecio_no_cae_de_vuelta_al_rocksmith():
-    """Si el índice elegido ya no está en la lista, hay que decirlo, no sustituirlo."""
+def test_si_lo_elegido_desaparece_se_usa_el_cable_y_se_dice():
+    """Antes esto se quedaba en "sin_dispositivo" con el cable enchufado delante.
+
+    Quedarse parado era defendible mientras el dispositivo se guardaba por
+    indice, porque un indice que cambia no dice nada; ahora que se guarda por
+    nombre, que lo elegido no este significa que de verdad no esta, y dejar al
+    usuario sin afinador teniendo el cable ahi no ayuda a nadie. Se usa el cable,
+    pero el diagnostico lo dice: sustituir en silencio seria peor.
+    """
     sesion = Sesion(
-        Configuracion(dispositivo=99),
+        Configuracion(dispositivo="Una interfaz que ya no esta"),
         crear_captura=lambda **kw: CapturaFalsa(**kw),
         listar=lambda: [MICROFONO, CABLE],
+    )
+    diagnostico = sesion.iniciar()
+    assert diagnostico.estado == "ok"
+    assert sesion.activa is True
+    assert "no está" in diagnostico.mensaje
+    assert NOMBRE_ROCKSMITH in diagnostico.mensaje
+    sesion.detener()
+
+
+def test_sin_cable_ni_dispositivo_elegido_se_dice_que_no_hay_nada():
+    sesion = Sesion(
+        Configuracion(dispositivo="Una interfaz que ya no esta"),
+        crear_captura=lambda **kw: CapturaFalsa(**kw),
+        listar=lambda: [MICROFONO],
     )
     diagnostico = sesion.iniciar()
     assert diagnostico.estado == "sin_dispositivo"
@@ -208,7 +229,7 @@ def test_dispositivo_elegido_que_desaparecio_no_cae_de_vuelta_al_rocksmith():
 
 def test_detener_dos_veces_no_falla():
     sesion = Sesion(
-        Configuracion(dispositivo=3),
+        Configuracion(dispositivo=NOMBRE_ROCKSMITH),
         crear_captura=lambda **kw: CapturaFalsa(**kw),
         listar=lambda: [CABLE],
     )
@@ -220,7 +241,7 @@ def test_detener_dos_veces_no_falla():
 def test_calibrar_no_revienta_si_detener_corre_en_paralelo():
     """detener() puede poner self._captura a None a mitad de la calibración."""
     sesion = Sesion(
-        Configuracion(dispositivo=3),
+        Configuracion(dispositivo=NOMBRE_ROCKSMITH),
         crear_captura=lambda **kw: CapturaFalsa(amplitud=0.0002, **kw),
         listar=lambda: [CABLE],
     )
@@ -253,7 +274,7 @@ def test_hilo_huerfano_no_publica_tras_detener():
     y su resultado debe descartarse en vez de publicarse.
     """
     sesion = Sesion(
-        Configuracion(dispositivo=3),
+        Configuracion(dispositivo=NOMBRE_ROCKSMITH),
         crear_captura=lambda **kw: CapturaLenta(retraso=1.2, **kw),
         listar=lambda: [CABLE],
     )
@@ -274,16 +295,16 @@ def test_aplicar_devuelve_diagnostico_y_no_revierte_si_la_reapertura_falla():
         return CapturaQueFalla(**kw)
 
     sesion = Sesion(
-        Configuracion(dispositivo=3),
+        Configuracion(dispositivo=NOMBRE_ROCKSMITH),
         crear_captura=crear,
         listar=lambda: [CABLE, OTRO_DISPOSITIVO],
     )
     sesion.iniciar()
 
-    diagnostico = sesion.aplicar(Configuracion(dispositivo=7))
+    diagnostico = sesion.aplicar(Configuracion(dispositivo="Otra entrada de audio"))
 
     assert diagnostico.estado != "ok"
-    assert sesion.configuracion.dispositivo == 7
+    assert sesion.configuracion.dispositivo == "Otra entrada de audio"
     sesion.detener()
 
 
@@ -329,7 +350,7 @@ def test_la_sesion_se_recupera_sola_cuando_el_dispositivo_aparece_despues():
 def test_el_diagnostico_no_dice_ok_mientras_no_se_captura():
     """Con el dispositivo en la lista pero sin poder abrirlo, "ok" sería mentira."""
     sesion = Sesion(
-        Configuracion(dispositivo=3),
+        Configuracion(dispositivo=NOMBRE_ROCKSMITH),
         crear_captura=lambda **kw: CapturaQueFalla(**kw),
         listar=lambda: [CABLE],
     )
@@ -360,7 +381,7 @@ def test_sin_muestras_nuevas_el_resultado_pasa_a_silencio():
         return captura
 
     sesion = Sesion(
-        Configuracion(dispositivo=3), crear_captura=crear, listar=lambda: [CABLE]
+        Configuracion(dispositivo=NOMBRE_ROCKSMITH), crear_captura=crear, listar=lambda: [CABLE]
     )
     sesion.tiempo_sin_muestras = 0.2
 
@@ -384,7 +405,7 @@ def test_la_falta_de_senal_solo_se_avisa_tras_varios_segundos():
     encadenar cinco segundos de reloj en la prueba.
     """
     sesion = Sesion(
-        Configuracion(dispositivo=3),
+        Configuracion(dispositivo=NOMBRE_ROCKSMITH),
         crear_captura=lambda **kw: CapturaFalsa(amplitud=0.0002, **kw),
         listar=lambda: [CABLE],
     )
@@ -404,7 +425,7 @@ def test_la_falta_de_senal_solo_se_avisa_tras_varios_segundos():
 def test_la_latencia_publicada_es_la_medida_no_la_del_dispositivo():
     """spec §6: se mide el tiempo entre la llegada del bloque y la emisión."""
     sesion = Sesion(
-        Configuracion(dispositivo=3),
+        Configuracion(dispositivo=NOMBRE_ROCKSMITH),
         crear_captura=lambda **kw: CapturaFalsa(**kw),
         listar=lambda: [CABLE],
     )
@@ -422,20 +443,20 @@ def test_la_latencia_publicada_es_la_medida_no_la_del_dispositivo():
 def test_una_configuracion_invalida_no_deja_la_sesion_inservible():
     """aplicar() construye el analizador antes de adoptar la configuración."""
     sesion = Sesion(
-        Configuracion(dispositivo=3),
+        Configuracion(dispositivo=NOMBRE_ROCKSMITH),
         crear_captura=lambda **kw: CapturaFalsa(**kw),
         listar=lambda: [CABLE],
     )
     sesion.iniciar()
 
     try:
-        sesion.aplicar(Configuracion(dispositivo=3, detector="inexistente"))
+        sesion.aplicar(Configuracion(dispositivo=NOMBRE_ROCKSMITH, detector="inexistente"))
         raise AssertionError("se esperaba ValueError")
     except ValueError:
         pass
 
     assert sesion.configuracion.detector == "yin"
-    assert sesion.aplicar(Configuracion(dispositivo=3, perfil="bajo_4")).estado == "ok"
+    assert sesion.aplicar(Configuracion(dispositivo=NOMBRE_ROCKSMITH, perfil="bajo_4")).estado == "ok"
     assert esperar(lambda: sesion.ultimo_resultado() is not None)
     sesion.detener()
 
@@ -449,7 +470,7 @@ def test_un_fallo_al_leer_no_mata_el_hilo_y_la_sesion_se_recupera():
     """
     averia = {"rota": False}
     sesion = Sesion(
-        Configuracion(dispositivo=3),
+        Configuracion(dispositivo=NOMBRE_ROCKSMITH),
         crear_captura=lambda **kw: CapturaQueSeRompe(averia, **kw),
         listar=lambda: [CABLE],
     )
@@ -473,3 +494,66 @@ def test_un_fallo_al_leer_no_mata_el_hilo_y_la_sesion_se_recupera():
         and sesion.ultimo_resultado().estado == "nota"
     )
     sesion.detener()
+
+
+# ---------------------------------------------------------------------------
+# Resolucion del dispositivo por nombre (macOS renumera al reconectar el USB)
+# ---------------------------------------------------------------------------
+
+CABLE_OTRO_INDICE = DispositivoAudio(1, NOMBRE_ROCKSMITH, 1, 48000.0)
+
+
+def test_el_cable_se_recoge_aunque_macos_le_cambie_el_indice():
+    """El caso real que rompio al usuario: config guardada con el indice 0 y el
+    cable reconectado en el 1. Guardar un numero que el sistema reasigna al
+    enchufar convierte "reconecta el cable" en un callejon sin salida.
+    """
+    sesion = Sesion(
+        Configuracion(dispositivo="Rocksmith USB Guitar Adapter"),
+        crear_captura=lambda **kw: CapturaFalsa(**kw),
+        listar=lambda: [MICROFONO, CABLE_OTRO_INDICE],
+    )
+    assert sesion._indice_objetivo([MICROFONO, CABLE_OTRO_INDICE]) == 1
+
+
+def test_sin_eleccion_gana_el_cable_aunque_haya_otras_entradas():
+    sesion = Sesion(
+        Configuracion(dispositivo=None),
+        crear_captura=lambda **kw: CapturaFalsa(**kw),
+        listar=lambda: [MICROFONO, OTRO_DISPOSITIVO, CABLE_OTRO_INDICE],
+    )
+    assert sesion._indice_objetivo([MICROFONO, OTRO_DISPOSITIVO, CABLE_OTRO_INDICE]) == 1
+
+
+def test_lo_elegido_a_mano_se_respeta_mientras_exista():
+    sesion = Sesion(
+        Configuracion(dispositivo="MacBook Pro Microphone"),
+        crear_captura=lambda **kw: CapturaFalsa(**kw),
+        listar=lambda: [MICROFONO, CABLE_OTRO_INDICE],
+    )
+    assert sesion._indice_objetivo([MICROFONO, CABLE_OTRO_INDICE]) == MICROFONO.indice
+
+
+def test_si_lo_elegido_desaparece_se_cae_al_cable():
+    """Desenchufar la interfaz elegida no debe dejar al usuario sin afinador
+    cuando el cable esta ahi mismo.
+    """
+    sesion = Sesion(
+        Configuracion(dispositivo="Una interfaz que ya no esta"),
+        crear_captura=lambda **kw: CapturaFalsa(**kw),
+        listar=lambda: [MICROFONO, CABLE_OTRO_INDICE],
+    )
+    assert sesion._indice_objetivo([MICROFONO, CABLE_OTRO_INDICE]) == 1
+
+
+def test_un_indice_viejo_guardado_se_migra_a_nombre():
+    """Los config_local.json que ya existen traen un numero. Al cargarlos el
+    numero se descarta -no significa nada entre reconexiones- y se queda en
+    automatico, que es lo que el usuario querria.
+    """
+    from servidor.configuracion import Configuracion as C
+
+    assert C.desde_dict({"dispositivo": 0}).dispositivo is None
+    assert C.desde_dict({"dispositivo": "Rocksmith USB Guitar Adapter"}).dispositivo == (
+        "Rocksmith USB Guitar Adapter"
+    )

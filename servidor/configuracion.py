@@ -29,7 +29,12 @@ UMBRAL_MAXIMO_DBFS = 0.0
 class Configuracion:
     """Ajustes que el usuario elige y que sobreviven entre sesiones."""
 
-    dispositivo: int | None = None
+    # NOMBRE del dispositivo de entrada, no su indice: macOS renumera las
+    # entradas cada vez que se enchufa o desenchufa algo, asi que un numero
+    # guardado deja de significar lo mismo entre una sesion y la siguiente. None
+    # es "automatico": se busca el cable por nombre, que es lo que el usuario
+    # quiere casi siempre.
+    dispositivo: str | None = None
     perfil: str = "guitarra_estandar"
     ganancia: float = 1.0
     umbral_ruido_dbfs: float = UMBRAL_RUIDO_POR_DEFECTO_DBFS
@@ -39,6 +44,8 @@ class Configuracion:
 
     def validar(self) -> None:
         """Lanza ValueError con un mensaje en español si algo no cuadra."""
+        if self.dispositivo is not None and not isinstance(self.dispositivo, str):
+            raise ValueError("El dispositivo se identifica por su nombre, no por su indice")
         if self.perfil not in PERFILES:
             disponibles = ", ".join(sorted(PERFILES))
             raise ValueError(f"El perfil '{self.perfil}' no existe. Opciones: {disponibles}")
@@ -65,9 +72,19 @@ class Configuracion:
 
     @classmethod
     def desde_dict(cls, datos: dict) -> "Configuracion":
-        """Construye desde un diccionario, ignorando campos desconocidos."""
+        """Construye desde un diccionario, ignorando campos desconocidos.
+
+        `dispositivo` fue un indice hasta que se vio que no sobrevive a
+        reconectar el USB. Un numero guardado de antes se descarta y se queda en
+        automatico: reinterpretarlo como nombre seria absurdo, y conservarlo como
+        indice es justamente lo que dejaba al usuario sin afinador con el cable
+        enchufado delante.
+        """
         conocidos = {campo.name for campo in fields(cls)}
-        return cls(**{clave: valor for clave, valor in datos.items() if clave in conocidos})
+        limpios = {clave: valor for clave, valor in datos.items() if clave in conocidos}
+        if isinstance(limpios.get("dispositivo"), (int, bool)):
+            limpios["dispositivo"] = None
+        return cls(**limpios)
 
 
 def cargar(ruta: Path = RUTA_POR_DEFECTO) -> Configuracion:
