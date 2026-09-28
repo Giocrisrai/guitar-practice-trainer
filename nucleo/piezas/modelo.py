@@ -59,7 +59,20 @@ class NotaEnPieza:
 
 @dataclass(frozen=True)
 class Pieza:
-    """Notas ordenadas en el tiempo, con la afinacion con que se escribieron."""
+    """Notas ordenadas en el tiempo, con la afinacion con que se escribieron.
+
+    Dos notas pueden compartir `inicio_pulsos`: eso es un acorde, y el modelo lo
+    admite a proposito. La razon es que esta clase tambien es el destino de la
+    etapa 3b, que va a leer musica de verdad desde archivos Guitar Pro y
+    MusicXML, y esos formatos traen acordes; rechazarlos aqui obligaria al
+    importador a destrozar el archivo antes de que la nota entrara al modelo.
+
+    Lo que esta etapa NO puede hacer es tocarlos: el carril de la etapa 3a sigue
+    el sonido con un detector de tono monofonico, que no distingue dos cuerdas
+    sonando a la vez. Esa restriccion vive un nivel mas arriba, en el seguidor
+    (Task 4), que debe declarar que no sabe seguir un acorde en vez de fallar en
+    silencio. El modelo se limita a representarlos.
+    """
 
     nombre: str
     perfil: str

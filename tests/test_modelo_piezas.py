@@ -54,6 +54,8 @@ def test_las_notas_tienen_que_venir_ordenadas():
 def test_una_duracion_no_positiva_se_rechaza():
     with pytest.raises(ValueError, match="duracion"):
         pieza([nota(duracion=0.0)])
+    with pytest.raises(ValueError, match="duracion"):
+        pieza([nota(duracion=-1.0)])
 
 
 def test_un_perfil_inexistente_se_rechaza():
@@ -75,3 +77,13 @@ def test_a_dict_publica_todo_lo_que_la_interfaz_necesita():
 
 def test_una_pieza_vacia_dura_cero_y_no_revienta():
     assert pieza([]).duracion_pulsos == 0.0
+
+
+def test_dos_notas_con_el_mismo_inicio_son_un_acorde_admitido_a_proposito():
+    """El modelo no rechaza acordes: los representa y deja que el seguidor
+    (que si es monofonico) decida que hacer con ellos."""
+    p = pieza([
+        nota(midi=40, cuerda=6, inicio=0.0, duracion=1.0),
+        nota(midi=45, cuerda=5, inicio=0.0, duracion=3.0),
+    ])
+    assert p.duracion_pulsos == pytest.approx(3.0)
