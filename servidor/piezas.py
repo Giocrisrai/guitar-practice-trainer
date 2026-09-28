@@ -41,6 +41,34 @@ from servidor.configuracion import Configuracion
 # esta el cabezal.
 ESPERA_SIN_CUADROS_S = VENTANA_ATAQUE_COMO_ONSET_S
 
+# Lo mas que puede entrar en la pieza de un tramo entre dos miradas, UNA VEZ QUE
+# YA HA LLEGADO AUDIO.
+#
+# El problema que resuelve: `_mirar` atribuye el tramo entero a la lectura nueva,
+# y si nadie mira durante un apagon -WebSocket desconectado y dispositivo
+# desaparecido, que es justo cuando nadie publica- el primer cuadro de la vuelta
+# metia el apagon completo en el cabezal. Medido con 30 s de apagon: el cabezal
+# saltaba de 0,6 s a 30,8 s, es decir se daban por tocadas decenas de notas que
+# nunca sonaron. No saltaba en la practica por un detalle de OTRO modulo
+# (`Sesion._publicar` avisa a los observadores ANTES de anotar el nivel, asi que
+# el primer cuadro de la vuelta se observa con `senal_ausente` todavia en True y
+# cae en la rama de la pausa), y depender del orden de dos lineas ajenas no es
+# depender de nada.
+#
+# Por que 0.1 s: es el triple de la cadencia del WebSocket (30 Hz, 33 ms) y unas
+# cinco veces la del analisis (`INTERVALO_ANALISIS`, 21 ms), asi que ningun tramo
+# normal lo roza, ni con un pico de latencia por medio. El peor caso pasa de 30 s
+# a una decima, y se equivoca del lado bueno: el cabezal puede quedarse corto,
+# nunca adelantado, que es el error que no hace fallar notas que no sonaron.
+#
+# Por que solo cuando ya ha llegado audio: mientras no ha llegado un solo cuadro
+# no hay latido con el que juzgar un tramo, y el reloj inyectado es la unica
+# verdad que hay (es tambien lo que fija el contrato de esta tarea: sin un cuadro
+# de audio, adelantar el reloj cuatro segundos adelanta el cabezal cuatro
+# segundos). Con audio ya en marcha, un hueco mucho mayor que la cadencia de los
+# cuadros significa que el audio se paro, y de ese tramo no hay testigo.
+TECHO_TRAMO_S = 0.100
+
 # El perfil que se da por activo cuando la sesion de audio no dice cual es (ver
 # `SesionCarril._perfil_activo`). Es el mismo que trae la configuracion recien
 # hecha, para no tener dos respuestas distintas a la misma pregunta.
@@ -93,12 +121,23 @@ class SesionCarril:
         self._pieza: Pieza | None = None
         self._seguidor: SeguidorPieza | None = None
         self._candado = threading.Lock()
+        # Candado de arranque y parada, aparte del otro. Sin el, dos `iniciar()`
+        # a la vez desde el hilo HTTP pueden registrar el observador dos veces y
+        # `quitar_observador` solo quita uno, asi que quedaria un observador
+        # huerfano alimentando al seguidor de una pieza ya muerta. Es RLock porque
+        # `iniciar` llama a `detener` con el ya tomado.
+        self._candado_arranque = threading.RLock()
         # Reloj de la pieza y contabilidad de la pausa. Todo bajo `_candado`.
         self._instante = 0.0
         self._ultima_mirada = reloj()
         self._pausado = False
         # Cuando llego el ultimo cuadro AL SEGUIDOR, en el reloj de esta clase.
         # None es "ninguno todavia". Ver `ESPERA_SIN_CUADROS_S`.
+        #
+        # Durante la pausa NO se actualiza, porque los cuadros no llegan al
+        # seguidor: se queda viejo a proposito, y asi la primera mirada tras
+        # reanudar todavia cae en la rama "sin cuadros" y le recoloca el reloj al
+        # seguidor antes de que vuelva a comer audio. Es lo que hace falta.
         self._ultimo_cuadro: float | None = None
 
     @property
@@ -128,19 +167,21 @@ class SesionCarril:
                 f"'{pieza.perfil}' y la tuya activa es '{perfil_activo}': "
                 "cambia de afinacion o elige otra pieza"
             )
-        self.detener()
-        ahora = self._reloj()
-        with self._candado:
-            self._pieza = pieza
-            self._seguidor = SeguidorPieza(pieza)
-            self._instante = 0.0
-            self._ultima_mirada = ahora
-            self._ultimo_cuadro = None
-            self._pausado = False
-        # El observador se registra AL FINAL, con el seguidor ya en su sitio: si se
-        # registrara antes, el primer cuadro podria entrar con `_seguidor` a None y
-        # el audio de ese instante se perderia sin que nada lo dijera.
-        self._sesion_audio.registrar_observador(self._observar)
+        with self._candado_arranque:
+            self.detener()
+            ahora = self._reloj()
+            with self._candado:
+                self._pieza = pieza
+                self._seguidor = SeguidorPieza(pieza)
+                self._instante = 0.0
+                self._ultima_mirada = ahora
+                self._ultimo_cuadro = None
+                self._pausado = False
+            # El observador se registra AL FINAL, con el seguidor ya en su sitio:
+            # si se registrara antes, el primer cuadro podria entrar con
+            # `_seguidor` a None y el audio de ese instante se perderia sin que
+            # nada lo dijera.
+            self._sesion_audio.registrar_observador(self._observar)
         return {"pieza": pieza.a_dict(), **self.estado()}
 
     def detener(self) -> None:
@@ -149,15 +190,20 @@ class SesionCarril:
         El observador se quita PRIMERO, igual que en `SesionPractica`: asi ningun
         cuadro posterior puede alimentar al seguidor que las lineas siguientes
         estan soltando.
+
+        Va bajo `_candado_arranque` (reentrante, porque `iniciar` lo llama con el
+        ya tomado) para que no pueda cruzarse con un `iniciar()` y dejar
+        registrado un observador sin pieza, o al contrario.
         """
-        self._sesion_audio.quitar_observador(self._observar)
-        with self._candado:
-            self._seguidor = None
-            self._pieza = None
-            self._instante = 0.0
-            self._ultima_mirada = self._reloj()
-            self._ultimo_cuadro = None
-            self._pausado = False
+        with self._candado_arranque:
+            self._sesion_audio.quitar_observador(self._observar)
+            with self._candado:
+                self._seguidor = None
+                self._pieza = None
+                self._instante = 0.0
+                self._ultima_mirada = self._reloj()
+                self._ultimo_cuadro = None
+                self._pausado = False
 
     def estado(self) -> dict:
         """Instantanea para la interfaz: el `EstadoCarril` mas `pausado`.
@@ -179,6 +225,12 @@ class SesionCarril:
         # Fuera del candado: en la sesion de verdad es una propiedad que mira su
         # historial de niveles, y no hay motivo para hacerla esperar a nadie.
         ausente = bool(self._sesion_audio.senal_ausente)
+        # Este candado se retiene mientras `_instantanea` espera el del seguidor,
+        # que puede estar en manos de un `procesar` en curso. Es a proposito: la
+        # instantanea tiene que salir entera de una sola lectura. La espera es de
+        # un cuadro de analisis como maximo (`procesar` no hace E/S ni espera a
+        # nadie), asi que a 30 Hz no se nota; si algun dia el seguidor hiciera algo
+        # lento ahi dentro, esto habria que revisarlo.
         with self._candado:
             self._mirar(ahora, ausente)
             return self._instantanea(ahora)
@@ -210,6 +262,15 @@ class SesionCarril:
         llegando, y `procesar` mueve el reloj del seguidor con cada uno, asi que
         alimentarlo durante la pausa dejaria el carril corriendo igual que si no
         hubiera pausa.
+
+        Y si este cuadro llega despues de un hueco largo -el audio se paro y ha
+        vuelto- se le recoloca el reloj al seguidor ANTES de darle de comer. Sin
+        eso, `procesar` calcula el instante de la pieza restandole al reloj del
+        analisis un origen fijado antes del hueco, y el hueco entero entra en el
+        cabezal: con 30 s de apagon, el cabezal saltaba a 30 s aunque el reloj de
+        esta clase se hubiera quedado donde debia. Recolocar es seguro justo ahi,
+        por lo mismo que en `_instantanea`: sin cuadros no hay pulsacion en vuelo
+        que pueda resolverse.
         """
         ahora = self._reloj()
         ausente = bool(self._sesion_audio.senal_ausente)
@@ -218,6 +279,8 @@ class SesionCarril:
             seguidor = self._seguidor
             if seguidor is None or self._pausado:
                 return
+            if self._sin_cuadros(ahora):
+                seguidor.avanzar_a(self._instante)
             self._ultimo_cuadro = ahora
         seguidor.procesar(resultado, instante_analisis)
 
@@ -236,6 +299,11 @@ class SesionCarril:
         perder la señal no se cuenta tiempo que el alumno no oyo, y al volver no
         se pierde tiempo que ya estaba sonando.
 
+        Pero "una mirada" solo es poco tiempo mientras alguien mire, y el caso en
+        que nadie mira es real: con el WebSocket desconectado y el dispositivo
+        desaparecido no hay ni cuadros ni consultas de estado, y el tramo hasta la
+        vuelta puede ser de minutos. De ahi el techo de `_tramo_creible`.
+
         Al pausar se le congela tambien el reloj al seguidor (`avanzar_a`), que es
         lo que hace segura la pausa: `avanzar_a` invalida las pulsaciones en vuelo
         -las tocadas en el tramo que se acaba de abandonar- y deja la
@@ -250,10 +318,30 @@ class SesionCarril:
         self._ultima_mirada = ahora
         if not ausente:
             self._pausado = False
-            self._instante += transcurrido
+            self._instante += self._tramo_creible(transcurrido)
         elif not self._pausado:
             self._pausado = True
             seguidor.avanzar_a(self._instante)
+
+    def _tramo_creible(self, transcurrido: float) -> float:
+        """Cuanto de lo transcurrido entre dos miradas puede entrar en la pieza.
+
+        Con audio ya en marcha, los cuadros son el latido: un hueco mucho mayor
+        que su cadencia significa que el audio se paro, y de ese tramo no hay
+        testigo, asi que se cuenta como mucho `TECHO_TRAMO_S` (ver alli el apagon
+        de 30 s que esto corta). Antes del primer cuadro no hay latido con el que
+        juzgar nada y el reloj inyectado es la unica verdad que hay.
+        """
+        if self._ultimo_cuadro is None:
+            return transcurrido
+        return min(transcurrido, TECHO_TRAMO_S)
+
+    def _sin_cuadros(self, ahora: float) -> bool:
+        """Si el seguidor lleva tanto sin recibir audio que se le puede mover el
+        reloj a mano sin costarle una pulsacion. Ver `ESPERA_SIN_CUADROS_S`."""
+        return (
+            self._ultimo_cuadro is None or ahora - self._ultimo_cuadro >= ESPERA_SIN_CUADROS_S
+        )
 
     def _instantanea(self, ahora: float) -> dict:
         """El estado publicable, construido entero bajo candado.
@@ -268,8 +356,6 @@ class SesionCarril:
         seguidor = self._seguidor
         if seguidor is None:
             return {**_CARRIL_APAGADO.a_dict(), "pausado": False}
-        sin_cuadros = (
-            self._ultimo_cuadro is None or ahora - self._ultimo_cuadro >= ESPERA_SIN_CUADROS_S
-        )
+        sin_cuadros = self._sin_cuadros(ahora)
         estado = seguidor.avanzar_a(self._instante) if sin_cuadros else seguidor.estado
         return {**estado.a_dict(), "pausado": self._pausado}

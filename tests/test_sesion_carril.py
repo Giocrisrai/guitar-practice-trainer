@@ -10,7 +10,8 @@ import pytest
 from nucleo.analisis.pipeline import ResultadoAnalisis
 from nucleo.piezas.modelo import NotaEnPieza, Pieza
 from servidor.configuracion import Configuracion
-from servidor.piezas import SesionCarril
+from servidor.piezas import ESPERA_SIN_CUADROS_S, SesionCarril
+from servidor.sesion import INTERVALO_ANALISIS
 
 
 class RelojFalso:
@@ -272,6 +273,78 @@ def test_la_pausa_le_congela_el_reloj_tambien_al_seguidor():
     sesion.senal_ausente = False
     publicar(sesion, reloj, SILENCIO, cuadros=12)
     assert sesion_carril.estado()["instante_s"] == pytest.approx(0.21 + 0.25, abs=0.1)
+
+
+def test_una_pausa_corta_con_audio_entrando_tampoco_mueve_el_cabezal():
+    """La pausa de verdad, la del cable enchufado y callado: los cuadros siguen
+    llegando, asi que el seguidor no parece "sin audio" y la unica cosa que impide
+    que el hueco entre en el cabezal es que al pausar se le congele el reloj.
+    """
+    reloj = RelojFalso()
+    sesion_carril, sesion = carril(reloj)
+    sesion_carril.iniciar(pieza_de([40, 45, 50]))
+    publicar(sesion, reloj, suena("E2"), cuadros=10)
+    instante = sesion_carril.estado()["instante_s"]
+
+    sesion.senal_ausente = True
+    publicar(sesion, reloj, SILENCIO, cuadros=5)  # menos que ESPERA_SIN_CUADROS_S
+    sesion.senal_ausente = False
+    publicar(sesion, reloj, suena("A2"), cuadros=12)
+
+    despues = sesion_carril.estado()["instante_s"]
+    assert despues == pytest.approx(instante + 0.25, abs=0.06)
+    sesion_carril.detener()
+    sesion.detener()
+
+
+def test_un_apagon_que_nadie_mira_no_entra_en_la_pieza():
+    """El caso peligroso: nadie mira durante el apagon y la vuelta ya trae señal.
+
+    Es lo que pasa con el WebSocket desconectado y el dispositivo desaparecido:
+    no hay cuadros (nadie publica) ni consultas de estado (nadie pregunta), asi
+    que nadie observa la falta de señal y el carril nunca se entera de que hubo
+    pausa. Sin techo, el primer cuadro de la vuelta metia el apagon entero en el
+    cabezal: 30 s de apagon eran 30 s de notas dadas por pasadas.
+
+    Que hoy no ocurriera dependia del orden de dos lineas de OTRO modulo
+    (`Sesion._publicar` avisa a los observadores antes de anotar el nivel), y esta
+    prueba existe para que deje de depender de eso.
+    """
+    reloj = RelojFalso()
+    sesion_carril, sesion = carril(reloj)
+    sesion_carril.iniciar(pieza_de([40, 45, 50]))
+    publicar(sesion, reloj, suena("E2"), cuadros=10)
+    instante = sesion_carril.estado()["instante_s"]
+
+    reloj.avanzar(30.0)  # apagon: ni un cuadro, ni una mirada
+    publicar(sesion, reloj, SILENCIO, cuadros=1)  # y la vuelta ya trae señal
+
+    despues = sesion_carril.estado()["instante_s"]
+    assert despues == pytest.approx(instante, abs=0.15)
+    sesion_carril.detener()
+    sesion.detener()
+
+
+def test_el_margen_sobre_la_cadencia_del_analisis_sigue_siendo_holgado():
+    """Fija el acoplamiento entre `ESPERA_SIN_CUADROS_S` y la tasa de analisis.
+
+    Si los cuadros llegaran mas despacio que `ESPERA_SIN_CUADROS_S`, cada mirada
+    del WebSocket le moveria el reloj al seguidor a mano y se comeria TODAS las
+    pulsaciones: cero notas en toda la pieza, sin un solo mensaje en ningun log. Y
+    solo pasaria con un cliente conectado, asi que ninguna prueba de las de arriba
+    lo veria. Medido sobre este codigo: a 4,2 cuadros por segundo las notas se
+    anotan; a 3,8 no se anota ninguna.
+
+    Hoy el margen es de 12x. Si alguien baja la tasa de analisis, esta prueba cae
+    antes que la experiencia del usuario.
+    """
+    margen = ESPERA_SIN_CUADROS_S / INTERVALO_ANALISIS
+    assert margen >= 4, (
+        f"Los cuadros llegan cada {INTERVALO_ANALISIS} s y el carril da el audio "
+        f"por parado a los {ESPERA_SIN_CUADROS_S} s: margen {margen:.1f}x. Por "
+        "debajo de 4x, `SesionCarril.estado()` empieza a invalidar las "
+        "pulsaciones en vuelo y el carril deja de anotar notas."
+    )
 
 
 def test_detener_deja_de_alimentar_al_seguidor():
