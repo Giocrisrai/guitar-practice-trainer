@@ -91,3 +91,133 @@ def test_senal_de_nota_nueva_distingue_la_cola_de_un_intento():
     assert detector.senal_de_nota_nueva is False
     detector.procesar(suena(nota="A2"), 1.1)  # otra nota: eso si es un intento
     assert detector.senal_de_nota_nueva is True
+
+
+# Las cuatro correcciones que costaron tres rondas en la etapa anterior estaban
+# fijadas solo a traves del evaluador de ejercicios. A partir de la Task 4 hay
+# quien usa este detector sin evaluador delante, asi que se fijan aqui tambien,
+# en el punto donde se usan. Ninguna toca lo privado: se montan las secuencias de
+# cuadros que reproducen cada fallo y se mira lo que sale.
+
+
+def dudoso(nota="E2", nivel=-25.0) -> ResultadoAnalisis:
+    """Lectura con nota pero sin confianza: el detector de tono flaqueando.
+
+    Mismo nivel que la nota que suena, a proposito: asi no hay salto de energia
+    y el bache no arrastra consigo un ataque que confundiria lo que se mide.
+    """
+    return suena(nota=nota, nivel=nivel, confianza=0.2)
+
+
+def test_un_ataque_sobre_la_nota_ya_resuelta_no_firma_el_onset_de_la_siguiente():
+    """Un hinchado de volumen o un roce sobre la nota aceptada marca un ataque de
+    energia que el filtro de nombre descarta. Si ese ataque se quedara guardado,
+    `_onset_camino_b` lo firmaria como onset de la pulsacion SIGUIENTE, que puede
+    llegar hasta VENTANA_ATAQUE_COMO_ONSET_S despues: el informe diria que esa
+    nota sono antes de que sonara.
+    """
+    detector = DetectorPulsaciones()
+    instante = 0.0
+    salidas = []
+
+    def dar(resultado):
+        nonlocal instante
+        pulsacion = detector.procesar(resultado, instante)
+        if pulsacion is not None:
+            salidas.append(pulsacion)
+        instante += PASO
+
+    for _ in range(6):
+        dar(silencio())
+    # Primera pulsacion, resuelta con su propio ataque.
+    for _ in range(12):
+        dar(suena())
+
+    # Hinchado: la MISMA nota sube 15 dB. Eso es un ataque de energia, y el
+    # filtro de nombre lo descarta porque E2 ya se resolvio.
+    instante_hinchado = instante
+    for _ in range(4):
+        dar(suena(nivel=-10.0))
+
+    # La nota cambia SIN salto de energia (mismo nivel): nadie marca un ataque
+    # nuevo, asi que el unico ataque que `_onset_camino_b` podria tomar es el del
+    # hinchado, y todavia esta dentro de su ventana.
+    instante_nota_nueva = instante
+    for _ in range(6):
+        dar(suena(nota="A2", nivel=-10.0))
+
+    assert len(salidas) == 2
+    assert salidas[1].nota == "A2"
+    assert instante_nota_nueva - instante_hinchado < 0.25  # dentro de la ventana
+    assert salidas[1].instante == pytest.approx(instante_nota_nueva)
+    assert salidas[1].instante > instante_hinchado
+
+
+def test_un_solo_cuadro_dudoso_no_resuelve_dos_veces_la_misma_nota():
+    """El detector de tono flaquea a mitad de una nota sostenida sin que la
+    pulsacion haya terminado. Olvidar la ultima nota resuelta al primer bache
+    haria que esa misma pulsacion se contara otra vez. Hacen falta
+    `cuadros_para_olvidar_nota` cuadros SEGUIDOS sin nota creible.
+    """
+    detector = DetectorPulsaciones()
+    con_un_bache = correr(
+        detector,
+        [silencio()] * 6 + [suena()] * 8 + [dudoso()] + [suena()] * 8,
+    )
+    assert len(con_un_bache) == 1
+
+    # Y con el hueco completo si: un hueco real es la frontera entre pulsaciones.
+    otro = DetectorPulsaciones()
+    con_hueco = correr(
+        otro,
+        [silencio()] * 6
+        + [suena()] * 8
+        + [dudoso()] * otro.cuadros_para_olvidar_nota
+        + [suena()] * 8,
+    )
+    assert len(con_hueco) == 2
+
+
+def test_el_onset_del_camino_b_es_el_comienzo_de_la_racha_no_el_final():
+    """`regularidad_ms` mide huecos entre onsets, asi que sellar el final de la
+    racha estable en vez de su comienzo fabrica irregularidad sobre una ejecucion
+    perfecta: a `cuadros_para_nota_estable` cuadros de 21 ms, 42 ms de sesgo.
+
+    El caso se monta para que los tres instantes candidatos sean distintos por
+    construccion: el ataque de energia (descartado aqui por viejo), el comienzo
+    de la racha creible y el cuadro en que la racha se da por estable.
+    """
+    detector = DetectorPulsaciones()
+    instante = 0.0
+    salidas = []
+
+    def dar(resultado):
+        nonlocal instante
+        pulsacion = detector.procesar(resultado, instante)
+        if pulsacion is not None:
+            salidas.append(pulsacion)
+        instante += PASO
+
+    for _ in range(3):
+        dar(silencio())
+
+    # Hay ataque de energia, pero el tono tarda en cuajar: 14 cuadros con nivel
+    # pero sin confianza. Cuando la racha creible resuelva, ese ataque sera mas
+    # viejo que VENTANA_ATAQUE_COMO_ONSET_S y no podra firmar el onset.
+    instante_ataque = instante
+    for _ in range(14):
+        dar(dudoso())
+
+    # Aqui empieza la racha creible, y aqui es donde debe quedar el onset.
+    instante_inicio_racha = instante
+    for _ in range(6):
+        dar(suena())
+
+    assert len(salidas) == 1
+    onset = salidas[0].instante
+    instante_racha_estable = (
+        instante_inicio_racha + (detector.cuadros_para_nota_estable - 1) * PASO
+    )
+    assert instante_racha_estable - instante_ataque > 0.25  # el ataque ya es viejo
+    assert instante_racha_estable > instante_inicio_racha  # comienzo != final
+    assert onset == pytest.approx(instante_inicio_racha)

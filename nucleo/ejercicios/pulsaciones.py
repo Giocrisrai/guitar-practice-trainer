@@ -128,8 +128,11 @@ class DetectorPulsaciones:
     detector decide como salir de ese atasco (el evaluador de ejercicios lo hace
     con su disparador de ayuda por tiempo).
 
-    No lleva candado propio: no lo necesita, porque quien lo usa desde varios
-    hilos ya lo protege (ver `EvaluadorEjercicio._candado`).
+    No lleva candado propio: quien lo use desde varios hilos DEBE protegerlo el
+    mismo. `procesar` muta todo el estado interno del detector, asi que una
+    lectura concurrente puede ver medio cuadro. Hoy el unico consumidor es
+    `EvaluadorEjercicio`, que lo envuelve en su `_candado`; el siguiente que lo
+    use tiene que hacer lo propio.
     """
 
     def __init__(
@@ -206,6 +209,13 @@ class DetectorPulsaciones:
         se reinicia en cuanto vuelve un cuadro con nota creible, para no
         resolver dos veces la misma pulsacion solo porque el detector de tono
         flaqueo un instante a mitad de la nota.
+
+        Ojo, el detector CONSUME estado antes de que quien lo llama decida que
+        hacer con la pulsacion: al detectarla ya ha sellado
+        `_ultima_nota_resuelta` con esa nota y ha gastado `_instante_ataque`. Si
+        quien la recibe la descarta (porque no era la nota que tocaba, porque la
+        pieza ya paso por ahi), el detector ha avanzado igual y esa nota no
+        volvera a dispararse hasta que se abra un hueco sin nota creible.
         """
         self._senal_de_nota_nueva = False
 

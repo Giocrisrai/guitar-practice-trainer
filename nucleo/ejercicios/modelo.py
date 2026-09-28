@@ -183,9 +183,9 @@ class ResultadoEjercicio:
         ejercicio, y lo que se describe es exactamente esa ejecucion.
 
         Todos los `instante` que entran aqui son el MISMO tipo de onset,
-        independientemente del camino por el que el evaluador resolviera cada
+        independientemente del camino por el que el detector resolviera cada
         nota: el instante del ataque de energia siempre que hubo uno (ver
-        `_onset_camino_b` en `evaluacion.py`). Mezclar el ataque con el primer
+        `_onset_camino_b` en `pulsaciones.py`). Mezclar el ataque con el primer
         cuadro de tono creible, que en una guitarra real llega decenas de
         milisegundos despues, metia en esta cifra un sesgo del orden de lo que
         pretende medir.
