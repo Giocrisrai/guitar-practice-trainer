@@ -41,8 +41,8 @@ from servidor.configuracion import Configuracion
 # esta el cabezal.
 ESPERA_SIN_CUADROS_S = VENTANA_ATAQUE_COMO_ONSET_S
 
-# Lo mas que puede entrar en la pieza de un tramo entre dos miradas, UNA VEZ QUE
-# YA HA LLEGADO AUDIO.
+# Lo mas que puede entrar en la pieza de un tramo entre dos miradas cuando el
+# avance lo trae el AUDIO.
 #
 # El problema que resuelve: `_mirar` atribuye el tramo entero a la lectura nueva,
 # y si nadie mira durante un apagon -WebSocket desconectado y dispositivo
@@ -61,12 +61,22 @@ ESPERA_SIN_CUADROS_S = VENTANA_ATAQUE_COMO_ONSET_S
 # a una decima, y se equivoca del lado bueno: el cabezal puede quedarse corto,
 # nunca adelantado, que es el error que no hace fallar notas que no sonaron.
 #
-# Por que solo cuando ya ha llegado audio: mientras no ha llegado un solo cuadro
-# no hay latido con el que juzgar un tramo, y el reloj inyectado es la unica
-# verdad que hay (es tambien lo que fija el contrato de esta tarea: sin un cuadro
-# de audio, adelantar el reloj cuatro segundos adelanta el cabezal cuatro
-# segundos). Con audio ya en marcha, un hueco mucho mayor que la cadencia de los
-# cuadros significa que el audio se paro, y de ese tramo no hay testigo.
+# Cuando rige y cuando no: lo que decide NO es si hubo latido alguna vez, sino de
+# donde viene el avance que se esta a punto de contar.
+#
+# - Si el tramo lo trae un cuadro de audio, el techo rige SIEMPRE, incluso si es el
+#   primer cuadro de la sesion. Un cuadro es una desmentida: dice que hasta ahora
+#   no habia audio, asi que el tiempo hasta el es tiempo del que nadie responde. El
+#   caso real es un principiante que da a empezar, va a enchufar la guitarra y
+#   vuelve: sin esto, el primer cuadro metia esos 30 s en el cabezal.
+# - Si el tramo lo trae una consulta de estado y nunca ha llegado audio, se cuenta
+#   entero: no hay nada que desmienta al reloj, y el reloj inyectado es la unica
+#   verdad que hay. Es tambien lo que fija el contrato de esta tarea: sin un cuadro
+#   de audio, adelantar el reloj cuatro segundos adelanta el cabezal cuatro
+#   segundos.
+# - Si ya llego audio, el techo rige tambien en las consultas de estado: los
+#   cuadros son el latido, y un hueco mucho mayor que su cadencia significa que el
+#   audio se paro.
 TECHO_TRAMO_S = 0.100
 
 # El perfil que se da por activo cuando la sesion de audio no dice cual es (ver
@@ -232,7 +242,7 @@ class SesionCarril:
         # nadie), asi que a 30 Hz no se nota; si algun dia el seguidor hiciera algo
         # lento ahi dentro, esto habria que revisarlo.
         with self._candado:
-            self._mirar(ahora, ausente)
+            self._mirar(ahora, ausente, por_cuadro=False)
             return self._instantanea(ahora)
 
     def _perfil_activo(self) -> str:
@@ -275,7 +285,7 @@ class SesionCarril:
         ahora = self._reloj()
         ausente = bool(self._sesion_audio.senal_ausente)
         with self._candado:
-            self._mirar(ahora, ausente)
+            self._mirar(ahora, ausente, por_cuadro=True)
             seguidor = self._seguidor
             if seguidor is None or self._pausado:
                 return
@@ -284,7 +294,7 @@ class SesionCarril:
             self._ultimo_cuadro = ahora
         seguidor.procesar(resultado, instante_analisis)
 
-    def _mirar(self, ahora: float, ausente: bool) -> None:
+    def _mirar(self, ahora: float, ausente: bool, por_cuadro: bool) -> None:
         """Mueve el reloj de la pieza y ajusta la pausa. Se llama BAJO candado.
 
         El reloj se lleva sumando lo transcurrido entre dos miradas, y el tramo
@@ -302,7 +312,10 @@ class SesionCarril:
         Pero "una mirada" solo es poco tiempo mientras alguien mire, y el caso en
         que nadie mira es real: con el WebSocket desconectado y el dispositivo
         desaparecido no hay ni cuadros ni consultas de estado, y el tramo hasta la
-        vuelta puede ser de minutos. De ahi el techo de `_tramo_creible`.
+        vuelta puede ser de minutos. De ahi el techo de `_tramo_creible`, al que
+        `por_cuadro` le dice si este avance lo trae un cuadro de audio (desde
+        `_observar`) o una consulta de estado (desde `estado()`), que es lo que
+        decide si el techo rige.
 
         Al pausar se le congela tambien el reloj al seguidor (`avanzar_a`), que es
         lo que hace segura la pausa: `avanzar_a` invalida las pulsaciones en vuelo
@@ -318,23 +331,26 @@ class SesionCarril:
         self._ultima_mirada = ahora
         if not ausente:
             self._pausado = False
-            self._instante += self._tramo_creible(transcurrido)
+            self._instante += self._tramo_creible(transcurrido, por_cuadro)
         elif not self._pausado:
             self._pausado = True
             seguidor.avanzar_a(self._instante)
 
-    def _tramo_creible(self, transcurrido: float) -> float:
+    def _tramo_creible(self, transcurrido: float, por_cuadro: bool) -> float:
         """Cuanto de lo transcurrido entre dos miradas puede entrar en la pieza.
 
-        Con audio ya en marcha, los cuadros son el latido: un hueco mucho mayor
-        que su cadencia significa que el audio se paro, y de ese tramo no hay
-        testigo, asi que se cuenta como mucho `TECHO_TRAMO_S` (ver alli el apagon
-        de 30 s que esto corta). Antes del primer cuadro no hay latido con el que
-        juzgar nada y el reloj inyectado es la unica verdad que hay.
+        Lo que decide es de donde viene el avance, no si hubo latido alguna vez
+        (ver `TECHO_TRAMO_S`): un cuadro de audio desmiente al reloj -dice que
+        hasta el no habia audio-, asi que cuando el tramo lo trae un cuadro el
+        techo rige aunque sea el primero de la sesion. Si ya hubo audio antes, el
+        techo rige tambien en las consultas de estado, porque los cuadros son el
+        latido y un hueco mucho mayor que su cadencia significa que se paro. Y
+        mientras nadie haya desmentido al reloj -ni un cuadro, nunca- el reloj
+        inyectado es la unica verdad que hay y el tramo se cuenta entero.
         """
-        if self._ultimo_cuadro is None:
-            return transcurrido
-        return min(transcurrido, TECHO_TRAMO_S)
+        if por_cuadro or self._ultimo_cuadro is not None:
+            return min(transcurrido, TECHO_TRAMO_S)
+        return transcurrido
 
     def _sin_cuadros(self, ahora: float) -> bool:
         """Si el seguidor lleva tanto sin recibir audio que se le puede mover el

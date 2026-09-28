@@ -325,6 +325,26 @@ def test_un_apagon_que_nadie_mira_no_entra_en_la_pieza():
     sesion.detener()
 
 
+def test_empezar_sin_el_cable_puesto_y_enchufarlo_treinta_segundos_despues():
+    """El caso del principiante: das a empezar, vas a enchufar la guitarra, vuelves.
+
+    Aqui nunca ha llegado un cuadro -el dispositivo no estaba al arrancar- y nadie
+    mira -el WebSocket esta desconectado, o el navegador en segundo plano-, asi que
+    el reloj no tiene quien lo desmienta... hasta que llega el primer cuadro. Ese
+    cuadro ES la desmentida: dice que hasta el no habia audio. Si el tramo que lo
+    trae no llevara techo, el cabezal empezaria 30 s dentro de la pieza y el alumno
+    fallaria de golpe todas las notas de esos 30 s.
+    """
+    reloj = RelojFalso()
+    sesion_carril, sesion = carril(reloj)
+    sesion_carril.iniciar(pieza_de([40, 45, 50]))
+    reloj.avanzar(30.0)  # ni un cuadro, ni una mirada: se estaba enchufando
+    publicar(sesion, reloj, suena("E2"), cuadros=1)  # y aparece ya con señal
+    assert sesion_carril.estado()["instante_s"] == pytest.approx(0.0, abs=0.15)
+    sesion_carril.detener()
+    sesion.detener()
+
+
 def test_el_margen_sobre_la_cadencia_del_analisis_sigue_siendo_holgado():
     """Fija el acoplamiento entre `ESPERA_SIN_CUADROS_S` y la tasa de analisis.
 
