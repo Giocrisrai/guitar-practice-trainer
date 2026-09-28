@@ -8,6 +8,7 @@ from nucleo.musica import (
     frecuencia_a_midi,
     frecuencia_a_nota,
     midi_a_frecuencia,
+    midi_de_nombre,
     nombre_de_clase,
     nombre_de_midi,
     posiciones_en_mastil,
@@ -104,3 +105,16 @@ def test_nombre_de_clase_con_sostenido():
 def test_nombre_de_clase_octava_negativa():
     """Octava -1 sin sufijo: 0 (C-1) -> "C" (no "C-")."""
     assert nombre_de_clase(0) == "C"
+
+
+@pytest.mark.parametrize("nombre,midi", [("E2", 40), ("A2", 45), ("C#3", 49), ("C-1", 0)])
+def test_midi_de_nombre_es_la_inversa_de_nombre_de_midi(nombre, midi):
+    assert midi_de_nombre(nombre) == midi
+    assert nombre_de_midi(midi) == nombre
+
+
+@pytest.mark.parametrize("nombre", ["", "H2", "E", "mi2", "40"])
+def test_midi_de_nombre_rechaza_lo_que_no_es_una_nota(nombre):
+    """Lo que no es notacion cientifica se rechaza, no se adivina."""
+    with pytest.raises(ValueError):
+        midi_de_nombre(nombre)

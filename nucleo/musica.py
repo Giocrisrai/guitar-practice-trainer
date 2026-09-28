@@ -67,6 +67,26 @@ def nombre_de_midi(midi: int) -> str:
     return f"{NOMBRES_NOTAS[midi % 12]}{octava}"
 
 
+def midi_de_nombre(nombre: str) -> int:
+    """Inversa de `nombre_de_midi`: "E2" -> 40, "C#3" -> 49, "C-1" -> 0.
+
+    Existe porque el detector de tono publica NOMBRES ("E2") y las notas escritas
+    -las de un ejercicio, las de una pieza- traen NUMEROS MIDI. Comparar por
+    nombre basta para saber si se acerto; para medir, contar o dibujar hace falta
+    el numero, y reconstruirlo a mano en cada sitio que lo necesita es la clase de
+    duplicado que acaba divergiendo.
+    """
+    clase = nombre.strip().rstrip("-0123456789")
+    octava_texto = nombre.strip()[len(clase) :]
+    try:
+        octava = int(octava_texto)
+    except ValueError:
+        raise ValueError(f"'{nombre}' no es una nota en notacion cientifica") from None
+    if clase not in NOMBRES_NOTAS:
+        raise ValueError(f"'{nombre}' no es una nota en notacion cientifica")
+    return (octava + 1) * 12 + NOMBRES_NOTAS.index(clase)
+
+
 def nombre_de_clase(midi: int) -> str:
     """Nombre de la nota sin su octava: 40 -> "E", 42 -> "F#", 0 -> "C".
 
