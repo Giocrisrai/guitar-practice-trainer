@@ -42,6 +42,25 @@ from nucleo.piezas.modelo import Pieza, pulsos_a_segundos
 # unica que puede justificar mover este numero.
 VENTANA_A_TIEMPO_S = 0.080
 
+# Piso de la ventana de reclamo: lo mas lejos que se puede haber tocado una nota
+# y seguir siendo un intento de ELLA, por corta que sea la figura.
+#
+# De donde sale: la ventana de reclamo se deriva de la duracion escrita (ver
+# `SeguidorPieza._ventanas_reclamo_s`), y eso solo funciona mientras la figura sea
+# larga. Con semicorcheas a 200 ppm la nota dura 75 ms y la ventana se quedaba en
+# 155 ms: mas estrecha que el error de un principiante, asi que una nota tocada
+# 200 ms tarde -que el brief quiere que cuente como "tarde"- no se adjudicaba a
+# nadie y desaparecia del informe. Medio segundo esta muy por encima del retraso
+# real de un principiante (los desfases que se ven tocando lento son de decenas de
+# milisegundos, no de cientos) y muy por debajo del absurdo que la ventana existe
+# para cortar (una pulsacion suelta 30 s despues del final). La ventana es el mayor
+# de los dos: el piso manda en figuras cortas y la duracion manda en las largas.
+#
+# TAMPOCO esta calibrado tocando, igual que VENTANA_A_TIEMPO_S: es un orden de
+# magnitud razonado, no el resultado de medirle el retraso a nadie con la guitarra
+# en la mano. Esa calibracion sigue pendiente.
+VENTANA_RECLAMO_MINIMA_S = 0.500
+
 
 @dataclass(frozen=True)
 class NotaTocada:
@@ -129,15 +148,23 @@ class SeguidorPieza:
       traducir haria que el desfase midiera la antiguedad del proceso en vez del
       error del alumno.
 
-    Como se adjudica una pulsacion: a la nota mas cercana EN EL TIEMPO de entre
-    las que no se han tocado todavia, no a la que este en curso. Tocar un poco
-    antes de tiempo es lo normal -es lo que hace un musico que va con el pulso-,
+    Como se adjudica una pulsacion: de entre las notas sin cobrar que caen dentro
+    de su ventana de reclamo, gana una cuya ALTURA coincida con lo que sono (la
+    mas cercana de ellas si hay varias), y solo si ninguna coincide se cae a la
+    mas cercana EN EL TIEMPO. La altura es informacion gratis y en un pasaje denso
+    -notas a 75 ms unas de otras- es la unica que puede decir cual se quiso tocar:
+    por cercania sola, una nota tocada 200 ms tarde se adjudicaba a la vecina y
+    salia "a_tiempo" y equivocada. Los fallos de altura siguen yendo por cercania,
+    que es donde tienen sentido.
+
+    En ningun caso se adjudica a la nota en curso por estar en curso. Tocar antes
+    de tiempo es lo normal -es lo que hace un musico que va con el pulso-,
     y adjudicar esa pulsacion a la nota anterior convertiria un adelanto de 50 ms
     en un fallo y ademas dejaria la nota buena sin cobrar. Cada nota se cobra una
-    sola vez, acertada o no: una segunda pulsacion busca otra nota. Pero "la mas
-    cercana" tiene un limite: cada nota solo se puede reclamar desde su ventana de
-    reclamo (su duracion escrita mas la ventana de "a tiempo", ver
-    `_ventanas_reclamo_s`), y una pulsacion que no alcanza a ninguna no se anota ni
+    sola vez, acertada o no: una segunda pulsacion busca otra nota. Y todo esto tiene
+    un limite: cada nota solo se puede reclamar desde su ventana de reclamo (su
+    duracion escrita mas la ventana de "a tiempo", con un piso de
+    `VENTANA_RECLAMO_MINIMA_S`; ver `_ventanas_reclamo_s`), y una pulsacion que no alcanza a ninguna no se anota ni
     cuenta como fallo. Sin ese limite, una nota que el alumno nunca toco acababa en
     el informe como tocada -y acertada- con un desfase absurdo.
 
@@ -163,10 +190,12 @@ class SeguidorPieza:
         pieza: Pieza,
         detector: DetectorPulsaciones | None = None,
         ventana_a_tiempo_s: float = VENTANA_A_TIEMPO_S,
+        ventana_reclamo_minima_s: float = VENTANA_RECLAMO_MINIMA_S,
     ) -> None:
         self.pieza = pieza
         self._detector = detector or DetectorPulsaciones()
         self.ventana_a_tiempo_s = ventana_a_tiempo_s
+        self.ventana_reclamo_minima_s = ventana_reclamo_minima_s
         # Los instantes escritos, ya en segundos: se consultan en cada cuadro
         # (buscar la nota en curso y la mas cercana) y no cambian nunca.
         self._inicios_s = np.array(
@@ -178,22 +207,30 @@ class SeguidorPieza:
         # Se deriva de la PIEZA y no es un numero clavado: la duracion escrita de
         # la nota mas la ventana de "a tiempo". Al bajar el tempo para practicar
         # lento la nota dura mas y la ventana se ensancha sola, que es lo que hace
-        # falta (a 40 ppm nadie llega con la precision de 120), y en un pasaje de
-        # semicorcheas se estrecha igual de sola. El sumando de `a_tiempo` es lo
-        # que evita que una nota cortisima se vuelva imposible de reclamar.
+        # falta (a 40 ppm nadie llega con la precision de 120).
+        #
+        # Pero derivarla solo de la duracion se rompe por abajo: con figuras cortas
+        # a tempo rapido la ventana se vuelve mas estrecha que el error humano que
+        # se quiere tolerar, asi que hay un piso, `VENTANA_RECLAMO_MINIMA_S`, y la
+        # ventana es el MAYOR de los dos.
         #
         # Sin este limite, una pulsacion suelta se adjudicaba a la nota huerfana
         # mas cercana por lejos que estuviera: una nota que el alumno NUNCA toco
         # entraba en el informe como tocada y acertada con un desfase de 30 s, y
         # todo lo que se publique encima -porcentaje de acertadas, desfase medio,
         # regularidad- quedaba envenenado.
-        self._ventanas_reclamo_s = np.array(
-            [
-                pulsos_a_segundos(nota.duracion_pulsos, pieza.tempo) + ventana_a_tiempo_s
-                for nota in pieza.notas
-            ],
-            dtype=float,
+        self._ventanas_reclamo_s = np.maximum(
+            np.array(
+                [
+                    pulsos_a_segundos(nota.duracion_pulsos, pieza.tempo) + ventana_a_tiempo_s
+                    for nota in pieza.notas
+                ],
+                dtype=float,
+            ),
+            ventana_reclamo_minima_s,
         )
+        # Las alturas escritas, para adjudicar por nombre y no solo por cercania.
+        self._midis = np.array([nota.midi for nota in pieza.notas], dtype=int)
         self._duracion_s = pieza.duracion_s
         self._candado = threading.RLock()
         self.reiniciar()
@@ -325,11 +362,22 @@ class SeguidorPieza:
             instante_onset = pulsacion.instante - self._origen_analisis
             instante_para_buscar = instante_onset
 
+        midi_tocado = midi_de_nombre(pulsacion.nota)
         distancias = np.abs(self._inicios_s - instante_para_buscar)
         reclamables = (~self._cobradas) & (distancias <= self._ventanas_reclamo_s)
         if not reclamables.any():
             return
-        indice = int(np.argmin(np.where(reclamables, distancias, np.inf)))
+        # La altura primero, la cercania despues. Cuando las notas van a 75 ms unas
+        # de otras el tiempo no puede decir cual se quiso tocar, y el nombre de la
+        # nota si: adjudicar solo por cercania mandaba una nota tocada 200 ms tarde
+        # a la vecina de al lado, que salia "a_tiempo" y equivocada -un fantasma-
+        # en vez de reconocer la nota real tocada tarde. Entre varias notas de la
+        # misma altura gana la mas cercana. Si ninguna coincide, se cae a la mas
+        # cercana en el tiempo: ahi es donde se anotan los fallos de altura, que
+        # siguen saliendo con `acertada=False`.
+        coincidentes = reclamables & (self._midis == midi_tocado)
+        candidatas = coincidentes if coincidentes.any() else reclamables
+        indice = int(np.argmin(np.where(candidatas, distancias, np.inf)))
         nota = self.pieza.notas[indice]
         self._cobradas[indice] = True
 
@@ -343,11 +391,11 @@ class SeguidorPieza:
         self._tocadas.append(
             NotaTocada(
                 indice=indice,
-                midi=midi_de_nombre(pulsacion.nota),
+                midi=midi_tocado,
                 cents=pulsacion.cents,
                 desfase_s=desfase,
                 clasificacion=clasificacion,
-                acertada=pulsacion.nota == nombre_de_midi(nota.midi),
+                acertada=midi_tocado == nota.midi,
             )
         )
 

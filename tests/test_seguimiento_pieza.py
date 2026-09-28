@@ -9,7 +9,11 @@ import pytest
 from nucleo.analisis.pipeline import ResultadoAnalisis
 from nucleo.ejercicios.pulsaciones import Pulsacion
 from nucleo.piezas.modelo import NotaEnPieza, Pieza
-from nucleo.piezas.seguimiento import VENTANA_A_TIEMPO_S, SeguidorPieza
+from nucleo.piezas.seguimiento import (
+    VENTANA_A_TIEMPO_S,
+    VENTANA_RECLAMO_MINIMA_S,
+    SeguidorPieza,
+)
 
 
 def pieza_de(midis, tempo=60):
@@ -353,3 +357,69 @@ def test_de_un_acorde_solo_se_cobra_una_nota():
     assert estado.indice_actual == 1
     assert len(estado.tocadas) == 1
     assert (tocada.indice, tocada.acertada) == (0, True)
+
+
+def pieza_rapida(midis, tempo=200, duracion_pulsos=0.25):
+    """Semicorcheas a 200 ppm: cada nota dura 75 ms y la siguiente llega a 75 ms.
+
+    Es el tempo donde derivar la ventana de reclamo de la duracion escrita se
+    queda corto: 75 + 80 = 155 ms, mas estrecho que el error de un principiante.
+    """
+    notas = tuple(
+        NotaEnPieza(
+            midi=m,
+            cuerda=6,
+            traste=0,
+            inicio_pulsos=i * duracion_pulsos,
+            duracion_pulsos=duracion_pulsos,
+        )
+        for i, m in enumerate(midis)
+    )
+    return Pieza(
+        nombre="rapida", perfil="guitarra_estandar", tempo=tempo, compas=(4, 4), notas=notas
+    )
+
+
+def test_con_figuras_cortas_la_ventana_no_baja_del_piso():
+    """200 ms tarde sobre una semicorchea a 200 ppm: tarde, no inexistente.
+
+    Sin el piso, la ventana de esa nota seria de 155 ms y esta pulsacion no se
+    adjudicaba a nadie: se descartaba en silencio, justo el caso que el brief
+    quiere que cuente como "tarde".
+    """
+    seguidor = SeguidorPieza(pieza_rapida([40]))
+    tocada = tocar(seguidor, "E2", en=0.2)
+    assert tocada.indice == 0
+    assert tocada.acertada is True
+    assert tocada.clasificacion == "tarde"
+    assert tocada.desfase_s == pytest.approx(0.205, abs=0.02)
+    assert tocada.desfase_s < VENTANA_RECLAMO_MINIMA_S
+
+
+def test_en_un_pasaje_denso_manda_la_altura_y_no_la_vecina():
+    """Notas a 75 ms: el tiempo no distingue, el nombre de la nota si.
+
+    La nota 0 se toca 200 ms tarde. Por cercania sola, la vecina mas proxima es la
+    3 (a 20 ms del onset) y la pulsacion salia adjudicada a ella, "a_tiempo" y
+    equivocada: un fantasma de nota mal tocada en lugar de la nota real tocada
+    tarde.
+    """
+    seguidor = SeguidorPieza(pieza_rapida([40, 45, 50, 55, 59]))
+    tocada = tocar(seguidor, "E2", en=0.2)
+    assert tocada.indice == 0
+    assert tocada.acertada is True
+    assert tocada.clasificacion == "tarde"
+
+
+def test_en_un_pasaje_denso_una_altura_que_no_esta_sigue_yendo_por_cercania():
+    """Los fallos de altura no cambian: van a la nota mas cercana y no aciertan.
+
+    "C4" (MIDI 60) no esta escrito en ningun sitio de la pieza, asi que no hay
+    coincidencia de altura a la que irse y manda la cercania, como antes.
+    """
+    seguidor = SeguidorPieza(pieza_rapida([40, 45, 50, 55, 59]))
+    tocada = tocar(seguidor, "C4", en=0.2)
+    assert tocada.midi == 60
+    assert tocada.indice == 3
+    assert tocada.acertada is False
+    assert tocada.clasificacion == "a_tiempo"
