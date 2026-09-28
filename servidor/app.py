@@ -12,9 +12,11 @@ from fastapi.staticfiles import StaticFiles
 from nucleo.afinaciones import PERFILES
 from nucleo.analisis.pipeline import ResultadoAnalisis
 from nucleo.ejercicios.teoria import ACORDES, ESCALAS, INTERVALOS
+from nucleo.piezas.desde_ejercicio import pieza_desde_ejercicio
 from servidor import configuracion as config_modulo
 from servidor.ejercicios import SesionPractica
 from servidor.modulos import listar_modulos
+from servidor.piezas import SesionCarril
 from servidor.sesion import Sesion
 
 # La pantalla no muestra más rápido que esto. Emitir más solo añadiría cola y, con
@@ -31,12 +33,14 @@ def crear_app(
     sesion: Sesion,
     ruta_interfaz: Path | None = None,
     practica: SesionPractica | None = None,
+    carril: SesionCarril | None = None,
 ) -> FastAPI:
     """Construye la aplicación alrededor de una sesión ya creada."""
     app = FastAPI(title="proyecto_musica")
     app.state.sesion = sesion
     app.state.ruta_config = config_modulo.RUTA_POR_DEFECTO
     app.state.practica = practica or SesionPractica(sesion)
+    app.state.carril = carril or SesionCarril(sesion)
 
     @app.get("/api/modulos")
     def leer_modulos() -> list[dict]:
@@ -237,6 +241,61 @@ def crear_app(
         try:
             while True:
                 await websocket.send_json(app.state.practica.estado())
+                await asyncio.sleep(intervalo)
+        except WebSocketDisconnect:
+            return
+
+    @app.post("/api/piezas/desde-ejercicio")
+    def generar_pieza(datos: dict = Body(...)) -> dict:
+        """Genera un ejercicio y lo traduce a pieza, sin ponerla en marcha.
+
+        El ejercicio sale del mismo generador que usan los ejercicios sueltos
+        (`_generar_o_400`): una pieza de esta etapa no es mas que un ejercicio
+        con cada nota fijada en cuerda, traste y pulso.
+        """
+        ejercicio = _generar_o_400(datos)
+        return pieza_desde_ejercicio(ejercicio).a_dict()
+
+    @app.post("/api/piezas/iniciar")
+    def iniciar_pieza(datos: dict = Body(...)) -> dict:
+        """Genera una pieza y la pone en marcha.
+
+        Devuelve la pieza ENTERA una sola vez, junto con el estado inicial: el
+        navegador la guarda y no vuelve a pedirla. Mandarla tambien por el
+        WebSocket, treinta veces por segundo, seria desperdiciar el canal en
+        notas que no cambian.
+        """
+        ejercicio = _generar_o_400(datos)
+        pieza = pieza_desde_ejercicio(ejercicio)
+        try:
+            return app.state.carril.iniciar(pieza)
+        except ValueError as error:
+            # La afinacion de la pieza no coincide con la activa (spec §5): es
+            # un pedido mal formado, no una rotura del servidor.
+            raise HTTPException(status_code=400, detail=str(error))
+
+    @app.post("/api/piezas/detener")
+    def detener_pieza() -> dict:
+        app.state.carril.detener()
+        return app.state.carril.estado()
+
+    @app.get("/api/piezas/estado")
+    def leer_estado_pieza() -> dict:
+        return app.state.carril.estado()
+
+    @app.websocket("/ws/piezas")
+    async def emitir_pieza(websocket: WebSocket) -> None:
+        """Emite el estado del carril a 30 Hz, igual que el de los ejercicios.
+
+        Nunca la pieza: ya viajo entera en la respuesta de `/iniciar`. Lo que se
+        manda aqui tiene que bastar para mover el cabezal sin que la interfaz
+        recalcule nada que el nucleo ya decidio.
+        """
+        await websocket.accept()
+        intervalo = 1.0 / FRECUENCIA_EMISION
+        try:
+            while True:
+                await websocket.send_json(app.state.carril.estado())
                 await asyncio.sleep(intervalo)
         except WebSocketDisconnect:
             return
