@@ -4,45 +4,12 @@ Consume el mismo flujo de ResultadoAnalisis que alimenta al afinador. Como
 ResultadoAnalisis es un dato, toda esta logica se prueba escribiendo la secuencia
 exacta que produciria alguien tocando, sin audio y sin hardware.
 
-Un evento de nota (una lectura que cuenta como intento) puede dispararse por dos
-caminos independientes, resueltos a lo sumo uno por cuadro:
-
-Camino A - ataque de energia. `DetectorAtaques` marca un ataque por el salto de
-nivel; se anota una lectura pendiente para `instante + espera_estabilizacion_s`
-y se resuelve en la primera llamada posterior a ese momento. Es el camino que
-describe la Task 7 original.
-
-Camino B - cambio estable de nota. Se cuenta cuantos cuadros seguidos trae la
-misma nota con confianza suficiente. Al llegar a `cuadros_para_nota_estable`
-cuadros, y si esa nota es distinta de la ultima ya resuelta, se dispara el
-evento sin esperar ningun salto de energia.
-
-Se necesito el camino B porque, con el decaimiento real de una guitarra
-(unos 8.7 dB/s), a tempo normal la nota anterior todavia suena casi al mismo
-nivel cuando se pulsa la siguiente: el salto no llega a los 6 dB que exige el
-detector de energia y el ejercicio no avanza nunca. Medido con negras:
-
-    60 BPM (1.000 s entre notas) -> 8 de 8 ataques detectados
-    90 BPM (0.667 s)             -> 1 de 8
-    120 BPM (0.500 s)            -> 1 de 8
-
-El camino B no depende de la energia, asi que detecta el cambio de nota aunque
-el nivel apenas se mueva. Exigir estabilidad (varios cuadros seguidos, no uno
-solo) es lo que evita que el caos del transitorio de la pua dispare con un
-armonico falso.
-
-Ambos caminos comparten el mismo filtro: una lectura que coincide con la
-ultima nota ya resuelta (`_ultima_nota_resuelta`) no vuelve a contarse. Eso
-evita que un segundo pico de energia sobre una nota que ya sonaba (un hinchado
-de volumen, un vibrato) se lea contra la nota siguiente, y evita que una racha
-estable ya resuelta por el camino B se cuente otra vez cuando el camino A
-llega tarde a leer el mismo sonido. Ese registro se libera cuando se acumulan
-`cuadros_para_olvidar_nota` cuadros SEGUIDOS sin nota creible (silencio o
-confianza insuficiente): un hueco real es la frontera entre pulsaciones y le
-devuelve a ambos caminos la capacidad de volver a contar la misma nota. No
-basta un solo cuadro dudoso: el detector de tono flaquea a mitad de una nota
-sostenida sin que la pulsacion haya terminado, y limpiar al primer bache
-resolveria dos veces la misma pulsacion (ver CUADROS_PARA_OLVIDAR_NOTA).
+Este modulo es solo la mitad de arriba del evaluador: comparar con la nota que
+tocaba, contar intentos, ayudar e informar. La mitad de abajo -que nota se toco
+y cuando- vive en `nucleo.ejercicios.pulsaciones`, y ahi estan explicados los
+dos caminos de disparo (el ataque de energia y el cambio estable de nota), el
+filtro que comparten contra la ultima nota resuelta y por que existe cada guarda.
+Se extrajo para que el carril de piezas la use sin duplicarla.
 """
 
 import threading
@@ -51,35 +18,32 @@ from dataclasses import dataclass
 from nucleo.analisis.pipeline import ResultadoAnalisis
 from nucleo.ejercicios.ataques import ESPERA_ESTABILIZACION_S, DetectorAtaques
 from nucleo.ejercicios.modelo import Ejercicio, IntentoNota, NotaEsperada, ResultadoEjercicio
+from nucleo.ejercicios.pulsaciones import (
+    CONFIANZA_MINIMA,
+    CUADROS_PARA_NOTA_ESTABLE,
+    CUADROS_PARA_OLVIDAR_NOTA,
+    VENTANA_ATAQUE_COMO_ONSET_S,
+    DetectorPulsaciones,
+    Pulsacion,
+)
 from nucleo.musica import nombre_de_midi
+
+# Se reexportan para quien evaluaba contra el evaluador antes de la extraccion:
+# siguen siendo los parametros con los que trabaja esta clase, aunque ahora los
+# aplique `DetectorPulsaciones`.
+__all__ = [
+    "CONFIANZA_MINIMA",
+    "CUADROS_PARA_NOTA_ESTABLE",
+    "CUADROS_PARA_OLVIDAR_NOTA",
+    "INTENTOS_PARA_AYUDA",
+    "SEGUNDOS_PARA_AYUDA",
+    "VENTANA_ATAQUE_COMO_ONSET_S",
+    "EstadoEvaluacion",
+    "EvaluadorEjercicio",
+]
 
 # Fallos seguidos en la misma nota antes de resaltar donde esta en el mastil.
 INTENTOS_PARA_AYUDA = 5
-
-# Confianza minima del detector de tono para que una lectura cuente como intento.
-CONFIANZA_MINIMA = 0.75
-
-# Cuadros seguidos con la misma nota creible para que el camino B la de por
-# estable. A 21 ms por cuadro son unos 63 ms: el mismo orden que la espera de
-# estabilizacion del camino A (60 ms), y esa cercania es intencional, no
-# casual: si el camino B tardara mucho mas que el camino A en confirmar,
-# dejaria de aportar nada sobre una pulsacion normal. La equivalencia en
-# milisegundos esta ACOPLADA al intervalo entre cuadros de analisis (aqui 21
-# ms, el de las pruebas): con un intervalo mayor, los mismos cuadros
-# representan mas tiempo, y con uno menor, menos. Nada en este modulo verifica
-# ese acoplamiento porque el intervalo de analisis no es una constante propia
-# del evaluador, sino de quien lo alimenta (el pipeline de audio); quien
-# cambie la tasa de analisis debe revisar si `cuadros_para_nota_estable` sigue
-# teniendo sentido.
-CUADROS_PARA_NOTA_ESTABLE = 3
-
-# Cuadros seguidos sin nota creible antes de olvidar la ultima nota resuelta.
-# Uno solo no basta: el detector de tono flaquea a mitad de una nota sostenida y
-# el pipeline emite "silencio" con el nivel intacto, asi que limpiar al primer
-# bache haria que una misma pulsacion se resolviera dos veces. Se usa el mismo
-# criterio de estabilidad que el camino B: tres cuadros, unos 63 ms al intervalo
-# de analisis habitual.
-CUADROS_PARA_OLVIDAR_NOTA = 3
 
 # Segundos que la nota actual puede estar sin resolverse antes de mostrar la
 # ayuda, aunque no se haya contado ningun intento (ni cinco, ni uno solo). El
@@ -98,19 +62,8 @@ CUADROS_PARA_OLVIDAR_NOTA = 3
 # paso a ser la actual: el tiempo que el alumno pasa leyendo el ejercicio, o con
 # el cable desenchufado, no es tiempo atascado. Y la senal tiene que poder ser un
 # intento de ESTA nota: la cola de la nota anterior, que se resolvio y sigue
-# sonando, no cuenta (ver procesar()).
+# sonando, no cuenta (ver `DetectorPulsaciones.senal_de_nota_nueva`).
 SEGUNDOS_PARA_AYUDA = 12.0
-
-# Cuanto puede haber pasado desde un ataque de energia para que el camino B lo
-# tome como el onset de la pulsacion que esta resolviendo (ver
-# _onset_camino_b). El detector de tono tarda decenas de milisegundos en dar una
-# lectura creible tras el ataque de la pua, y el camino B necesita ademas
-# `cuadros_para_nota_estable` cuadros seguidos: 0.25 s cubre ese retraso con
-# holgura. Y sigue estando muy por debajo del hueco entre notas a cualquier
-# tempo de practica (los generadores producen de 60 a 95 ppm, es decir de 1.0 a
-# 0.63 s por nota), asi que un ataque mas viejo que esto pertenece a otra
-# pulsacion y no debe firmar este onset.
-VENTANA_ATAQUE_COMO_ONSET_S = 0.25
 
 
 @dataclass(frozen=True)
@@ -143,7 +96,9 @@ class EvaluadorEjercicio:
     Tres reglas gobiernan su comportamiento:
 
     1. Un ataque sin nota creible no cuenta como fallo, sino como que no tocaste
-       nada. Un roce o un armonico accidental no deben puntuar en contra.
+       nada. Un roce o un armonico accidental no deben puntuar en contra. Esa
+       guarda vive en `DetectorPulsaciones`: un cuadro sin nota creible no
+       produce pulsacion, y sin pulsacion aqui no se cuenta nada.
     2. La afinacion no bloquea: una nota correcta se acepta aunque este a 20
        cents, y la desviacion se guarda para el informe.
     3. Tras INTENTOS_PARA_AYUDA fallos en la misma nota se resalta donde esta. No
@@ -160,27 +115,16 @@ class EvaluadorEjercicio:
        actual, es lo que evita que una pausa para pensar -o un cable
        desenchufado- regale la respuesta resaltada en el mastil.
 
-    Un evento de nota (una lectura que cuenta como intento) puede llegar por dos
-    caminos independientes, resueltos a lo sumo uno por cuadro: el ataque de
-    energia (DetectorAtaques, con su lectura diferida) o el cambio estable de
-    nota (ver CUADROS_PARA_NOTA_ESTABLE en el modulo). Cuando uno de los dos
-    resuelve una lectura creible, la nota leida pasa a ser
-    `_ultima_nota_resuelta`, y ni el camino A ni el camino B vuelven a
-    dispararse con ella hasta que se acumulan `cuadros_para_olvidar_nota`
-    cuadros SEGUIDOS sin nota creible (ver CUADROS_PARA_OLVIDAR_NOTA en el
-    modulo). Un solo cuadro dudoso a mitad de una nota sostenida no basta: el
-    detector de tono puede flaquear sin que la pulsacion haya terminado, y
-    limpiar el registro ahi mismo resolveria la misma pulsacion dos veces.
+    Que nota se toco y cuando lo decide `DetectorPulsaciones`, por dos caminos
+    independientes -el ataque de energia y el cambio estable de nota- y con un
+    filtro que impide contar dos veces la misma pulsacion. Todo eso, y por que
+    cada guarda esta ahi, esta documentado en `nucleo.ejercicios.pulsaciones`.
+    Este evaluador solo ve el resultado: una `Pulsacion` o nada.
 
-    Limitacion conocida: dos pulsaciones seguidas de la MISMA nota no se
-    distinguen si entre ellas no hay un hueco de `cuadros_para_olvidar_nota`
-    cuadros (unos 63 ms al intervalo de analisis habitual) SEGUIDOS sin ninguna
-    nota creible. El nivel no interviene: el filtro compara NOMBRES DE NOTA, no
-    niveles, asi que por muy marcada que sea la caida de volumen entre las dos
-    pulsaciones el camino A queda filtrado igual, y el camino B no ve ninguna
-    altura nueva. Ojo con el detalle: no basta con que deje de darse ESA nota,
-    porque cualquier otra lectura creible reinicia el contador del hueco; con una
-    nota de guitarra que sigue sonando, eso puede no llegar nunca.
+    Limitacion conocida, heredada de ese filtro: dos pulsaciones seguidas de la
+    MISMA nota no se distinguen si entre ellas no hay un hueco de
+    `cuadros_para_olvidar_nota` cuadros (unos 63 ms al intervalo de analisis
+    habitual) SEGUIDOS sin ninguna nota creible (ver `DetectorPulsaciones`).
 
     Lo que evita que el alumno se quede atascado en ese caso es el disparador
     temporal de la regla 3: pasados `segundos_para_ayuda` desde que se detecto
@@ -204,43 +148,50 @@ class EvaluadorEjercicio:
         cuadros_para_olvidar_nota: int = CUADROS_PARA_OLVIDAR_NOTA,
     ) -> None:
         self.ejercicio = ejercicio
-        self._detector = detector_ataques or DetectorAtaques()
-        self.confianza_minima = confianza_minima
-        self.espera_estabilizacion_s = espera_estabilizacion_s
+        self._pulsaciones = DetectorPulsaciones(
+            detector_ataques=detector_ataques,
+            confianza_minima=confianza_minima,
+            espera_estabilizacion_s=espera_estabilizacion_s,
+            cuadros_para_nota_estable=cuadros_para_nota_estable,
+            cuadros_para_olvidar_nota=cuadros_para_olvidar_nota,
+        )
         self.intentos_para_ayuda = intentos_para_ayuda
-        self.cuadros_para_nota_estable = cuadros_para_nota_estable
         self.segundos_para_ayuda = segundos_para_ayuda
-        self.cuadros_para_olvidar_nota = cuadros_para_olvidar_nota
         # El evaluador se muta desde el hilo de analisis (procesar) y se lee
         # desde el hilo HTTP/WS (estado, resultado, a 30 Hz). Es reentrante
         # porque procesar() construye la instantanea con `self.estado` sin
         # soltarlo. Sin candado, una instantanea podia salir incoherente: el
         # indice leido antes de avanzar y la nota_actual leida despues, o
-        # completado=False con nota_actual=None.
+        # completado=False con nota_actual=None. Este candado protege tambien al
+        # detector de pulsaciones, que no lleva uno propio.
         self._candado = threading.RLock()
         self.reiniciar()
+
+    @property
+    def confianza_minima(self) -> float:
+        return self._pulsaciones.confianza_minima
+
+    @property
+    def espera_estabilizacion_s(self) -> float:
+        return self._pulsaciones.espera_estabilizacion_s
+
+    @property
+    def cuadros_para_nota_estable(self) -> int:
+        return self._pulsaciones.cuadros_para_nota_estable
+
+    @property
+    def cuadros_para_olvidar_nota(self) -> int:
+        return self._pulsaciones.cuadros_para_olvidar_nota
 
     def reiniciar(self) -> None:
         """Vuelve al principio del ejercicio y olvida lo hecho."""
         with self._candado:
-            self._detector.reiniciar()
+            self._pulsaciones.reiniciar()
             self._indice = 0
             self._intentos = 0
             self._ayuda_mostrada = False
             self._ultimo_fallo: str | None = None
-            self._lectura_pendiente: float | None = None
-            self._instante_ataque: float | None = None
             self._hechas: list[IntentoNota] = []
-            # Camino B: nota candidata, cuantos cuadros seguidos lleva y cuando
-            # empezo esa racha (para registrar el instante correcto del evento).
-            self._nota_candidata: str | None = None
-            self._contador_candidata = 0
-            self._instante_inicio_candidata: float | None = None
-            # Ultima nota resuelta por cualquiera de los dos caminos; se libera
-            # cuando se acumulan cuadros_para_olvidar_nota cuadros SEGUIDOS sin
-            # nota creible (ver _cuadros_sin_nota_creible mas abajo).
-            self._ultima_nota_resuelta: str | None = None
-            self._cuadros_sin_nota_creible = 0
             # Regla 3, disparador por tiempo: desde cuando corre el reloj de la
             # nota actual (el primer cuadro con senal que podria ser un intento
             # de ella) y si ha habido alguna senal asi.
@@ -277,27 +228,9 @@ class EvaluadorEjercicio:
     def procesar(self, resultado: ResultadoAnalisis, instante: float) -> EstadoEvaluacion:
         """Consume un resultado del analisis y devuelve el estado resultante.
 
-        Evalua los dos caminos de disparo y resuelve a lo sumo uno por cuadro:
-
-        Camino A. La lectura de un ataque es diferida: no se lee en su propio
-        instante, sino pasada la espera de estabilizacion. Justo en el ataque
-        la senal es caotica y leer ahi daria notas falsas.
-
-        Camino B. Se sigue cuantos cuadros lleva la misma nota creible. Si el
-        camino A resuelve en este cuadro, la cuenta del camino B se reinicia
-        (ese ataque ya se leyo). Si es el camino B el que resuelve, se cancela
-        cualquier lectura pendiente del camino A para esa misma nota
-        sostenida, evitando contar el mismo evento dos veces.
-
-        Ademas, cuando se acumulan `cuadros_para_olvidar_nota` cuadros SEGUIDOS
-        sin nota creible (silencio o confianza insuficiente) se libera
-        `_ultima_nota_resuelta`: un hueco real es la frontera entre
-        pulsaciones, y sin esa liberacion una nota equivocada repetida
-        bloquearia ambos caminos para siempre (ver la limitacion documentada
-        en la clase). Un solo cuadro dudoso no cuenta como hueco: el contador
-        se reinicia en cuanto vuelve un cuadro con nota creible, para no
-        resolver dos veces la misma pulsacion solo porque el detector de tono
-        flaqueo un instante a mitad de la nota.
+        Le pasa el cuadro al detector de pulsaciones y, si de ahi sale una
+        pulsacion, le aplica las reglas sobre la nota esperada. Ademas mantiene
+        el reloj del disparador temporal de la ayuda (regla 3).
 
         Todo el cuerpo corre bajo `_candado`: este metodo vive en el hilo de
         analisis y es el unico que muta el evaluador, pero el hilo HTTP/WS lee
@@ -317,24 +250,20 @@ class EvaluadorEjercicio:
         if self._instante_nota_actual is None:
             self._instante_nota_actual = instante
 
-        if self._es_creible(resultado):
-            self._cuadros_sin_nota_creible = 0
-            # La bandera del disparador temporal solo se arma con senal que
-            # PODRIA ser un intento de la nota que se esta pidiendo ahora. Un
-            # cuadro creible cuya nota es `_ultima_nota_resuelta` es la cola de
-            # la nota anterior, que se resolvio y sigue sonando: no es que el
-            # alumno este intentando nada. Armarla con cualquier cuadro creible
-            # hacia que, de la nota 2 en adelante, la bandera quedara siempre
-            # verdadera (la cola la rearmaba justo despues de que `_resolver` la
-            # limpiara), y entonces una pausa para pensar -o el cable
-            # desenchufado- regalaba la respuesta resaltada en el mastil sin
-            # haber tocado nada.
-            if resultado.nota != self._ultima_nota_resuelta:
-                self._hubo_senal_creible_nota_actual = True
-        else:
-            self._cuadros_sin_nota_creible += 1
-            if self._cuadros_sin_nota_creible >= self.cuadros_para_olvidar_nota:
-                self._ultima_nota_resuelta = None
+        pulsacion = self._pulsaciones.procesar(resultado, instante)
+
+        # La bandera del disparador temporal solo se arma con senal que PODRIA
+        # ser un intento de la nota que se esta pidiendo ahora, y eso es
+        # exactamente `senal_de_nota_nueva`: la cola de la nota anterior, que se
+        # resolvio y sigue sonando, no cuenta. Armarla con cualquier cuadro
+        # creible hacia que, de la nota 2 en adelante, la bandera quedara
+        # siempre verdadera (la cola la rearmaba justo despues de que el acierto
+        # la limpiara), y entonces una pausa para pensar -o el cable
+        # desenchufado- regalaba la respuesta resaltada en el mastil sin haber
+        # tocado nada. Se lee del cuadro que el detector acaba de consumir, no de
+        # la pulsacion: el detector la calcula antes de resolver nada.
+        if self._pulsaciones.senal_de_nota_nueva:
+            self._hubo_senal_creible_nota_actual = True
 
         # El reloj del disparador temporal no arranca mientras no haya habido
         # senal que pueda ser un intento de ESTA nota: hasta entonces se arrastra
@@ -345,31 +274,8 @@ class EvaluadorEjercicio:
         if not self._hubo_senal_creible_nota_actual:
             self._instante_nota_actual = instante
 
-        ataque = self._detector.procesar(resultado.nivel_db, instante)
-        if ataque is not None:
-            self._lectura_pendiente = ataque.instante + self.espera_estabilizacion_s
-            self._instante_ataque = ataque.instante
-
-        resuelto_este_cuadro = False
-
-        if self._lectura_pendiente is not None and instante >= self._lectura_pendiente:
-            self._lectura_pendiente = None
-            if self._resolver(resultado, self._instante_ataque, instante):
-                resuelto_este_cuadro = True
-                # Este ataque ya se leyo: el camino B empieza a contar de nuevo
-                # para no repetir el mismo evento con la nota que sigue sonando.
-                self._nota_candidata = None
-                self._contador_candidata = 0
-                self._instante_inicio_candidata = None
-
-        if not resuelto_este_cuadro:
-            nota_estable = self._actualizar_candidata(resultado, instante)
-            if nota_estable is not None:
-                if self._resolver(resultado, self._onset_camino_b(instante), instante):
-                    # Esta nota ya se resolvio por el camino B: si habia una
-                    # lectura pendiente del camino A para el mismo sonido, se
-                    # cancela para no contarla otra vez cuando le toque su turno.
-                    self._lectura_pendiente = None
+        if pulsacion is not None:
+            self._aplicar(pulsacion, instante)
 
         # Regla 3, respaldo por tiempo: si nada de lo anterior logro resolver
         # ninguna pulsacion, el tiempo atascado en la misma nota tambien
@@ -386,125 +292,32 @@ class EvaluadorEjercicio:
 
         return self.estado
 
-    def _es_creible(self, resultado: ResultadoAnalisis) -> bool:
-        """Si esta lectura trae una nota que se puede tomar en serio."""
-        return (
-            resultado.estado == "nota"
-            and resultado.nota is not None
-            and resultado.confianza >= self.confianza_minima
-        )
+    def _aplicar(self, pulsacion: Pulsacion, instante: float) -> None:
+        """Decide que hacer con una pulsacion que el detector dio por buena.
 
-    def _actualizar_candidata(
-        self, resultado: ResultadoAnalisis, instante: float
-    ) -> str | None:
-        """Sigue la pista de cuantos cuadros seguidos suena la misma nota creible.
-
-        Devuelve el nombre de la nota en cuanto lleva `cuadros_para_nota_estable`
-        cuadros seguidos, o None si no hay racha suficiente (sin nota creible,
-        o racha mas corta). No compara aqui contra la ultima nota resuelta: ese
-        filtro es responsabilidad de `_resolver`, el mismo para los dos caminos.
-        """
-        if not self._es_creible(resultado):
-            self._nota_candidata = None
-            self._contador_candidata = 0
-            self._instante_inicio_candidata = None
-            return None
-
-        if resultado.nota == self._nota_candidata:
-            self._contador_candidata += 1
-        else:
-            self._nota_candidata = resultado.nota
-            self._contador_candidata = 1
-            self._instante_inicio_candidata = instante
-
-        if self._contador_candidata >= self.cuadros_para_nota_estable:
-            return self._nota_candidata
-        return None
-
-    def _onset_camino_b(self, instante: float) -> float | None:
-        """Instante que se anota como comienzo de la nota cuando resuelve el camino B.
-
-        Los dos caminos deben anotar la MISMA definicion de onset, porque
-        `regularidad_ms` mide la desviacion tipica de los huecos entre onsets
-        consecutivos. El camino A anota el instante del ataque de energia; el
-        comienzo de la racha estable del camino B llega, en una guitarra real,
-        decenas de milisegundos DESPUES de ese ataque (el transitorio de la pua
-        no tiene altura definida, asi que el detector de tono tarda en dar una
-        lectura creible). Un ejercicio que resolviera unas notas por A y otras
-        por B mezclaria las dos definiciones y arrastraria a `regularidad_ms` un
-        sesgo del orden de lo que se quiere medir.
-
-        Se unifica asi: si hay un ataque de energia lo bastante reciente
-        (`VENTANA_ATAQUE_COMO_ONSET_S`), es el ataque de esta misma pulsacion y
-        ese es el instante que se anota; solo cuando no hay ninguno -nivel
-        constante, ningun salto que el detector viera- se recurre al comienzo de
-        la racha, que es lo unico disponible.
-        """
-        if (
-            self._instante_ataque is not None
-            and instante - self._instante_ataque <= VENTANA_ATAQUE_COMO_ONSET_S
-        ):
-            return self._instante_ataque
-        return self._instante_inicio_candidata
-
-    def _resolver(
-        self,
-        resultado: ResultadoAnalisis,
-        instante_evento: float | None,
-        instante: float,
-    ) -> bool:
-        """Decide que hacer con la nota que suena al disparar un evento.
-
-        `instante_evento` es el onset que se anota en el informe (el ataque de
-        energia, o lo que devuelva `_onset_camino_b`). `instante` es el del
-        cuadro que se esta procesando, y es OTRA cosa: llega despues del onset,
-        y es el que sella el comienzo de la ventana temporal de la nota
-        siguiente. Sellarla con el onset (como se hacia antes) hacia empezar la
-        cuenta de `segundos_para_ayuda` de la nota nueva antes de que la
-        anterior se hubiera resuelto.
-
-        Devuelve True si el evento se conto de verdad (acierto o fallo), y
-        False si se descarto: sin nota esperada, sin nota creible (regla 1), o
-        porque la nota leida es la misma que la ultima ya resuelta, en cuyo
-        caso no hubo forma de distinguir esta lectura de la que la origino.
+        `pulsacion.instante` es el onset que se anota en el informe (el ataque de
+        energia, o el comienzo de la racha estable). `instante` es el del cuadro
+        que se esta procesando, y es OTRA cosa: llega despues del onset, y es el
+        que sella el comienzo de la ventana temporal de la nota siguiente.
+        Sellarla con el onset (como se hacia antes) hacia empezar la cuenta de
+        `segundos_para_ayuda` de la nota nueva antes de que la anterior se
+        hubiera resuelto.
         """
         esperada = self._nota_actual
         if esperada is None:
-            return False
-
-        # Regla 1: sin nota creible no hubo intento.
-        if not self._es_creible(resultado):
-            return False
-
-        # Misma nota que la ultima ya resuelta: sin un cuadro sin nota creible
-        # de por medio, no hay forma de saber si es una pulsacion nueva o el
-        # mismo sonido que ya se conto (un segundo pico de energia sobre la
-        # nota aceptada, o el resto de la racha que el camino B ya resolvio).
-        if resultado.nota == self._ultima_nota_resuelta:
-            # Este ataque pertenece a una pulsacion que ya se conto (un hinchado,
-            # un vibrato o un roce sobre la nota aceptada). Si se quedara puesto,
-            # `_onset_camino_b` lo firmaria como onset de la pulsacion SIGUIENTE
-            # y falsearia `regularidad_ms` hasta en VENTANA_ATAQUE_COMO_ONSET_S.
-            # Ojo: esto NO vale para el descarte por la regla 1 de arriba, donde
-            # el ataque es real y su lectura solo llego antes de tiempo.
-            self._instante_ataque = None
-            return False
+            return
 
         self._intentos += 1
-        self._ultima_nota_resuelta = resultado.nota
-        # El ataque que origino este evento ya se gasto: dejarlo puesto haria
-        # que `_onset_camino_b` lo firmara como onset de la pulsacion siguiente.
-        self._instante_ataque = None
 
-        if resultado.nota == nombre_de_midi(esperada.midi):
+        if pulsacion.nota == nombre_de_midi(esperada.midi):
             # Regla 2: la afinacion se guarda, no bloquea.
             self._hechas.append(
                 IntentoNota(
                     indice=self._indice,
                     midi=esperada.midi,
                     intentos=self._intentos,
-                    cents=resultado.cents,
-                    instante=instante_evento,
+                    cents=pulsacion.cents,
+                    instante=pulsacion.instante,
                     ayuda_mostrada=self._ayuda_mostrada,
                 )
             )
@@ -519,13 +332,12 @@ class EvaluadorEjercicio:
             # la siguiente.
             self._instante_nota_actual = instante
             self._hubo_senal_creible_nota_actual = False
-            return True
+            return
 
-        self._ultimo_fallo = resultado.nota
+        self._ultimo_fallo = pulsacion.nota
         # Regla 3: se ayuda, no se salta.
         if self._intentos >= self.intentos_para_ayuda:
             self._ayuda_mostrada = True
-        return True
 
     def resultado(self) -> ResultadoEjercicio:
         """Informe de lo hecho hasta ahora.
