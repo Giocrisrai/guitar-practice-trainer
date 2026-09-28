@@ -75,16 +75,31 @@ def midi_de_nombre(nombre: str) -> int:
     nombre basta para saber si se acerto; para medir, contar o dibujar hace falta
     el numero, y reconstruirlo a mano en cada sitio que lo necesita es la clase de
     duplicado que acaba divergiendo.
+
+    Es la imagen inversa EXACTA de `nombre_de_midi`: solo acepta lo que esa
+    funcion produce. Ni espacios alrededor (" E2 "), ni octavas que no existen en
+    MIDI ("C99"), ni "E2.0". Admitirlos convertiria en nota cualquier cadena
+    parecida, y este es el sitio por donde entra lo que publica el detector de
+    tono: un nombre raro tiene que ser un error ruidoso, no un MIDI inventado.
     """
-    clase = nombre.strip().rstrip("-0123456789")
-    octava_texto = nombre.strip()[len(clase) :]
+    clase = nombre.rstrip("-0123456789")
+    octava_texto = nombre[len(clase) :]
+    error = ValueError(f"'{nombre}' no es una nota en notacion cientifica")
+    if clase not in NOMBRES_NOTAS or not octava_texto:
+        raise error
     try:
         octava = int(octava_texto)
     except ValueError:
-        raise ValueError(f"'{nombre}' no es una nota en notacion cientifica") from None
-    if clase not in NOMBRES_NOTAS:
-        raise ValueError(f"'{nombre}' no es una nota en notacion cientifica")
-    return (octava + 1) * 12 + NOMBRES_NOTAS.index(clase)
+        raise error from None
+    midi = (octava + 1) * 12 + NOMBRES_NOTAS.index(clase)
+    if not 0 <= midi <= 127:
+        raise ValueError(f"'{nombre}' queda fuera del rango MIDI (0-127)")
+    # La comprobacion de que es la inversa exacta, hecha con la propia funcion
+    # directa en vez de con reglas paralelas que puedan divergir de ella: asi
+    # caen "E02" o "E+2", que dan un MIDI valido pero no los escribe nadie.
+    if nombre_de_midi(midi) != nombre:
+        raise error
+    return midi
 
 
 def nombre_de_clase(midi: int) -> str:

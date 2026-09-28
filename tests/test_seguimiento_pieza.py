@@ -79,37 +79,57 @@ def test_al_pasar_del_final_la_pieza_esta_completada():
 
 
 def test_una_nota_en_su_instante_va_a_tiempo():
+    """Se toca "A2" porque el MIDI 45 -la nota que vive en el segundo 1.0- ES "A2".
+
+    El brief tocaba "E2" en todas estas pruebas de tiempo. Miden bien el tiempo
+    igual, porque la clasificacion no depende de la altura, pero estaban tocando
+    la nota equivocada en el hueco de la buena y decian menos de lo que su nombre
+    promete. Con la nota correcta, cada una comprueba tambien que acertar de
+    altura y medir el desfase son cosas independientes.
+    """
     seguidor = SeguidorPieza(pieza_de([40, 45]))
-    tocada = tocar(seguidor, "E2", en=1.0)
+    tocada = tocar(seguidor, "A2", en=1.0)
+    assert tocada.indice == 1
+    assert tocada.acertada is True
     assert tocada.clasificacion == "a_tiempo"
     assert tocada.desfase_s == pytest.approx(0.0, abs=0.03)
 
 
 def test_una_nota_adelantada_se_marca_pronto_con_su_desfase():
     seguidor = SeguidorPieza(pieza_de([40, 45]))
-    tocada = tocar(seguidor, "E2", en=1.0 - 0.3)
+    tocada = tocar(seguidor, "A2", en=1.0 - 0.3)
+    assert tocada.acertada is True
     assert tocada.clasificacion == "pronto"
     assert tocada.desfase_s < -VENTANA_A_TIEMPO_S
 
 
 def test_una_nota_atrasada_se_marca_tarde():
     seguidor = SeguidorPieza(pieza_de([40, 45]))
-    tocada = tocar(seguidor, "E2", en=1.0 + 0.3)
+    tocada = tocar(seguidor, "A2", en=1.0 + 0.3)
+    assert tocada.acertada is True
     assert tocada.clasificacion == "tarde"
     assert tocada.desfase_s > VENTANA_A_TIEMPO_S
 
 
 def test_fuera_de_ventana_pero_correcta_sigue_siendo_acertada():
-    """El ritmo informa, no descalifica: la misma regla que la afinacion."""
+    """El ritmo informa, no descalifica: la misma regla que la afinacion.
+
+    El brief tocaba "E2" en el hueco del MIDI 45, asi que la prueba titulada
+    "correcta sigue siendo acertada" demostraba lo contrario (`acertada=False`) y
+    el principio se quedaba sin cubrir en toda la suite. Se toca la nota que de
+    verdad toca, 400 ms tarde: fuera de ventana y acertada a la vez.
+    """
     seguidor = SeguidorPieza(pieza_de([40, 45]))
-    tocada = tocar(seguidor, "E2", en=1.0 + 0.4)
-    assert tocada.midi == 40
+    tocada = tocar(seguidor, "A2", en=1.0 + 0.4)
+    assert tocada.midi == 45
+    assert tocada.clasificacion == "tarde"
+    assert tocada.acertada is True
     assert tocada.cents is not None
 
 
 def test_los_cents_de_la_pulsacion_llegan_al_estado():
     seguidor = SeguidorPieza(pieza_de([40, 45]))
-    tocada = tocar(seguidor, "E2", en=1.0, cents=-12.0)
+    tocada = tocar(seguidor, "A2", en=1.0, cents=-12.0)
     assert tocada.cents == pytest.approx(-12.0)
 
 
@@ -192,12 +212,18 @@ def test_una_pulsacion_sin_instante_no_inventa_desfase():
 
 
 def test_dos_pulsaciones_no_se_adjudican_a_la_misma_nota():
-    """Cada nota se cobra una vez: la segunda pulsacion busca otra."""
-    seguidor = SeguidorPieza(pieza_de([40, 45]))
-    primera = tocar(seguidor, "E2", en=1.0)
-    segunda = tocar(seguidor, "A2", en=1.6)
-    assert primera.indice == 1
-    assert segunda.indice == 0
+    """Cada nota se cobra una vez: la segunda pulsacion busca otra.
+
+    Las dos van a su nota, no a la misma. La version anterior de esta prueba
+    mandaba la segunda pulsacion a la nota 0 con un desfase de 1,6 s y lo dejaba
+    grabado como esperado: eso era el defecto de la ventana de reclamo ilimitada,
+    no el comportamiento que se queria.
+    """
+    seguidor = SeguidorPieza(pieza_de([40, 45, 50]))
+    primera = tocar(seguidor, "A2", en=1.0)
+    segunda = tocar(seguidor, "D3", en=2.0)
+    assert (primera.indice, primera.acertada) == (1, True)
+    assert (segunda.indice, segunda.acertada) == (2, True)
     assert len(seguidor.estado.tocadas) == 2
 
 
@@ -207,3 +233,123 @@ def test_una_pieza_sin_notas_esta_completada_y_no_anota_nada():
     assert estado.total == 0
     assert estado.completado is True
     assert estado.tocadas == ()
+
+
+
+def test_una_pulsacion_dentro_de_la_ventana_de_reclamo_se_adjudica():
+    """El borde de dentro: la nota dura 1 pulso (1,0 s a 60 ppm) mas 80 ms."""
+    seguidor = SeguidorPieza(pieza_de([40]))
+    tocada = tocar(seguidor, "E2", en=1.0)
+    assert tocada.indice == 0
+    assert tocada.clasificacion == "tarde"
+    assert tocada.desfase_s == pytest.approx(1.005, abs=0.02)
+
+
+def test_una_pulsacion_fuera_de_la_ventana_de_reclamo_no_se_adjudica():
+    """El borde de fuera: 1,2 s pasa de 1,08 s y no hay nota que reclamar.
+
+    No se anota ni como acertada ni como fallo: no hay ninguna nota de la que esa
+    pulsacion pueda ser un intento.
+    """
+    seguidor = SeguidorPieza(pieza_de([40]))
+    seguidor.avanzar_a(1.1)
+    instante = 1.1
+    while instante < 1.2:
+        seguidor.procesar(
+            ResultadoAnalisis(
+                estado="silencio", frecuencia=None, confianza=0.0, nivel_db=-90.0,
+                nota=None, cents=None, posiciones=(),
+            ),
+            instante,
+        )
+        instante += 0.021
+    for _ in range(12):
+        seguidor.procesar(suena("E2"), instante)
+        instante += 0.021
+    assert seguidor.estado.tocadas == ()
+
+
+def test_una_pulsacion_treinta_segundos_despues_del_final_deja_el_informe_limpio():
+    """Una nota que nadie toco no puede entrar en el informe como tocada.
+
+    Sin ventana de reclamo, esta pulsacion se adjudicaba a la nota 0 con
+    `desfase_s = 30.005`, `"tarde"` y `acertada True`, y envenenaba cualquier
+    porcentaje o promedio calculado encima.
+    """
+    seguidor = SeguidorPieza(pieza_de([40, 45]))
+    seguidor.avanzar_a(31.9)
+    instante = 31.9
+    while instante < 32.0:
+        seguidor.procesar(
+            ResultadoAnalisis(
+                estado="silencio", frecuencia=None, confianza=0.0, nivel_db=-90.0,
+                nota=None, cents=None, posiciones=(),
+            ),
+            instante,
+        )
+        instante += 0.021
+    for _ in range(12):
+        seguidor.procesar(suena("E2"), instante)
+        instante += 0.021
+    estado = seguidor.estado
+    assert estado.completado is True
+    assert estado.tocadas == ()
+
+
+def test_una_pulsacion_en_vuelo_no_sobrevive_a_un_salto_del_reloj():
+    """El detector resuelve tarde; si el reloj salta entremedias, se descarta.
+
+    Sin esta guarda, la pulsacion tocada en el segundo ~1,0 se traducia con el
+    origen nuevo y se adjudicaba a la nota del segundo 3,0 como "a_tiempo": una
+    nota regalada por una pausa. La Task 5 va a usar `avanzar_a` justo para esas
+    pausas por falta de señal.
+    """
+    seguidor = SeguidorPieza(pieza_de([40, 45, 50, 55]))
+    seguidor.avanzar_a(0.9)
+    instante = 0.9
+    while instante < 1.0:
+        seguidor.procesar(
+            ResultadoAnalisis(
+                estado="silencio", frecuencia=None, confianza=0.0, nivel_db=-90.0,
+                nota=None, cents=None, posiciones=(),
+            ),
+            instante,
+        )
+        instante += 0.021
+    # Dos cuadros con sonido: el ataque ya ocurrio, pero ningun camino del
+    # detector ha resuelto todavia. La pulsacion esta en vuelo.
+    for _ in range(2):
+        seguidor.procesar(suena("A2"), instante)
+        instante += 0.021
+    assert seguidor.estado.tocadas == ()
+    seguidor.avanzar_a(3.0)
+    for _ in range(12):
+        seguidor.procesar(suena("A2"), instante)
+        instante += 0.021
+    estado = seguidor.estado
+    assert estado.indice_actual == 3
+    assert estado.tocadas == ()
+
+
+def acorde_de(midis):
+    """Una pieza con todas las notas en el mismo instante: un acorde."""
+    notas = tuple(
+        NotaEnPieza(midi=m, cuerda=6 - i, traste=0, inicio_pulsos=0.0, duracion_pulsos=1.0)
+        for i, m in enumerate(midis)
+    )
+    return Pieza(nombre="acorde", perfil="guitarra_estandar", tempo=60, compas=(4, 4), notas=notas)
+
+
+def test_de_un_acorde_solo_se_cobra_una_nota():
+    """La limitacion declarada, escrita como prueba: el detector es monofonico.
+
+    De dos notas en el mismo instante, una pulsacion cobra una y la otra se queda
+    sin tocar por muy bien que se toque. Y `indice_actual` señala a la ultima del
+    acorde, que es arbitrario entre iguales.
+    """
+    seguidor = SeguidorPieza(acorde_de([40, 47]))
+    tocada = tocar(seguidor, "E2", en=0.0)
+    estado = seguidor.estado
+    assert estado.indice_actual == 1
+    assert len(estado.tocadas) == 1
+    assert (tocada.indice, tocada.acertada) == (0, True)

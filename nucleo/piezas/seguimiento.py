@@ -83,6 +83,18 @@ class EstadoCarril:
 
     `instante_s` es el reloj de la PIEZA, en segundos desde su comienzo: es la
     posicion del cabezal en el carril, no un instante del reloj del sistema.
+
+    `indice_actual` es la ultima nota que ya empezo segun ese reloj. Antes de la
+    primera señala a la primera y pasado el final se queda en la ultima: quien
+    quiera saber si la pieza termino mira `completado`, no el indice. Si en ese
+    instante hay un ACORDE -varias notas con el mismo inicio- señala a la ultima
+    de ellas, que es una eleccion arbitraria entre iguales, porque el seguidor no
+    sabe seguir acordes (ver `SeguidorPieza`). Esta frontera es la que lee la
+    interfaz, asi que la arbitrariedad se dice aqui y no solo alla.
+
+    `tocadas` solo trae las pulsaciones que se pudieron adjudicar. Una nota que
+    nadie toco no aparece: el carril la pinta sin marca, y contar "cuantas
+    faltan" es `total` menos lo que hay aqui.
     """
 
     instante_s: float
@@ -122,7 +134,12 @@ class SeguidorPieza:
     antes de tiempo es lo normal -es lo que hace un musico que va con el pulso-,
     y adjudicar esa pulsacion a la nota anterior convertiria un adelanto de 50 ms
     en un fallo y ademas dejaria la nota buena sin cobrar. Cada nota se cobra una
-    sola vez, acertada o no: una segunda pulsacion busca otra nota.
+    sola vez, acertada o no: una segunda pulsacion busca otra nota. Pero "la mas
+    cercana" tiene un limite: cada nota solo se puede reclamar desde su ventana de
+    reclamo (su duracion escrita mas la ventana de "a tiempo", ver
+    `_ventanas_reclamo_s`), y una pulsacion que no alcanza a ninguna no se anota ni
+    cuenta como fallo. Sin ese limite, una nota que el alumno nunca toco acababa en
+    el informe como tocada -y acertada- con un desfase absurdo.
 
     NO SABE SEGUIR ACORDES. `Pieza` admite dos notas con el mismo
     `inicio_pulsos` a proposito (los archivos de Guitar Pro de la etapa 3b los
@@ -156,6 +173,27 @@ class SeguidorPieza:
             [pulsos_a_segundos(nota.inicio_pulsos, pieza.tempo) for nota in pieza.notas],
             dtype=float,
         )
+        # Hasta donde puede estirarse una pulsacion para reclamar cada nota.
+        #
+        # Se deriva de la PIEZA y no es un numero clavado: la duracion escrita de
+        # la nota mas la ventana de "a tiempo". Al bajar el tempo para practicar
+        # lento la nota dura mas y la ventana se ensancha sola, que es lo que hace
+        # falta (a 40 ppm nadie llega con la precision de 120), y en un pasaje de
+        # semicorcheas se estrecha igual de sola. El sumando de `a_tiempo` es lo
+        # que evita que una nota cortisima se vuelva imposible de reclamar.
+        #
+        # Sin este limite, una pulsacion suelta se adjudicaba a la nota huerfana
+        # mas cercana por lejos que estuviera: una nota que el alumno NUNCA toco
+        # entraba en el informe como tocada y acertada con un desfase de 30 s, y
+        # todo lo que se publique encima -porcentaje de acertadas, desfase medio,
+        # regularidad- quedaba envenenado.
+        self._ventanas_reclamo_s = np.array(
+            [
+                pulsos_a_segundos(nota.duracion_pulsos, pieza.tempo) + ventana_a_tiempo_s
+                for nota in pieza.notas
+            ],
+            dtype=float,
+        )
         self._duracion_s = pieza.duracion_s
         self._candado = threading.RLock()
         self.reiniciar()
@@ -168,6 +206,10 @@ class SeguidorPieza:
             # Instante del reloj del analisis que corresponde a `_instante_pieza`.
             # None es "todavia sin fijar": lo fija el proximo cuadro.
             self._origen_analisis: float | None = None
+            # Instante del reloj del analisis desde el que la correspondencia
+            # actual es valida: el primer cuadro tras colocar el reloj a mano.
+            # Un onset anterior se midio con otra correspondencia (ver `procesar`).
+            self._analisis_desde: float | None = None
             self._tocadas: list[NotaTocada] = []
             self._cobradas = np.zeros(len(self._inicios_s), dtype=bool)
 
@@ -192,10 +234,20 @@ class SeguidorPieza:
         Mover el reloj a mano invalida la correspondencia con el del analisis (el
         cabezal ya no esta donde el ultimo cuadro decia), asi que se vuelve a
         fijar en el proximo cuadro.
+
+        Y invalida algo mas: las pulsaciones EN VUELO. El detector resuelve un
+        onset hasta 250 ms despues de que ocurriera, con su instante en el reloj
+        del analisis; si el reloj de la pieza salta entremedias, traducir ese
+        onset con la correspondencia nueva lo coloca donde no paso nada. Con un
+        salto a 3,0 s, una pulsacion tocada en el segundo 1,0 se adjudicaba a la
+        nota 3 y "a tiempo". Por eso `_adjudicar` descarta los onsets anteriores
+        al primer cuadro posterior a este salto: lo que se toco antes de la pausa
+        pertenece al tramo que se acaba de abandonar.
         """
         with self._candado:
             self._instante_pieza = float(instante_s)
             self._origen_analisis = None
+            self._analisis_desde = None
             return self.estado
 
     def procesar(self, resultado: ResultadoAnalisis, instante_analisis: float) -> EstadoCarril:
@@ -209,6 +261,7 @@ class SeguidorPieza:
         with self._candado:
             if self._origen_analisis is None:
                 self._origen_analisis = instante_analisis - self._instante_pieza
+                self._analisis_desde = instante_analisis
             self._instante_pieza = instante_analisis - self._origen_analisis
             pulsacion = self._detector.procesar(resultado, instante_analisis)
             if pulsacion is not None:
@@ -240,10 +293,21 @@ class SeguidorPieza:
         porque ese instante llega despues del ataque y el numero que saldria seria
         el retraso del detector disfrazado de retraso del alumno.
 
-        Si ya no queda ninguna nota sin cobrar, la pulsacion se descarta: la pieza
-        entera esta contada y no hay donde anotarla. Ojo con esto, que se paga en
-        el detector: el ya ha sellado esa nota como la ultima resuelta y ha gastado
-        el instante del ataque antes de que aqui se decida nada.
+        Una pulsacion se DESCARTA, sin anotar nada y sin contar como fallo, en
+        tres casos:
+
+        1. Ninguna nota sin cobrar cae dentro de su ventana de reclamo
+           (`_ventanas_reclamo_s`). Una pulsacion parasita -o una nota tocada
+           muchisimo despues del final- no puede adjudicarse a una nota que el
+           alumno nunca toco: eso la meteria en el informe como tocada, y encima
+           acertada si coincidia la altura.
+        2. La pieza entera esta ya cobrada.
+        3. El onset es anterior al primer cuadro de la correspondencia actual, es
+           decir, se toco antes del ultimo `avanzar_a` (ver su docstring).
+
+        Descartar no es gratis, y se paga en el detector: el ya ha sellado esa nota
+        como la ultima resuelta y ha gastado el instante del ataque antes de que
+        aqui se decida nada.
         """
         if not self._cobradas.size or self._cobradas.all():
             return
@@ -252,14 +316,20 @@ class SeguidorPieza:
             instante_onset: float | None = None
             instante_para_buscar = self._instante_pieza
         else:
-            # `procesar` acaba de fijar la correspondencia, asi que aqui existe.
-            origen = self._origen_analisis if self._origen_analisis is not None else 0.0
-            instante_onset = pulsacion.instante - origen
+            # `procesar` fija la correspondencia antes de llamar aqui, siempre. Si
+            # faltara, el desfase saldria del tamaño de time.monotonic() y una
+            # rama defensiva lo taparia en vez de delatarlo.
+            assert self._origen_analisis is not None, "sin correspondencia entre relojes"
+            if self._analisis_desde is not None and pulsacion.instante < self._analisis_desde:
+                return
+            instante_onset = pulsacion.instante - self._origen_analisis
             instante_para_buscar = instante_onset
 
         distancias = np.abs(self._inicios_s - instante_para_buscar)
-        distancias[self._cobradas] = np.inf
-        indice = int(np.argmin(distancias))
+        reclamables = (~self._cobradas) & (distancias <= self._ventanas_reclamo_s)
+        if not reclamables.any():
+            return
+        indice = int(np.argmin(np.where(reclamables, distancias, np.inf)))
         nota = self.pieza.notas[indice]
         self._cobradas[indice] = True
 

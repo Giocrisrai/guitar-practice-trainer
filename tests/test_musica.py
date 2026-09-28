@@ -113,8 +113,16 @@ def test_midi_de_nombre_es_la_inversa_de_nombre_de_midi(nombre, midi):
     assert nombre_de_midi(midi) == nombre
 
 
-@pytest.mark.parametrize("nombre", ["", "H2", "E", "mi2", "40"])
+@pytest.mark.parametrize(
+    "nombre", ["", "H2", "E", "mi2", "40", " E2 ", "E2 ", "C99", "E02", "E+2", "E2.0"]
+)
 def test_midi_de_nombre_rechaza_lo_que_no_es_una_nota(nombre):
-    """Lo que no es notacion cientifica se rechaza, no se adivina."""
+    """Solo acepta lo que `nombre_de_midi` produce: ni espacios, ni octavas irreales.
+
+    "C99" da un MIDI aritmeticamente valido (1200) que ninguna guitarra alcanza, y
+    " E2 " o "E02" son cadenas que nadie escribe: adivinarlas convertiria en nota
+    cualquier cosa parecida, y este es el sitio por donde entra lo que publica el
+    detector de tono.
+    """
     with pytest.raises(ValueError):
         midi_de_nombre(nombre)
