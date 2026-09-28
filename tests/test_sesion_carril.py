@@ -92,6 +92,23 @@ def publicar(sesion, reloj, resultado, cuadros=1, paso=0.021):
         reloj.avanzar(paso)
 
 
+def avanzar_mirando(sesion_carril, reloj, segundos, paso=1 / 30.0):
+    """Mueve el reloj en pasos, consultando el estado en cada uno.
+
+    Es como se mueve el tiempo en produccion: el WebSocket pregunta a 30 Hz (y el
+    audio avisa mas a menudo todavia, cada 21 ms). Ninguna espera real: el paso lo
+    da el reloj falso. Devuelve el ultimo estado consultado.
+    """
+    restante = segundos
+    estado = sesion_carril.estado()
+    while restante > 1e-9:
+        este = min(paso, restante)
+        reloj.avanzar(este)
+        estado = sesion_carril.estado()
+        restante -= este
+    return estado
+
+
 def test_iniciar_devuelve_la_pieza_entera_una_sola_vez():
     """La pieza no viaja por el WebSocket: cientos de notas 30 veces por segundo
     seria tirar el canal en datos que no cambian."""
@@ -104,13 +121,23 @@ def test_iniciar_devuelve_la_pieza_entera_una_sola_vez():
 
 
 def test_el_instante_avanza_con_el_reloj():
+    """Adaptada del brief: el reloj avanza EN PASOS, mirando, como el WebSocket.
+
+    El brief movia el reloj 1,4 s de un salto y exigia que el cabezal se fuera
+    1,4 s de una vez. Esa expectativa era el defecto que hizo volver el salto de
+    30 s por tres caminos distintos: decia que un hueco largo sin ninguna
+    evidencia hay que creerselo entero. Ahora el cabezal avanza como mucho
+    `TECHO_TRAMO_S` por aviso, asi que la prueba avanza el reloj como ocurre de
+    verdad -a 30 Hz, con el WebSocket preguntando- y comprueba lo que de verdad
+    importaba: que el instante sigue al reloj y que el indice lo decide el reloj.
+    """
     reloj = RelojFalso()
     sesion_carril, sesion = carril(reloj)
     sesion_carril.iniciar(pieza_de([40, 45]))
     assert sesion_carril.estado()["instante_s"] == 0.0
-    reloj.avanzar(1.4)
-    assert sesion_carril.estado()["instante_s"] == 1.4
-    assert sesion_carril.estado()["indice_actual"] == 1
+    estado = avanzar_mirando(sesion_carril, reloj, 1.4)
+    assert estado["instante_s"] == pytest.approx(1.4, abs=0.001)
+    assert estado["indice_actual"] == 1
     sesion_carril.detener()
     sesion.detener()
 
@@ -121,17 +148,16 @@ def test_sin_senal_el_carril_se_detiene_y_al_volver_sigue_donde_estaba():
     reloj = RelojFalso()
     sesion_carril, sesion = carril(reloj)
     sesion_carril.iniciar(pieza_de([40, 45, 50]))
-    reloj.avanzar(1.0)
-    assert sesion_carril.estado()["instante_s"] == 1.0
+    assert avanzar_mirando(sesion_carril, reloj, 1.0)["instante_s"] == pytest.approx(1.0, abs=0.001)
 
     sesion.senal_ausente = True
-    reloj.avanzar(5.0)
-    assert sesion_carril.estado()["instante_s"] == 1.0
-    assert sesion_carril.estado()["pausado"] is True
+    estado = avanzar_mirando(sesion_carril, reloj, 5.0)
+    assert estado["instante_s"] == pytest.approx(1.0, abs=0.001)
+    assert estado["pausado"] is True
 
     sesion.senal_ausente = False
-    reloj.avanzar(0.5)
-    assert sesion_carril.estado()["instante_s"] == 1.5
+    estado = avanzar_mirando(sesion_carril, reloj, 0.5)
+    assert estado["instante_s"] == pytest.approx(1.5, abs=0.001)
     sesion_carril.detener()
     sesion.detener()
 
@@ -341,6 +367,76 @@ def test_empezar_sin_el_cable_puesto_y_enchufarlo_treinta_segundos_despues():
     reloj.avanzar(30.0)  # ni un cuadro, ni una mirada: se estaba enchufando
     publicar(sesion, reloj, suena("E2"), cuadros=1)  # y aparece ya con señal
     assert sesion_carril.estado()["instante_s"] == pytest.approx(0.0, abs=0.15)
+    sesion_carril.detener()
+    sesion.detener()
+
+
+def test_la_vuelta_avisada_por_una_consulta_de_estado_tampoco_traga_el_hueco():
+    """El tercer camino: tras el hueco, quien avisa primero es el WebSocket.
+
+    `estado()` y `_observar` son dos eventos asincronos sin ningun orden
+    garantizado: el WebSocket puede reconectar y preguntar antes de que termine de
+    analizarse el primer cuadro del dispositivo recien enchufado. Y ojo, porque lo
+    que hace creible ese tramo es que `Sesion.senal_ausente` es False mientras no
+    se haya procesado ningun cuadro: al arrancar, el sistema dice "hay señal" sin
+    haber oido nada.
+    """
+    reloj = RelojFalso()
+    sesion_carril, sesion = carril(reloj)
+    sesion_carril.iniciar(pieza_de([40, 45, 50]))
+    reloj.avanzar(30.0)  # ni cuadros ni miradas: se estaba enchufando el cable
+    assert sesion_carril.estado()["instante_s"] == pytest.approx(0.0, abs=0.15)
+    # Y el cuadro que llega detras tampoco puede meterlo.
+    publicar(sesion, reloj, suena("E2"), cuadros=1)
+    assert sesion_carril.estado()["instante_s"] == pytest.approx(0.0, abs=0.15)
+    sesion_carril.detener()
+    sesion.detener()
+
+
+def test_tras_un_apagon_da_igual_quien_avise_primero():
+    """El mismo hueco que la prueba del apagon, pero avisado por una consulta.
+
+    Con audio ya en marcha y luego parado, el primero en enterarse puede ser el
+    WebSocket o el siguiente cuadro. Los dos ordenes tienen que dar lo mismo.
+    """
+    reloj = RelojFalso()
+    sesion_carril, sesion = carril(reloj)
+    sesion_carril.iniciar(pieza_de([40, 45, 50]))
+    publicar(sesion, reloj, suena("E2"), cuadros=10)
+    instante = sesion_carril.estado()["instante_s"]
+
+    reloj.avanzar(30.0)
+    assert sesion_carril.estado()["instante_s"] == pytest.approx(instante, abs=0.15)
+    publicar(sesion, reloj, SILENCIO, cuadros=1)
+    assert sesion_carril.estado()["instante_s"] == pytest.approx(instante, abs=0.15)
+    sesion_carril.detener()
+    sesion.detener()
+
+
+def test_un_hueco_corto_de_audio_no_mueve_el_cabezal_mas_de_lo_acotado():
+    """El cuarto camino que queda, acotado y fijado aqui.
+
+    Entre `TECHO_TRAMO_S` (0,1 s) y `ESPERA_SIN_CUADROS_S` (0,25 s) hay una franja
+    en la que el reloj de esta clase ya frena pero el del SEGUIDOR todavia no se
+    recoloca (recolocarlo le costaria las pulsaciones en vuelo, y en esa franja
+    aun puede haber alguna). Asi que un bache de audio de esa duracion entra en el
+    cabezal por la via del seguidor, que es quien publica mientras llegan cuadros.
+
+    No es el agujero de los 30 s: esta acotado por `ESPERA_SIN_CUADROS_S`, no por
+    lo que dure el corte, porque pasada esa franja la recolocacion lo corta. Esta
+    prueba lo fija para que la cota no crezca en silencio.
+    """
+    reloj = RelojFalso()
+    sesion_carril, sesion = carril(reloj)
+    sesion_carril.iniciar(pieza_de([40, 45, 50]))
+    publicar(sesion, reloj, suena("E2"), cuadros=10)
+    instante = sesion_carril.estado()["instante_s"]
+
+    reloj.avanzar(0.2)  # bache de audio, por debajo de ESPERA_SIN_CUADROS_S
+    publicar(sesion, reloj, SILENCIO, cuadros=1)
+
+    despues = sesion_carril.estado()["instante_s"]
+    assert despues - instante <= ESPERA_SIN_CUADROS_S + 0.03
     sesion_carril.detener()
     sesion.detener()
 
