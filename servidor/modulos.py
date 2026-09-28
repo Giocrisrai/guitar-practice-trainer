@@ -64,3 +64,12 @@ registrar_modulo(
         icono="🎯",
     )
 )
+
+registrar_modulo(
+    Modulo(
+        clave="carril",
+        nombre="Carril",
+        descripcion="Las notas vienen hacia ti: toca cuando llegan",
+        icono="🛣️",
+    )
+)
