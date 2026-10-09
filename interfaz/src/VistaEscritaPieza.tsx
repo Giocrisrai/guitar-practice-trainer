@@ -54,9 +54,14 @@ function textoCents(cents: number | null): string {
 }
 
 /** La nota que el alumno tocó cuando no era la pedida; `null` si acertó la altura
- * o aún no tocó. Se compara el MIDI tal cual lo manda el núcleo. */
-function tocadaDistinta(midiPedido: number, tocada: NotaTocada | undefined): NotaTocada | null {
-  return tocada !== undefined && tocada.midi !== midiPedido ? tocada : null;
+ * o aún no tocó.
+ *
+ * El veredicto es `acertada`, que ya lo publica el núcleo
+ * (`seguimiento.py:_adjudicar`, `tiposPieza.ts`). Aquí se comparaban otra vez
+ * los MIDIs, que es literalmente ese booleano recalculado: la misma duplicación
+ * que en la etapa 2a hubo que quitar cuatro veces. */
+function tocadaDistinta(tocada: NotaTocada | undefined): NotaTocada | null {
+  return tocada !== undefined && !tocada.acertada ? tocada : null;
 }
 
 function titulo(nombre: string, tocada: NotaTocada | undefined): string {
@@ -102,7 +107,7 @@ function Tablatura({
               <span
                 key={celda.indice}
                 className={enCurso ? "traste-actual" : undefined}
-                style={tocada === undefined ? undefined : { color: colorDeDesviacion(tocada.cents) }}
+                style={tocada === undefined ? undefined : { color: colorDeDesviacion(tocada) }}
               >
                 {celda.texto}
               </span>
@@ -127,14 +132,14 @@ function Tablatura({
  * que deja ver una cuerda desafinada más de un semitono. */
 function Equivocadas({ compas, tocadas }: { compas: Compas; tocadas: Map<number, NotaTocada> }) {
   const filas = compas.notas.flatMap((nota) => {
-    const distinta = tocadaDistinta(nota.midi, tocadas.get(nota.indice));
+    const distinta = tocadaDistinta(tocadas.get(nota.indice));
     return distinta === null ? [] : [{ nota, distinta }];
   });
   if (filas.length === 0) return null;
   return (
     <ul className="equivocadas">
       {filas.map(({ nota, distinta }) => (
-        <li key={nota.indice} style={{ color: colorDeDesviacion(distinta.cents) }}>
+        <li key={nota.indice} style={{ color: colorDeDesviacion(distinta) }}>
           Pedida {nota.nombre}, tocaste {distinta.nombre} ({textoCents(distinta.cents)})
         </li>
       ))}
@@ -188,9 +193,9 @@ function Pentagrama({
         const altura = alturaEnPentagrama(nota.midi);
         const cx = x(nota.inicio_pulsos);
         const tocada = tocadas.get(nota.indice);
-        const color = tocada === undefined ? COLOR_PENDIENTE : colorDeDesviacion(tocada.cents);
+        const color = tocada === undefined ? COLOR_PENDIENTE : colorDeDesviacion(tocada);
         const hueca = nota.duracion_pulsos >= 2;
-        const distinta = tocadaDistinta(nota.midi, tocada);
+        const distinta = tocadaDistinta(tocada);
         return (
           <g key={nota.indice}>
             <title>{titulo(nota.nombre, tocada)}</title>
@@ -223,7 +228,7 @@ function Pentagrama({
                   rx={ESPACIO * 1.1}
                   ry={ESPACIO * 0.8}
                   fill="none"
-                  stroke={colorDeDesviacion(distinta.cents)}
+                  stroke={colorDeDesviacion(distinta)}
                   strokeDasharray="2 2"
                 />
                 <text
@@ -231,7 +236,7 @@ function Pentagrama({
                   y={y(alturaEnPentagrama(distinta.midi)) - ESPACIO * 1.5}
                   fontSize={9}
                   textAnchor="middle"
-                  fill={colorDeDesviacion(distinta.cents)}
+                  fill={colorDeDesviacion(distinta)}
                 >
                   {distinta.nombre}
                 </text>

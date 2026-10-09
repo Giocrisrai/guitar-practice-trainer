@@ -42,6 +42,13 @@ export type Clasificacion = "a_tiempo" | "pronto" | "tarde";
  * traer cents válidos, y una con instante puede traerlos nulos. No se deduce
  * uno del otro. En ningún caso `null` significa "cero" ni "a tiempo": significa
  * que ese dato no se supo, y pintarlo como afinado o puntual sería mentir.
+ *
+ * `acertada` y `afinada` son los dos VEREDICTOS, y los dos los decide el núcleo:
+ * `acertada` compara la altura con la nota escrita y `afinada` aplica a `cents`
+ * la misma regla que el resto del programa (`nucleo.musica.esta_afinada`). La
+ * interfaz los consume; no vuelve a comparar MIDIs ni a copiarse el umbral de
+ * cents. `afinada` es `null` cuando `cents` lo es: no se supo, que no es ni
+ * afinada ni desafinada.
  */
 export interface NotaTocada {
   indice: number;
@@ -51,6 +58,7 @@ export interface NotaTocada {
   desfase_s: number | null;
   clasificacion: Clasificacion | null;
   acertada: boolean;
+  afinada: boolean | null;
 }
 
 /**

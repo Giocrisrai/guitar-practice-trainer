@@ -556,3 +556,41 @@ def test_un_acorde_en_su_propio_instante_senala_a_su_ultima_nota():
     seguidor = SeguidorPieza(pieza)
     assert seguidor.avanzar_a(0.75).indice_actual == 2
     assert seguidor.avanzar_a(0.76).indice_actual == 2
+
+
+def test_el_veredicto_de_la_afinacion_lo_publica_el_nucleo():
+    """`afinada` con la misma regla que el resto del programa, no un umbral copiado.
+
+    La interfaz se copiaba el umbral de 5 cents de `nucleo.musica.esta_afinada`
+    para elegir el color de la desviacion. El veredicto lo decide el nucleo y la
+    interfaz lo consume, como ya hace con `acertada` y `clasificacion`.
+    """
+    seguidor = SeguidorPieza(pieza_de([40, 45]))
+    assert tocar(seguidor, "A2", en=1.0, cents=-4.9).afinada is True
+
+    seguidor.reiniciar()
+    assert tocar(seguidor, "A2", en=1.0, cents=5.0).afinada is False
+
+
+def test_una_desviacion_que_no_se_supo_no_es_ni_afinada_ni_desafinada():
+    """`cents` None es "no se supo": `afinada` tambien es None, nunca True."""
+
+    class DetectorSinCents:
+        def __init__(self):
+            self.cuadros = 0
+
+        def reiniciar(self):
+            self.cuadros = 0
+
+        def procesar(self, resultado, instante):
+            self.cuadros += 1
+            if self.cuadros == 1:
+                return Pulsacion(nota="E2", cents=None, instante=instante)
+            return None
+
+    seguidor = SeguidorPieza(pieza_de([40, 45]), detector=DetectorSinCents())
+    seguidor.avanzar_a(0.0)
+    tocada = seguidor.procesar(suena("E2"), 0.0).tocadas[-1]
+    assert tocada.cents is None
+    assert tocada.afinada is None
+    assert tocada.a_dict()["afinada"] is None

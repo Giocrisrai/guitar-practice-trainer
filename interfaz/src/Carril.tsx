@@ -170,7 +170,7 @@ function pintarCuadro(
     const alto = Math.max(rectangulo.alto, ALTO_MINIMO_PX);
     const arriba = rectangulo.y - alto;
 
-    contexto.fillStyle = tocada === undefined ? COLOR_PENDIENTE : colorDeDesviacion(tocada.cents);
+    contexto.fillStyle = tocada === undefined ? COLOR_PENDIENTE : colorDeDesviacion(tocada);
     contexto.fillRect(
       rectangulo.x + MARGEN_CARRIL_PX,
       arriba,
@@ -207,7 +207,7 @@ function ResumenCarril({ pieza, estado }: { pieza: Pieza; estado: EstadoCarril }
           <li key={tocada.indice}>
             <span
               className="punto-desviacion"
-              style={{ background: colorDeDesviacion(tocada.cents) }}
+              style={{ background: colorDeDesviacion(tocada) }}
             />
             {nombreDeTocada(pieza, tocada)} — {textoClasificacion(tocada.clasificacion)}{" "}
             {textoDesfase(tocada.desfase_s)}

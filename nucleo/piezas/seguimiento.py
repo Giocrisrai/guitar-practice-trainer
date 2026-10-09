@@ -23,7 +23,7 @@ import numpy as np
 
 from nucleo.analisis.pipeline import ResultadoAnalisis
 from nucleo.ejercicios.pulsaciones import DetectorPulsaciones, Pulsacion
-from nucleo.musica import midi_de_nombre, nombre_de_midi
+from nucleo.musica import esta_afinada, midi_de_nombre, nombre_de_midi
 from nucleo.piezas.modelo import Pieza, pulsos_a_segundos
 
 # Cuanto puede desviarse una pulsacion del instante escrito y seguir contando
@@ -75,6 +75,13 @@ class NotaTocada:
     `clasificacion`- cuando la pulsacion llego sin instante (ver
     `Pulsacion.instante`): no se sabe cuando empezo, y fabricar un desfase con el
     instante del cuadro mediria el retraso del detector, no el del alumno.
+
+    `afinada` es el veredicto de la DESVIACION, con la misma regla que el resto
+    del programa (`nucleo.musica.esta_afinada`). Se publica calculado aqui porque
+    es un veredicto, y los veredictos los decide el nucleo: la interfaz se copiaba
+    el umbral de 5 cents para elegir el color, que es la clase de duplicacion que
+    en la etapa 2a hubo que quitar cuatro veces. Vale None cuando `cents` es None
+    -no se supo la desviacion-, que no es ni afinada ni desafinada.
     """
 
     indice: int
@@ -83,6 +90,7 @@ class NotaTocada:
     desfase_s: float | None
     clasificacion: str | None
     acertada: bool
+    afinada: bool | None
 
     def a_dict(self) -> dict:
         return {
@@ -93,6 +101,7 @@ class NotaTocada:
             "desfase_s": None if self.desfase_s is None else round(self.desfase_s, 3),
             "clasificacion": self.clasificacion,
             "acertada": self.acertada,
+            "afinada": self.afinada,
         }
 
 
@@ -456,6 +465,7 @@ class SeguidorPieza:
                 desfase_s=desfase,
                 clasificacion=clasificacion,
                 acertada=midi_tocado == nota.midi,
+                afinada=None if pulsacion.cents is None else esta_afinada(pulsacion.cents),
             )
         )
 

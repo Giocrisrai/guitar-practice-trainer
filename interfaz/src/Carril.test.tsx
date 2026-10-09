@@ -236,8 +236,10 @@ describe("Carril", () => {
     enviarEstado({
       instante_s: 4.0, indice_actual: 3, total: 3, completado: true, pausado: false,
       tocadas: [
-        { indice: 0, midi: 40, cents: -5.0, desfase_s: 0.01, clasificacion: "a_tiempo", acertada: true },
-        { indice: 1, midi: 45, cents: 3.0, desfase_s: 0.22, clasificacion: "tarde", acertada: true },
+        { indice: 0, midi: 40, cents: -5.0, desfase_s: 0.01, clasificacion: "a_tiempo", acertada: true,
+          afinada: false },
+        { indice: 1, midi: 45, cents: 3.0, desfase_s: 0.22, clasificacion: "tarde", acertada: true,
+          afinada: true },
       ],
     });
     expect(await screen.findByText(/a tiempo/i)).toBeTruthy();
@@ -307,7 +309,8 @@ describe("Carril", () => {
       completado: true,
       pausado: false,
       tocadas: [
-        { indice: 2, midi: 52, cents: 0, desfase_s: 0, clasificacion: "a_tiempo", acertada: true },
+        { indice: 2, midi: 52, cents: 0, desfase_s: 0, clasificacion: "a_tiempo", acertada: true,
+          afinada: true },
       ],
     });
 
@@ -345,7 +348,8 @@ describe("Carril", () => {
       completado: true,
       pausado: false,
       tocadas: [
-        { indice: 2, midi: 52, cents: 0, desfase_s: 0, clasificacion: "a_tiempo", acertada: true },
+        { indice: 2, midi: 52, cents: 0, desfase_s: 0, clasificacion: "a_tiempo", acertada: true,
+          afinada: true },
       ],
     });
     expect(screen.queryByText(/pieza terminada/i)).toBeNull();

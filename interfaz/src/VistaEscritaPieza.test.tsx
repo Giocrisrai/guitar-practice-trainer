@@ -16,8 +16,24 @@ const PIEZA: Pieza = {
   ],
 };
 
+/**
+ * Una pulsación tal y como la publica el núcleo, con sus dos veredictos ya
+ * decididos: `acertada` compara la altura con la nota escrita de la pieza y
+ * `afinada` aplica a los cents la regla de `nucleo.musica.esta_afinada`
+ * (`abs(cents) < 5`, estricto). Se calculan aquí porque esto FINGE al servidor;
+ * la interfaz no los calcula en ningún sitio, los consume.
+ */
 function tocada(indice: number, midi: number, nombre: string, cents: number | null): NotaTocada {
-  return { indice, midi, nombre, cents, desfase_s: 0, clasificacion: "a_tiempo", acertada: true };
+  return {
+    indice,
+    midi,
+    nombre,
+    cents,
+    desfase_s: 0,
+    clasificacion: "a_tiempo",
+    acertada: midi === PIEZA.notas[indice].midi,
+    afinada: cents === null ? null : Math.abs(cents) < 5,
+  };
 }
 
 function estado(parcial: Partial<EstadoCarril>): EstadoCarril {
@@ -64,11 +80,13 @@ describe("VistaEscrita", () => {
         cuerdas={6}
       />
     );
-    expect(colorDeDesviacion(null)).not.toBe(colorDeDesviacion(0));
+    const sinSaber = { cents: null, afinada: null };
+    const afinada = { cents: 0, afinada: true };
+    expect(colorDeDesviacion(sinSaber)).not.toBe(colorDeDesviacion(afinada));
     const cabezas = container.querySelectorAll("ellipse");
     // Notas con cabeza propia: las dos tocadas, en orden, más la tercera pendiente.
-    expect(cabezas[0].getAttribute("stroke")).toBe(colorDeDesviacion(null));
-    expect(cabezas[1].getAttribute("stroke")).toBe(colorDeDesviacion(0));
+    expect(cabezas[0].getAttribute("stroke")).toBe(colorDeDesviacion(sinSaber));
+    expect(cabezas[1].getAttribute("stroke")).toBe(colorDeDesviacion(afinada));
     expect(screen.getByText("?")).toBeTruthy();
     expect(screen.getByText("0 c")).toBeTruthy();
   });
@@ -90,6 +108,24 @@ describe("VistaEscrita", () => {
       <VistaEscrita pieza={PIEZA} estado={estado({ tocadas: [tocada(1, 45, "A2", 3)] })} cuerdas={6} />
     );
     expect(screen.queryByTestId("nota-tocada-distinta")).toBeNull();
+  });
+
+  /**
+   * Quién decide si se acertó: el núcleo. La interfaz comparaba otra vez los
+   * MIDIs, que es `!tocada.acertada` recalculado, y el núcleo ya lo publica.
+   *
+   * Se prueba con un estado que la interfaz no puede fabricar sola: el MIDI
+   * tocado COINCIDE con el escrito y el núcleo dice `acertada: false`. Es
+   * imposible en el servidor de verdad, y justamente por eso distingue quién
+   * manda: recomparando MIDIs la fila no sale; consumiendo el booleano, sí.
+   */
+  it("el veredicto de acierto lo manda el núcleo, no una comparación propia", () => {
+    const discrepante = { ...tocada(1, 45, "A2", 0), acertada: false };
+    render(
+      <VistaEscrita pieza={PIEZA} estado={estado({ tocadas: [discrepante] })} cuerdas={6} />
+    );
+    expect(screen.getByTestId("nota-tocada-distinta")).toBeTruthy();
+    expect(screen.getByText("Pedida A2, tocaste A2 (0 c)")).toBeTruthy();
   });
 
   it("dos notas en la misma casilla no descuadran la línea", () => {

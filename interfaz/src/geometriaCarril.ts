@@ -5,10 +5,11 @@
  * lo llame decide cómo y dónde se pintan.
  *
  * No decide nada musical: la clasificación de cada pulsación ("a_tiempo",
- * "pronto", "tarde") ya viene dada por el núcleo en `NotaTocada.clasificacion`
- * (ver `tiposPieza.ts`) y este módulo no la toca ni la deriva del desfase. Lo
- * único que este módulo decide es de qué color se pinta una desviación en
- * cents, que es una elección puramente visual, no un veredicto.
+ * "pronto", "tarde") y el veredicto de la afinación (`NotaTocada.afinada`) ya
+ * vienen dados por el núcleo (ver `tiposPieza.ts`) y este módulo no los toca ni
+ * los deriva del desfase o de los cents. Lo único que este módulo decide es de
+ * qué color se pinta una desviación ya juzgada, que es una elección puramente
+ * visual, no un veredicto.
  */
 
 import type { NotaDePieza } from "./tiposPieza";
@@ -114,28 +115,37 @@ export function rectanguloDeNota(
   return { x, y, ancho: anchoCarril, alto };
 }
 
-/** Escala de color que IMITA la tolerancia del núcleo
- * (`nucleo.musica.esta_afinada`: `abs(cents) < 5.0`, estricto). Es una copia
- * visual, no la fuente de verdad: algún día debería venir dada por el núcleo.
- * No hay ningún veredicto de acierto que dependa de este número. */
-const TOLERANCIA_AFINADA_CENTS = 5;
-
 const COLOR_DESCONOCIDO = "#7d848f"; // gris: la desviación no se supo
 const COLOR_AFINADA = "#34d17a"; // verde: dentro de la tolerancia
 const COLOR_ALTA = "#e8a33d"; // ámbar: sonó por encima
 const COLOR_BAJA = "#3d8ee8"; // azul: sonó por debajo
 
+/** Lo que hace falta para pintar una desviación: cuánta fue y si el núcleo la da
+ * por afinada. Es la parte de `NotaTocada` que este módulo necesita, y nada más:
+ * así se puede pintar también algo que no sea una nota de la pieza. */
+export interface DesviacionPintable {
+  cents: number | null;
+  afinada: boolean | null;
+}
+
 /**
  * Color para pintar la desviación en cents de una nota tocada.
+ *
+ * El VEREDICTO -si está afinada- lo trae el núcleo en `afinada`, con la misma
+ * regla que el resto del programa (`nucleo.musica.esta_afinada`). Este módulo
+ * solo elige el color, que es una decisión visual; antes se copiaba aquí el
+ * umbral de 5 cents, y un umbral duplicado es un umbral que algún día dirá otra
+ * cosa que el núcleo.
  *
  * `cents === null` significa que la desviación no se supo (el detector no la
  * dio; es independiente de si se supo el instante, ver `NotaTocada` en
  * `tiposPieza.ts`), NO que sonara perfectamente afinada: por eso tiene su
  * propio color, distinto del de `cents === 0`. Confundirlos pintaría en verde
- * una nota de la que no se sabe nada.
+ * una nota de la que no se sabe nada. `afinada === null` dice lo mismo desde el
+ * otro lado y se trata igual.
  */
-export function colorDeDesviacion(cents: number | null): string {
-  if (cents === null) return COLOR_DESCONOCIDO;
-  if (Math.abs(cents) < TOLERANCIA_AFINADA_CENTS) return COLOR_AFINADA;
+export function colorDeDesviacion({ cents, afinada }: DesviacionPintable): string {
+  if (cents === null || afinada === null) return COLOR_DESCONOCIDO;
+  if (afinada) return COLOR_AFINADA;
   return cents > 0 ? COLOR_ALTA : COLOR_BAJA;
 }

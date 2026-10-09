@@ -58,9 +58,15 @@ describe("geometría del carril", () => {
 
   it("el color distingue afinada, alta y baja, y null no es cero", () => {
     // cents null significa NO tocada; cero significa perfectamente afinada.
-    expect(colorDeDesviacion(0)).not.toBe(colorDeDesviacion(30));
-    expect(colorDeDesviacion(30)).not.toBe(colorDeDesviacion(-30));
-    expect(colorDeDesviacion(null)).not.toBe(colorDeDesviacion(0));
+    expect(colorDeDesviacion({ cents: 0, afinada: true })).not.toBe(
+      colorDeDesviacion({ cents: 30, afinada: false })
+    );
+    expect(colorDeDesviacion({ cents: 30, afinada: false })).not.toBe(
+      colorDeDesviacion({ cents: -30, afinada: false })
+    );
+    expect(colorDeDesviacion({ cents: null, afinada: null })).not.toBe(
+      colorDeDesviacion({ cents: 0, afinada: true })
+    );
   });
 
   // Refuerzos (no son del brief).
@@ -78,8 +84,21 @@ describe("geometría del carril", () => {
     expect(rect.y).toBeGreaterThan(0);
   });
 
-  it("5 cents ya no es afinada, igual que en el núcleo (estricto)", () => {
-    expect(colorDeDesviacion(5)).not.toBe(colorDeDesviacion(0));
-    expect(colorDeDesviacion(4.9)).toBe(colorDeDesviacion(0));
+  it("el veredicto lo manda el núcleo, no el número de cents", () => {
+    // Este módulo ya no sabe donde esta el umbral de la afinacion: lo trae
+    // `NotaTocada.afinada`. Con los mismos cents y veredictos contrarios, los
+    // colores son contrarios; con cents distintos y el mismo veredicto, iguales.
+    expect(colorDeDesviacion({ cents: 4, afinada: false })).not.toBe(
+      colorDeDesviacion({ cents: 4, afinada: true })
+    );
+    expect(colorDeDesviacion({ cents: 4, afinada: true })).toBe(
+      colorDeDesviacion({ cents: 40, afinada: true })
+    );
+  });
+
+  it("una desviación sin veredicto se pinta como desconocida", () => {
+    expect(colorDeDesviacion({ cents: 12, afinada: null })).toBe(
+      colorDeDesviacion({ cents: null, afinada: null })
+    );
   });
 });
