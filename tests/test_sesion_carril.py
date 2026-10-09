@@ -10,7 +10,7 @@ import pytest
 from nucleo.analisis.pipeline import ResultadoAnalisis
 from nucleo.piezas.modelo import NotaEnPieza, Pieza
 from servidor.configuracion import Configuracion
-from servidor.piezas import ESPERA_SIN_CUADROS_S, SesionCarril
+from servidor.piezas import ARRANQUE_NINGUNO, ESPERA_SIN_CUADROS_S, SesionCarril
 from servidor.sesion import INTERVALO_ANALISIS
 
 
@@ -475,4 +475,36 @@ def test_detener_deja_de_alimentar_al_seguidor():
     for observador in observador_visto:
         observador(suena("E2"), reloj())
     assert sesion_carril.estado()["tocadas"] == []
+    sesion.detener()
+
+
+def test_cada_arranque_tiene_su_etiqueta_y_el_carril_apagado_no_tiene_ninguna():
+    """El `arranque` es lo que le dice al navegador de QUE pieza habla un paquete.
+
+    Hace falta porque el WebSocket y la respuesta de `iniciar` son dos canales que
+    se cruzan: un paquete emitido antes del arranque puede llegar despues de la
+    respuesta. Sin etiqueta, el navegador tenia que adivinar comparando el numero
+    de notas, y dos piezas del mismo tamaño -tocar dos veces la misma escala- se
+    confundian: salia el resumen de la anterior sobre la nueva.
+
+    De ahi las tres cosas que se comprueban: que sube en cada arranque, que nunca
+    se repite aunque las dos piezas sean iguales, y que un carril sin pieza
+    publica una etiqueta que no es de nadie.
+    """
+    reloj = RelojFalso()
+    sesion_carril, sesion = carril(reloj)
+
+    assert sesion_carril.estado()["arranque"] == ARRANQUE_NINGUNO
+
+    primera = sesion_carril.iniciar(pieza_de([40, 45, 50]))
+    assert primera["arranque"] != ARRANQUE_NINGUNO
+    assert sesion_carril.estado()["arranque"] == primera["arranque"]
+
+    # La misma pieza otra vez: el tamaño no distingue nada, la etiqueta si.
+    segunda = sesion_carril.iniciar(pieza_de([40, 45, 50]))
+    assert segunda["arranque"] != primera["arranque"]
+    assert segunda["total"] == primera["total"]
+
+    sesion_carril.detener()
+    assert sesion_carril.estado()["arranque"] == ARRANQUE_NINGUNO
     sesion.detener()

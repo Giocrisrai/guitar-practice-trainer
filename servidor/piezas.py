@@ -89,6 +89,11 @@ _CARRIL_APAGADO = EstadoCarril(
     instante_s=0.0, indice_actual=0, total=0, completado=False, tocadas=()
 )
 
+# El `arranque` que publica un carril sin pieza. Los arranques de verdad empiezan
+# en 1, asi que el cero no es el de ninguna pieza y nadie puede confundirlo con
+# una: es justo lo que se quiere, porque este estado no describe ninguna.
+ARRANQUE_NINGUNO = 0
+
 
 class SesionCarril:
     """Propietaria de la pieza en curso, de su seguidor y del reloj que la mueve.
@@ -129,6 +134,17 @@ class SesionCarril:
         self._perfil_activo_inyectado = perfil_activo
         self._pieza: Pieza | None = None
         self._seguidor: SeguidorPieza | None = None
+        # Que arranque publica el estado: sube en cada `iniciar` y nunca se
+        # reutiliza. Es lo que le permite al navegador saber de QUE pieza habla un
+        # paquete, en vez de adivinarlo.
+        #
+        # Hace falta porque el WebSocket y la respuesta de `iniciar` son dos
+        # canales distintos y se cruzan: un paquete emitido antes del arranque
+        # puede llegar despues de la respuesta, y uno emitido despues puede llegar
+        # antes. Sin etiqueta, el navegador acababa comparando totales para
+        # adivinar, y dos piezas del mismo tamaño -tocar dos veces la misma
+        # escala- se confundian: salia el resumen de la anterior sobre la nueva.
+        self._arranque = ARRANQUE_NINGUNO
         self._candado = threading.Lock()
         # Candado de arranque y parada, aparte del otro. Sin el, dos `iniciar()`
         # a la vez desde el hilo HTTP pueden registrar el observador dos veces y
@@ -164,6 +180,10 @@ class SesionCarril:
         lo llama el WebSocket 30 veces por segundo y mandar cientos de notas que
         no cambian seria tirar el canal.
 
+        La respuesta lleva tambien el `arranque` de esta pieza -viene dentro de
+        `estado()`-, que es la etiqueta con la que el navegador reconoce despues
+        sus paquetes y descarta los de la pieza anterior (ver `self._arranque`).
+
         Se rechaza una pieza escrita en otra afinacion que la activa (spec §5):
         dibujar trastes que tu instrumento no tiene es peor que no dibujar nada.
         El mensaje nombra las dos afinaciones, que es lo unico que le permite al
@@ -182,6 +202,7 @@ class SesionCarril:
             with self._candado:
                 self._pieza = pieza
                 self._seguidor = SeguidorPieza(pieza)
+                self._arranque += 1
                 self._instante = 0.0
                 self._ultima_mirada = ahora
                 self._ultimo_cuadro = None
@@ -354,7 +375,11 @@ class SesionCarril:
         """
         seguidor = self._seguidor
         if seguidor is None:
-            return {**_CARRIL_APAGADO.a_dict(), "pausado": False}
+            return {
+                **_CARRIL_APAGADO.a_dict(),
+                "pausado": False,
+                "arranque": ARRANQUE_NINGUNO,
+            }
         sin_cuadros = self._sin_cuadros(ahora)
         estado = seguidor.avanzar_a(self._instante) if sin_cuadros else seguidor.estado
-        return {**estado.a_dict(), "pausado": self._pausado}
+        return {**estado.a_dict(), "pausado": self._pausado, "arranque": self._arranque}

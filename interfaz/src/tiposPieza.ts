@@ -65,6 +65,20 @@ export interface NotaTocada {
  * nadie tocó no aparece aquí.
  */
 export interface EstadoCarril {
+  /**
+   * Qué arranque del carril describe este estado: un contador que el servidor
+   * sube con cada `iniciar` y que no reutiliza nunca (`SesionCarril._arranque`).
+   * Vale 0 cuando no hay pieza, que no es el arranque de ninguna.
+   *
+   * Es lo que le permite al navegador saber de QUÉ pieza habla un paquete. Hace
+   * falta porque el WebSocket y la respuesta de `/iniciar` son dos canales que se
+   * cruzan: un paquete emitido antes del arranque puede llegar después de la
+   * respuesta, y uno emitido después puede llegar antes. Compararlo con el
+   * arranque que trajo la pieza es la única forma de no adivinar; el número de
+   * notas no sirve, porque dos piezas del mismo tamaño -tocar dos veces la misma
+   * escala- lo tienen igual.
+   */
+  arranque: number;
   instante_s: number;
   indice_actual: number;
   total: number;
@@ -76,7 +90,8 @@ export interface EstadoCarril {
 /**
  * Lo que devuelve `POST /api/piezas/iniciar`: la pieza entera, de una vez,
  * más el mismo estado inicial que después repite el WebSocket
- * (`SesionCarril.iniciar()`, servidor/piezas.py).
+ * (`SesionCarril.iniciar()`, servidor/piezas.py). De ahí sale el `arranque` con
+ * el que se reconocen después los paquetes de esta pieza.
  */
 export interface RespuestaIniciarPieza extends EstadoCarril {
   pieza: Pieza;

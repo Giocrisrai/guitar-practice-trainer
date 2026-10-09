@@ -73,16 +73,54 @@ export function useCarril(url = `ws://${window.location.host}/ws/piezas`): Sesio
    * como línea base sin nada que corregir, que es exactamente lo que se quiere.
    */
   const relojCaduco = useRef(false);
-  /** Cuántos paquetes ha traído el WebSocket. Solo sirve para saber si alguno
-   * llegó mientras un `POST /iniciar` viajaba (ver `iniciar`). */
-  const paquetes = useRef(0);
+  /**
+   * El arranque de la pieza que tenemos, tal y como lo etiquetó el servidor.
+   * `null` mientras no hay pieza.
+   *
+   * Es lo que decide qué paquetes son nuestros. Hace falta porque el WebSocket y
+   * la respuesta de `/iniciar` son dos canales que se cruzan: un paquete emitido
+   * antes del arranque puede llegar después de la respuesta, y uno emitido
+   * después puede llegar antes.
+   */
+  const arranque = useRef<number | null>(null);
+  /**
+   * El último paquete que no era de nuestra pieza, guardado por si un
+   * `POST /iniciar` en vuelo resulta ser el suyo.
+   *
+   * Un paquete puede llegar ANTES de que sepamos el arranque de la pieza que
+   * acabamos de pedir —el socket va por su cuenta y el POST tarda lo que tarda—.
+   * Descartarlo sin más perdería el paquete más nuevo de la pieza nueva, que es
+   * justo el que debe mandar sobre el estado inicial de la respuesta. Así que se
+   * aparta uno, el último, y al llegar la respuesta se decide con su etiqueta: si
+   * es de esta pieza se adopta, y si no se olvida.
+   */
+  const paqueteEnEspera = useRef<EstadoCarril | null>(null);
   /** El último instante que `instante` llegó a devolver, es decir el que se
    * pintó. Es lo que se congela al entrar en pausa (ver `instante`). */
   const instanteMostrado = useRef(0);
   const temporizador = useRef<number | null>(null);
 
-  /** Registra un paquete del servidor: estado nuevo y reloj sincronizado. */
+  /**
+   * Registra un paquete del servidor: estado nuevo y reloj sincronizado.
+   *
+   * Un paquete que no lleve el arranque de la pieza que tenemos se DESCARTA, sin
+   * mirar nada más: no habla de lo que hay en pantalla. Cubre los dos cruces de
+   * los dos canales —el paquete de la pieza anterior que todavía venía por el
+   * socket y el que se emitió antes del arranque y llegó después de la
+   * respuesta— y también el caso de todos los días, el carril apagado
+   * (`arranque: 0`) emitiendo treinta veces por segundo antes de empezar.
+   *
+   * Esto sustituye a una heurística anterior que comparaba el número de notas
+   * para adivinar de qué pieza venía un paquete. Adivinaba mal justo en el caso
+   * más normal: dos piezas del mismo tamaño -tocar dos veces la misma escala, o
+   * recargar la pieza al terminarla- tienen el mismo total, así que el resumen
+   * de la anterior salía encima de la nueva.
+   */
   const recibir = useCallback((nuevo: EstadoCarril) => {
+    if (nuevo.arranque !== arranque.current) {
+      paqueteEnEspera.current = nuevo;
+      return;
+    }
     ultimoEstado.current = nuevo;
     setEstado(nuevo);
     if (nuevo.pausado) {
@@ -121,7 +159,6 @@ export function useCarril(url = `ws://${window.location.host}/ws/piezas`): Sesio
     async (peticion: PeticionPieza) => {
       setIniciando(true);
       setError(null);
-      const paquetesAlPedir = paquetes.current;
       try {
         const respuesta = await fetch("/api/piezas/iniciar", {
           method: "POST",
@@ -141,33 +178,21 @@ export function useCarril(url = `ws://${window.location.host}/ws/piezas`): Sesio
         reloj.current = crearReloj();
         relojCaduco.current = false;
         instanteMostrado.current = 0;
-        const enVuelo = paquetes.current === paquetesAlPedir ? null : ultimoEstado.current;
-        if (enVuelo === null) {
-          recibir(estadoInicial);
-        } else if (enVuelo.total === piezaNueva.notas.length) {
-          // Llegó un paquete mientras el POST viajaba y cuenta las notas de ESTA
-          // pieza, así que habla de ella y es más nuevo que el estado inicial de
-          // la respuesta: manda él. Adoptar el inicial haría retroceder el
-          // cabezal. Se vuelve a registrar para que sincronice el reloj recién
-          // hecho, que es el que va a usar el carril.
-          recibir(enVuelo);
-        } else {
-          // El paquete en vuelo cuenta OTRAS notas: es de la pieza anterior, que
-          // seguía en marcha (`total` lo saca el servidor de la pieza). Ni él ni
-          // el estado inicial sirven —si se adoptara el inicial y el paquete
-          // siguiente fuera más viejo, el cabezal retrocedería—, así que el
-          // carril se queda sin estado hasta el primer paquete posterior al POST,
-          // 33 ms después.
-          //
-          // Quedarse con el paquete viejo pintaba el estado de una pieza sobre
-          // otra: con una pieza nueva de una nota y un paquete en vuelo que decía
-          // `completado, total: 7`, la pantalla mostraba "Pieza terminada", "1 de
-          // 7 notas acertadas", el contador en 7/7 y un resumen con una pulsación
-          // que en esta pieza no existe.
-          setEstado(null);
-          ultimoEstado.current = null;
-          relojCaduco.current = true;
-        }
+        // A partir de aquí, los paquetes de esta pieza son los que traen este
+        // arranque; cualquier otro se descarta en `recibir`. El estado inicial de
+        // la respuesta viene de la misma llamada que fijó el arranque, así que
+        // habla de esta pieza por construcción.
+        arranque.current = cuerpo.arranque;
+        // Si un paquete se adelantó a la respuesta y es de esta pieza, es más
+        // nuevo que el estado inicial y manda él; si no, manda el inicial, que
+        // vino de la misma llamada que fijó el arranque. Esta comparación solo
+        // ELIGE entre los dos: lo que impide que entre un paquete ajeno es la
+        // guarda de `recibir`, que vuelve a mirar la etiqueta.
+        const enEspera = paqueteEnEspera.current;
+        paqueteEnEspera.current = null;
+        recibir(
+          enEspera !== null && enEspera.arranque === cuerpo.arranque ? enEspera : estadoInicial
+        );
       } catch (excepcion) {
         setError(
           excepcion instanceof Error ? excepcion.message : "No se pudo iniciar la pieza"
@@ -186,6 +211,10 @@ export function useCarril(url = `ws://${window.location.host}/ws/piezas`): Sesio
     ultimoEstado.current = null;
     relojCaduco.current = true;
     instanteMostrado.current = 0;
+    // Sin pieza no hay arranque nuestro, así que ningún paquete vuelve a entrar
+    // hasta que se arranque otra.
+    arranque.current = null;
+    paqueteEnEspera.current = null;
   }, []);
 
   useEffect(() => {
@@ -200,9 +229,7 @@ export function useCarril(url = `ws://${window.location.host}/ws/piezas`): Sesio
 
       socket.onmessage = (evento) => {
         try {
-          const nuevo = JSON.parse(evento.data) as EstadoCarril;
-          paquetes.current += 1;
-          recibir(nuevo);
+          recibir(JSON.parse(evento.data) as EstadoCarril);
         } catch {
           // Un mensaje corrupto se descarta; el siguiente llega en 33 ms.
         }

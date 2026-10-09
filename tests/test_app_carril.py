@@ -118,3 +118,23 @@ def test_el_websocket_emite_estado_sin_la_pieza(cliente):
     assert "instante_s" in mensaje
     assert "pausado" in mensaje
     cliente.post("/api/piezas/detener")
+
+
+def test_el_websocket_etiqueta_los_paquetes_con_el_arranque_de_la_pieza(cliente):
+    """El paquete dice de que arranque habla, y es el mismo que devolvio `iniciar`.
+
+    Sin esto el navegador no puede distinguir un paquete de la pieza que acaba de
+    pedir de uno de la anterior que todavia venia por el canal, y acaba pintando
+    el resumen de una pieza sobre otra.
+    """
+    arranque = cliente.post(
+        "/api/piezas/iniciar",
+        json={"familia": "lectura", "parametros": {"repeticiones": 2}},
+    ).json()["arranque"]
+    with cliente.websocket_connect("/ws/piezas") as ws:
+        mensaje = ws.receive_json()
+    assert mensaje["arranque"] == arranque
+    assert cliente.get("/api/piezas/estado").json()["arranque"] == arranque
+
+    cliente.post("/api/piezas/detener")
+    assert cliente.get("/api/piezas/estado").json()["arranque"] == 0

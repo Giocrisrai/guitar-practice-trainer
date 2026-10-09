@@ -1,7 +1,8 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { Carril } from "./Carril";
+import { useCarril } from "./useCarril";
 import type { EstadoCarril, NotaTocada, Pieza, RespuestaIniciarPieza } from "./tiposPieza";
 
 /**
@@ -16,8 +17,21 @@ import type { EstadoCarril, NotaTocada, Pieza, RespuestaIniciarPieza } from "./t
  * sin canvas de por medio.
  */
 
-/** Las familias tal y como las publica `/api/ejercicios/familias`. */
+/**
+ * Las familias tal y como las publica `/api/ejercicios/familias`.
+ *
+ * La primera a propósito NO es `escala`: así una prueba puede comprobar que la
+ * familia que viaja en el POST sale del catálogo del servidor y no de una clave
+ * escrita en la interfaz.
+ */
 const FAMILIAS = [
+  {
+    clave: "arpegio",
+    nombre: "Arpegios",
+    descripcion: "Las notas de un acorde, una a una",
+    tipos: ["mayor", "menor_septima"],
+    parametros: ["raiz_midi", "tipo", "traste_minimo", "traste_maximo", "tempo", "direccion"],
+  },
   {
     clave: "escala",
     nombre: "Escalas",
@@ -56,8 +70,17 @@ const PIEZA: Pieza = {
   ],
 };
 
+/**
+ * El arranque que el servidor le pone a la pieza de estas pruebas, y el de la
+ * anterior. Son dos piezas de TRES notas cada una: el tamaño no las distingue,
+ * y por eso hace falta la etiqueta (`EstadoCarril.arranque`).
+ */
+const ARRANQUE_EN_CURSO = 2;
+const ARRANQUE_ANTERIOR = 1;
+
 /** El carril apagado: las mismas claves que con pieza (`_CARRIL_APAGADO`). */
 const ESTADO_APAGADO: EstadoCarril = {
+  arranque: 0,
   instante_s: 0,
   indice_actual: 0,
   total: 0,
@@ -69,6 +92,7 @@ const ESTADO_APAGADO: EstadoCarril = {
 /** Lo que devuelve `POST /api/piezas/iniciar`: la pieza entera y el estado inicial. */
 const RESPUESTA_INICIAR: RespuestaIniciarPieza = {
   pieza: PIEZA,
+  arranque: ARRANQUE_EN_CURSO,
   instante_s: 0,
   indice_actual: 0,
   total: 3,
@@ -123,8 +147,11 @@ function crearFetchFalso() {
  * dice a qué índice se adjudicó. Así cada fixture declara lo que importa en su
  * prueba sin obligar a rellenar campos que no se leen.
  */
-type PaqueteDePrueba = Omit<EstadoCarril, "tocadas"> & {
+type PaqueteDePrueba = Omit<EstadoCarril, "tocadas" | "arranque"> & {
   tocadas: (Omit<NotaTocada, "nombre"> & { nombre?: string })[];
+  /** El arranque del que habla el paquete. Omitirlo es decir "el de la pieza en
+   * curso", que es lo que quieren las pruebas que no hablan de este asunto. */
+  arranque?: number;
 };
 
 /**
@@ -136,8 +163,29 @@ type PaqueteDePrueba = Omit<EstadoCarril, "tocadas"> & {
  */
 function enviarEstado(estado: PaqueteDePrueba) {
   act(() => {
-    WebSocketFalso.ultimo!.enviar(estado);
+    WebSocketFalso.ultimo!.enviar({ arranque: ARRANQUE_EN_CURSO, ...estado });
   });
+}
+
+/** Un paquete de la pieza en curso, con lo que cada prueba quiera cambiar. */
+function enCurso(cambios: Partial<EstadoCarril> = {}): EstadoCarril {
+  return {
+    arranque: ARRANQUE_EN_CURSO,
+    instante_s: 0,
+    indice_actual: 0,
+    total: PIEZA.notas.length,
+    completado: false,
+    tocadas: [],
+    pausado: false,
+    ...cambios,
+  };
+}
+
+/** El cuerpo del POST a `/api/piezas/iniciar`, ya parseado. */
+function cuerpoDeIniciar(fetchFalso: ReturnType<typeof vi.fn>): Record<string, unknown> {
+  const llamada = fetchFalso.mock.calls.find(([url]) => url === "/api/piezas/iniciar");
+  expect(llamada).toBeDefined();
+  return JSON.parse(String((llamada![1] as RequestInit).body));
 }
 
 /** Pulsa "Empezar" y espera a que el POST y sus cambios de estado terminen. */
@@ -149,7 +197,10 @@ async function pulsarEmpezar() {
 
 describe("Carril", () => {
   beforeEach(() => vi.stubGlobal("WebSocket", WebSocketFalso));
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
 
   it("pide una pieza al servidor y la arranca", async () => {
     const fetchFalso = crearFetchFalso();
@@ -215,17 +266,18 @@ describe("Carril", () => {
   /**
    * El estado de una pieza no se pinta nunca sobre otra.
    *
-   * El WebSocket sigue hablando mientras el `POST /iniciar` viaja, y un paquete
-   * que llegue en ese hueco puede ser todavía de la pieza ANTERIOR. Cuando pasa,
-   * el carril se queda sin estado hasta el primer paquete posterior al POST: ni
-   * el paquete en vuelo ni el estado inicial de la respuesta describen lo que hay
-   * en pantalla.
+   * El WebSocket y la respuesta del POST son dos canales que se cruzan, así que
+   * un paquete de la pieza ANTERIOR puede llegar mientras entra la nueva. Lo que
+   * los distingue es el `arranque` que el servidor etiqueta en cada estado; el
+   * número de notas no vale, y este es justo el caso que lo demuestra: las dos
+   * piezas tienen tres notas, así que una comparación de totales las confunde.
    *
-   * Sin esto se veía un fotograma de salida falsa —"Pieza terminada", el contador
-   * y el resumen de la pieza anterior sobre una pieza que acaba de empezar—, y se
-   * llegaba cambiando de módulo con una pieza en marcha y volviendo.
+   * No es un caso raro: es tocar dos veces la misma escala, o recargar la pieza
+   * después de terminarla. Y lo que se veía era un fotograma de salida falsa
+   * —«Pieza terminada», el contador y el resumen de la anterior sobre una pieza
+   * que acaba de empezar—.
    */
-  it("un paquete en vuelo no describe la pieza que acaba de entrar", async () => {
+  it("un paquete de la pieza anterior no entra, aunque tenga las mismas notas", async () => {
     const pendiente: { responder?: (respuesta: Response) => void } = {};
     vi.stubGlobal(
       "fetch",
@@ -246,16 +298,16 @@ describe("Carril", () => {
     fireEvent.click(await screen.findByRole("button", { name: /empezar/i }));
     await waitFor(() => expect(pendiente.responder).toBeDefined());
 
-    // Un paquete de la pieza anterior, de siete notas y ya terminada, mientras
-    // el POST de la pieza nueva —de tres notas— todavía viaja.
+    // La pieza anterior, de tres notas como la nueva, ya terminada.
     enviarEstado({
+      arranque: ARRANQUE_ANTERIOR,
       instante_s: 9.0,
-      indice_actual: 7,
-      total: 7,
+      indice_actual: 3,
+      total: 3,
       completado: true,
       pausado: false,
       tocadas: [
-        { indice: 5, midi: 52, cents: 0, desfase_s: 0, clasificacion: "a_tiempo", acertada: true },
+        { indice: 2, midi: 52, cents: 0, desfase_s: 0, clasificacion: "a_tiempo", acertada: true },
       ],
     });
 
@@ -275,6 +327,72 @@ describe("Carril", () => {
     expect(screen.getByText("0 / 3")).toBeTruthy();
   });
 
+  /**
+   * El otro cruce de los dos canales: un paquete que el servidor emitió ANTES del
+   * arranque puede llegar por el socket DESPUÉS de la respuesta del POST. No hay
+   * orden de llegada que lo detecte; la etiqueta sí.
+   */
+  it("un paquete viejo que llega tarde tampoco entra, y el bueno sí", async () => {
+    vi.stubGlobal("fetch", crearFetchFalso());
+    render(<Carril />);
+    await pulsarEmpezar();
+
+    enviarEstado({
+      arranque: ARRANQUE_ANTERIOR,
+      instante_s: 9.0,
+      indice_actual: 3,
+      total: 3,
+      completado: true,
+      pausado: false,
+      tocadas: [
+        { indice: 2, midi: 52, cents: 0, desfase_s: 0, clasificacion: "a_tiempo", acertada: true },
+      ],
+    });
+    expect(screen.queryByText(/pieza terminada/i)).toBeNull();
+
+    // Y la guarda no rechaza todo: el paquete de esta pieza sí mueve el contador.
+    enviarEstado({
+      instante_s: 1.0,
+      indice_actual: 1,
+      total: 3,
+      completado: false,
+      pausado: false,
+      tocadas: [],
+    });
+    expect(screen.getByText("1 / 3")).toBeTruthy();
+  });
+
+  it("la familia que viaja es la que publica el servidor", async () => {
+    const fetchFalso = crearFetchFalso();
+    vi.stubGlobal("fetch", fetchFalso);
+    render(<Carril />);
+    // La primera familia del catálogo es `arpegio`, no `escala`.
+    await waitFor(() => expect(screen.getByText("Arpegios")).toBeTruthy());
+    await pulsarEmpezar();
+    expect(cuerpoDeIniciar(fetchFalso).familia).toBe("arpegio");
+  });
+
+  /**
+   * Y si el catálogo todavía no ha llegado, no se inventa ninguna familia: viaja
+   * vacía y el servidor contesta cuáles hay. Una clave escrita en la interfaz
+   * sobreviviría a su desaparición del catálogo, y entonces lo que se ve
+   * seleccionado y lo que viaja en el POST dejarían de coincidir.
+   */
+  it("sin catálogo todavía no se inventa una familia", async () => {
+    const fetchFalso = vi.fn((url: string) => {
+      const direccion = String(url);
+      // El catálogo no contesta nunca en esta prueba.
+      if (direccion.includes("/api/ejercicios/familias")) return new Promise<Response>(() => {});
+      if (direccion.includes("/api/perfiles")) return responder(PERFILES);
+      if (direccion.includes("/api/piezas/iniciar")) return responder(RESPUESTA_INICIAR);
+      return responder(ESTADO_APAGADO);
+    });
+    vi.stubGlobal("fetch", fetchFalso);
+    render(<Carril />);
+    await pulsarEmpezar();
+    expect(cuerpoDeIniciar(fetchFalso).familia).toBe("");
+  });
+
   it("avisa mientras el WebSocket no conecta, y calla al conectar", async () => {
     vi.stubGlobal("fetch", crearFetchFalso());
     render(<Carril />);
@@ -285,6 +403,66 @@ describe("Carril", () => {
       WebSocketFalso.ultimo!.onopen?.();
     });
     expect(screen.queryByText(/sin conexión/i)).toBeNull();
+  });
+
+  /**
+   * El cabezal no retrocede NUNCA, ni los tres píxeles de entrar en pausa.
+   *
+   * Entre dos paquetes el reloj interpola, así que cuando llega la pausa el
+   * cabezal va por delante del último instante que mandó el servidor (hasta
+   * 33 ms). Congelar en el valor del servidor lo haría retroceder justo ahí, y
+   * que no retroceda es la única garantía por la que `relojCarril` existe.
+   *
+   * Se prueba sobre el hook porque es donde vive el reloj: en jsdom no hay canvas
+   * y el cabezal no se puede leer de la pantalla.
+   */
+  it("al entrar en pausa el cabezal se congela en lo último que se pintó", async () => {
+    vi.stubGlobal("fetch", crearFetchFalso());
+    vi.spyOn(performance, "now").mockReturnValue(1000);
+
+    const { result } = renderHook(() => useCarril());
+    await act(async () => {
+      await result.current.iniciar({ familia: "escala", parametros: {} });
+    });
+
+    act(() => {
+      WebSocketFalso.ultimo!.enviar(enCurso({ instante_s: 1.0 }));
+    });
+    // 30 ms después del paquete: el reloj ya ha interpolado por delante de 1,0.
+    const pintado = result.current.instante(1030);
+    expect(pintado).toBeGreaterThan(1.0);
+
+    act(() => {
+      WebSocketFalso.ultimo!.enviar(enCurso({ instante_s: 1.0, pausado: true }));
+    });
+    expect(result.current.instante(1040)).toBe(pintado);
+  });
+
+  /**
+   * Y el cabezal congelado no se hereda: es del arranque que lo congeló. Sin
+   * soltarlo al iniciar, una pieza nueva pausada se quedaría clavada en el
+   * instante de la anterior, que puede estar minutos por delante.
+   */
+  it("una pieza nueva no hereda el cabezal congelado de la anterior", async () => {
+    vi.stubGlobal("fetch", crearFetchFalso());
+    vi.spyOn(performance, "now").mockReturnValue(1000);
+
+    const { result } = renderHook(() => useCarril());
+    await act(async () => {
+      await result.current.iniciar({ familia: "escala", parametros: {} });
+    });
+    act(() => {
+      WebSocketFalso.ultimo!.enviar(enCurso({ instante_s: 5.0, pausado: true }));
+    });
+    expect(result.current.instante(1000)).toBe(5.0);
+
+    await act(async () => {
+      await result.current.iniciar({ familia: "escala", parametros: {} });
+    });
+    act(() => {
+      WebSocketFalso.ultimo!.enviar(enCurso({ instante_s: 0.5, pausado: true }));
+    });
+    expect(result.current.instante(1000)).toBe(0.5);
   });
 
   /**
