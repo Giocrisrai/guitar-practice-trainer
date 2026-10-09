@@ -5,6 +5,7 @@ import {
   colorDeDesviacion,
   notasVisibles,
   rectanguloDeNota,
+  yDeLaLineaDeAtaque,
   type LienzoCarril,
 } from "./geometriaCarril";
 import type { PerfilAfinacion } from "./tipos";
@@ -140,10 +141,12 @@ function prepararLienzo(lienzo: HTMLCanvasElement): LienzoPreparado | null {
 /**
  * Un cuadro del carril.
  *
- * El fondo del lienzo es la línea de ataque: ahí suena la nota que toca ahora, y
- * las futuras bajan hacia ella. `indices` dice en qué posición de la pieza está
- * cada nota, que es lo que permite cruzarla con las pulsaciones ya adjudicadas
- * (`estado.tocadas` habla por índice).
+ * La línea de ataque es donde suena la nota que toca ahora: las futuras bajan
+ * hacia ella y las que ya sonaron siguen bajando por debajo, en la estela, para
+ * que se vea de un vistazo el patrón de lo que acabas de tocar (spec §4).
+ * `indices` dice en qué posición de la pieza está cada nota, que es lo que
+ * permite cruzarla con las pulsaciones ya adjudicadas (`estado.tocadas` habla
+ * por índice).
  */
 function pintarCuadro(
   contexto: CanvasRenderingContext2D,
@@ -199,12 +202,15 @@ function pintarCuadro(
     }
   }
 
-  // La línea de ataque, al final para que ninguna nota la tape.
+  // La línea de ataque, al final para que ninguna nota la tape. No va en el
+  // borde de abajo: debajo queda la estela de las notas que ya sonaron, y donde
+  // cae lo dice la geometría (`yDeLaLineaDeAtaque`), no este archivo.
+  const lineaAtaque = yDeLaLineaDeAtaque(lienzo, VENTANA_VISIBLE_S);
   contexto.strokeStyle = COLOR_LINEA_ATAQUE;
   contexto.lineWidth = 2;
   contexto.beginPath();
-  contexto.moveTo(0, lienzo.alto - 1);
-  contexto.lineTo(lienzo.ancho, lienzo.alto - 1);
+  contexto.moveTo(0, lineaAtaque);
+  contexto.lineTo(lienzo.ancho, lineaAtaque);
   contexto.stroke();
 }
 

@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   colorDeDesviacion,
+  ESTELA_S,
   notasVisibles,
   rectanguloDeNota,
   VENTANA_VISIBLE_S,
+  yDeLaLineaDeAtaque,
 } from "./geometriaCarril";
 
 const LIENZO = { ancho: 600, alto: 400, cuerdas: 6 };
@@ -25,9 +27,27 @@ describe("geometría del carril", () => {
     expect(visibles).toHaveLength(0);
   });
 
+  it("una nota recién terminada se queda pintada en la estela", () => {
+    // La nota 0 dura un pulso: a 60 ppm acaba en t=1. Medio segundo después
+    // todavía se ve, y pasada la estela ya no (spec §4).
+    expect(notasVisibles([nota(0)], 1.5, 60, VENTANA_VISIBLE_S)).toHaveLength(1);
+    expect(notasVisibles([nota(0)], 1.0 + ESTELA_S + 0.01, 60, VENTANA_VISIBLE_S)).toHaveLength(0);
+  });
+
+  it("la estela cae por debajo de la línea de ataque y dentro del lienzo", () => {
+    const linea = yDeLaLineaDeAtaque(LIENZO);
+    expect(linea).toBeLessThan(LIENZO.alto);
+    expect(linea).toBeGreaterThan(0);
+    // Una nota que acabó hace medio segundo: su borde de ataque ya pasó la línea
+    // y sigue dentro del lienzo, que es lo que hace que se vea.
+    const rect = rectanguloDeNota(nota(0), 1.5, 60, LIENZO);
+    expect(rect.y).toBeGreaterThan(linea);
+    expect(rect.y - rect.alto).toBeLessThan(LIENZO.alto);
+  });
+
   it("la nota que suena ahora está en la línea de ataque", () => {
     const rect = rectanguloDeNota(nota(2), 2.0, 60, LIENZO);
-    expect(rect.y).toBeCloseTo(LIENZO.alto, 0);
+    expect(rect.y).toBeCloseTo(yDeLaLineaDeAtaque(LIENZO), 5);
   });
 
   it("una nota futura está más arriba cuanto más lejos", () => {
@@ -70,10 +90,11 @@ describe("geometría del carril", () => {
   });
 
   // Refuerzos (no son del brief).
-  it("la escala vertical es proporcional: 1 s son alto/ventana píxeles", () => {
+  it("la escala vertical es proporcional: 1 s son alto/(ventana+estela) píxeles", () => {
+    const porSegundo = LIENZO.alto / (VENTANA_VISIBLE_S + ESTELA_S);
     const rect = rectanguloDeNota(nota(3, 6, 1), 2.0, 60, LIENZO);
-    expect(rect.y).toBeCloseTo(LIENZO.alto - 100, 5);
-    expect(rect.alto).toBeCloseTo(100, 5);
+    expect(rect.y).toBeCloseTo(yDeLaLineaDeAtaque(LIENZO) - porSegundo, 5);
+    expect(rect.alto).toBeCloseTo(porSegundo, 5);
   });
 
   it("con otra ventana, una nota visible sigue cayendo dentro del lienzo", () => {

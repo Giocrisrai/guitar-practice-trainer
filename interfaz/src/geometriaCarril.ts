@@ -14,8 +14,25 @@
 
 import type { NotaDePieza } from "./tiposPieza";
 
-/** Cuántos segundos de pieza caben en el carril a la vez. */
+/** Cuántos segundos de pieza caben en el carril a la vez, POR DELANTE de la
+ * línea de ataque. Por detrás hay además `ESTELA_S`. */
 export const VENTANA_VISIBLE_S = 4.0;
+
+/**
+ * Cuánto se sigue viendo una nota después de sonar: la estela.
+ *
+ * La spec §4 dice que «cada nota tocada se queda pintada en el carril con su
+ * desviación en cents y un color que la distingue de un vistazo», porque es lo
+ * que convierte un problema de afinación en un patrón visible —si todas las
+ * notas de una cuerda salen bajas, no es tu dedo, es la cuerda—. Sin una franja
+ * por detrás de la línea de ataque no había donde pintarlas: la línea era el
+ * borde de abajo del lienzo, así que una nota desaparecía en cuanto terminaba de
+ * sonar y el patrón no se llegaba a ver nunca.
+ *
+ * Un segundo, y no más: la estela se come alto del lienzo, que es lo que se ve
+ * por delante, y lo que viene es lo que hay que tocar.
+ */
+export const ESTELA_S = 1.0;
 
 /** Una nota dentro de la ventana visible. Misma forma que `NotaDePieza`: este
  * módulo no le añade nada, solo decide cuáles entran. */
@@ -44,13 +61,13 @@ function pulsosASegundos(pulsos: number, tempo: number): number {
 }
 
 /**
- * Qué notas de la pieza caben en la ventana visible ahora mismo.
+ * Qué notas de la pieza caben en el carril ahora mismo.
  *
- * Una nota es visible si todavía no ha terminado de sonar (su fin está en el
- * futuro) y ya empezó a estar dentro del horizonte que se ve por delante
- * (`ventanaS`). Una nota que ya terminó de sonar deja de estar visible aunque
- * su inicio siga "cerca": lo que importa para dejar de dibujarla es cuándo
- * acaba, no cuándo empezó.
+ * Una nota es visible si ya empezó a estar dentro del horizonte que se ve por
+ * delante (`ventanaS`) y todavía no ha salido por detrás: terminar de sonar no
+ * la borra, se queda la estela (`ESTELA_S`), que es lo que permite ver de un
+ * vistazo el patrón de lo que acabas de tocar. Lo que importa para dejar de
+ * dibujarla es cuándo acaba, no cuándo empezó.
  */
 export function notasVisibles(
   notas: readonly NotaDePieza[],
@@ -61,27 +78,47 @@ export function notasVisibles(
   return notas.filter((nota) => {
     const inicioS = pulsosASegundos(nota.inicio_pulsos, tempo);
     const finS = inicioS + pulsosASegundos(nota.duracion_pulsos, tempo);
-    return finS > instanteS && inicioS < instanteS + ventanaS;
+    return finS > instanteS - ESTELA_S && inicioS < instanteS + ventanaS;
   });
+}
+
+/**
+ * A qué píxel cae la línea de ataque: ahí suena la nota que toca AHORA.
+ *
+ * No es el borde de abajo del lienzo, porque debajo va la estela de las notas
+ * que ya sonaron (ver `ESTELA_S`). Lo dice este módulo y no quien pinta, para
+ * que la línea y los rectángulos no puedan discrepar.
+ */
+export function yDeLaLineaDeAtaque(
+  lienzo: LienzoCarril,
+  ventanaS: number = VENTANA_VISIBLE_S
+): number {
+  return lienzo.alto - ESTELA_S * pixelesPorSegundoDe(lienzo, ventanaS);
+}
+
+/** Píxeles por segundo de pieza: el alto del lienzo reparte la ventana que se ve
+ * por delante MAS la estela que se ve por detrás. */
+function pixelesPorSegundoDe(lienzo: LienzoCarril, ventanaS: number): number {
+  return lienzo.alto / (ventanaS + ESTELA_S);
 }
 
 /**
  * El rectángulo de una nota en el instante `instanteS`.
  *
- * Vertical: el fondo del lienzo (`lienzo.alto`) es la línea de ataque, donde
- * suena la nota que toca AHORA. Una nota futura se dibuja más arriba (`y`
- * menor) cuanto más lejos esté en el tiempo, a razón de `lienzo.alto /
- * ventanaS` píxeles por segundo; esa misma escala fija el alto del
- * rectángulo a partir de la duración de la nota. Subir el tempo acorta en
- * segundos la distancia hasta cualquier nota (los mismos pulsos caben en
- * menos tiempo), así que a más tempo la nota llega antes: más cerca de la
- * línea de ataque para el mismo instante.
+ * Vertical: la línea de ataque (`yDeLaLineaDeAtaque`) es donde suena la nota
+ * que toca AHORA, y por debajo de ella queda la estela de las que ya sonaron.
+ * Una nota futura se dibuja más arriba (`y` menor) cuanto más lejos esté en el
+ * tiempo, a razón de `lienzo.alto / (ventanaS + ESTELA_S)` píxeles por segundo;
+ * esa misma escala fija el alto del rectángulo a partir de la duración de la
+ * nota. Subir el tempo acorta en segundos la distancia hasta cualquier nota
+ * (los mismos pulsos caben en menos tiempo), así que a más tempo la nota llega
+ * antes: más cerca de la línea de ataque para el mismo instante.
  *
  * OJO con `y`: es el borde de ATAQUE de la nota, es decir su borde INFERIOR
  * (el que llega primero a la línea de ataque), no el superior. La nota que
- * suena ahora da `y = lienzo.alto`. El rectángulo ocupa por tanto de `y -
- * alto` a `y`; quien use `fillRect` debe pasar `y - alto` como esquina
- * superior, o pintará fuera del lienzo.
+ * suena ahora da `y = yDeLaLineaDeAtaque(lienzo, ventanaS)`. El rectángulo
+ * ocupa por tanto de `y - alto` a `y`; quien use `fillRect` debe pasar
+ * `y - alto` como esquina superior, o pintará fuera del lienzo.
  *
  * `ventanaS` es la misma ventana que se le dio a `notasVisibles`; si se usa
  * una distinta de la por defecto hay que pasarla aquí también, o una nota
@@ -99,13 +136,13 @@ export function rectanguloDeNota(
   lienzo: LienzoCarril,
   ventanaS: number = VENTANA_VISIBLE_S
 ): RectanguloNota {
-  const pixelesPorSegundo = lienzo.alto / ventanaS;
+  const pixelesPorSegundo = pixelesPorSegundoDe(lienzo, ventanaS);
 
   const inicioS = pulsosASegundos(nota.inicio_pulsos, tempo);
   const duracionS = pulsosASegundos(nota.duracion_pulsos, tempo);
   const faltanS = inicioS - instanteS; // segundos hasta que la nota llegue a la línea de ataque
 
-  const y = lienzo.alto - faltanS * pixelesPorSegundo;
+  const y = yDeLaLineaDeAtaque(lienzo, ventanaS) - faltanS * pixelesPorSegundo;
   const alto = duracionS * pixelesPorSegundo;
 
   const anchoCarril = lienzo.ancho / lienzo.cuerdas;
