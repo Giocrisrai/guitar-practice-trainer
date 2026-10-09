@@ -11,6 +11,7 @@ import type { PerfilAfinacion } from "./tipos";
 import type { FamiliaEjercicio } from "./tiposEjercicio";
 import type { Clasificacion, EstadoCarril, NotaDePieza, NotaTocada, Pieza } from "./tiposPieza";
 import { useCarril } from "./useCarril";
+import { VistaEscrita } from "./VistaEscritaPieza";
 
 /**
  * El carril en pantalla: las notas de la pieza vienen hacia ti.
@@ -227,6 +228,8 @@ export function Carril() {
   // seleccionada, igual que en `Configurador`.
   const [familia, setFamilia] = useState("");
   const [tempo, setTempo] = useState("");
+  // Carril para tocar a tempo; escrita para leer la pieza y repasar lo tocado.
+  const [vista, setVista] = useState<"carril" | "escrita">("carril");
 
   const lienzoRef = useRef<HTMLCanvasElement | null>(null);
   /** El último estado, para que el bucle de dibujo lo lea sin reiniciarse en
@@ -266,7 +269,7 @@ export function Carril() {
   }, [pieza]);
 
   const completado = estado?.completado === true;
-  const dibujando = pieza !== null && !completado;
+  const dibujando = pieza !== null && !completado && vista === "carril";
 
   useEffect(() => {
     if (!dibujando || pieza === null) return;
@@ -372,6 +375,19 @@ export function Carril() {
         <p className="aviso-carril pausado">
           Carril pausado: no llega señal del cable. Se reanuda en cuanto vuelvas a tocar.
         </p>
+      )}
+
+      <div className="conmutador-vista" role="group" aria-label="Vista">
+        <button type="button" aria-pressed={vista === "carril"} onClick={() => setVista("carril")}>
+          Carril
+        </button>
+        <button type="button" aria-pressed={vista === "escrita"} onClick={() => setVista("escrita")}>
+          Tablatura y pentagrama
+        </button>
+      </div>
+
+      {vista === "escrita" && (
+        <VistaEscrita pieza={pieza} estado={estado} cuerdas={cuerdas} />
       )}
 
       {dibujando && (
