@@ -90,7 +90,17 @@ def crear_app(
         que todo salió bien mientras el afinador deja de mostrar notas sin
         explicación. El diagnóstico es la única forma de que se entere de que la
         apertura falló y con qué error del sistema.
+
+        Y si cambia la AFINACIÓN con una pieza en marcha, se detiene el carril.
+        La spec §7 rechaza con 400 una pieza escrita en otra afinación que la
+        activa, «porque dibujar trastes que tu instrumento no tiene es peor que no
+        dibujar nada», pero eso solo se comprobaba al iniciar: cambiar el perfil
+        por aquí dejaba la pieza dibujando los trastes de la afinación vieja y
+        todas las notas restantes saliendo falladas sin que nada lo explicara.
+        Detenerla es la misma decisión que el 400, tomada en el único momento en
+        que se puede tomar.
         """
+        perfil_anterior = sesion.configuracion.perfil
         nueva = config_modulo.Configuracion.desde_dict(
             {**sesion.configuracion.a_dict(), **datos}
         )
@@ -99,6 +109,8 @@ def crear_app(
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error))
         config_modulo.guardar(nueva, app.state.ruta_config)
+        if nueva.perfil != perfil_anterior:
+            app.state.carril.detener()
         return {"configuracion": nueva.a_dict(), "diagnostico": diagnostico.a_dict()}
 
     @app.post("/api/calibrar")

@@ -138,3 +138,44 @@ def test_el_websocket_etiqueta_los_paquetes_con_el_arranque_de_la_pieza(cliente)
 
     cliente.post("/api/piezas/detener")
     assert cliente.get("/api/piezas/estado").json()["arranque"] == 0
+
+
+def test_cambiar_de_afinacion_detiene_el_carril(cliente):
+    """La spec §7, aplicada tambien cuando la afinacion cambia a mitad de pieza.
+
+    Una pieza escrita en otra afinacion que la activa se rechaza con 400 al
+    iniciar; pero el perfil tambien se puede cambiar con la pieza ya en marcha, y
+    entonces el carril seguia dibujando los trastes de la afinacion vieja y todas
+    las notas restantes salian falladas sin que nada lo explicara.
+    """
+    inicio = cliente.post(
+        "/api/piezas/iniciar", json={"familia": "lectura", "parametros": {"repeticiones": 2}}
+    )
+    assert inicio.status_code == 200
+    assert inicio.json()["pieza"]["perfil"] == "guitarra_estandar"
+
+    respuesta = cliente.put("/api/config", json={"perfil": "bajo_4"})
+    assert respuesta.status_code == 200
+
+    estado = cliente.get("/api/piezas/estado").json()
+    assert estado["total"] == 0
+    assert estado["arranque"] == 0
+
+
+def test_cambiar_otra_cosa_de_la_configuracion_no_detiene_el_carril(cliente):
+    """Solo la afinacion detiene la pieza: el umbral de ruido o el dispositivo no.
+
+    Detener el carril con cualquier PUT convertiria un ajuste de volumen en una
+    pieza perdida.
+    """
+    inicio = cliente.post(
+        "/api/piezas/iniciar", json={"familia": "lectura", "parametros": {"repeticiones": 2}}
+    )
+    arranque = inicio.json()["arranque"]
+
+    assert cliente.put("/api/config", json={"umbral_ruido_dbfs": -42.0}).status_code == 200
+
+    estado = cliente.get("/api/piezas/estado").json()
+    assert estado["total"] > 0
+    assert estado["arranque"] == arranque
+    cliente.post("/api/piezas/detener")
