@@ -516,3 +516,43 @@ def test_una_figura_larga_si_se_puede_reclamar_tarde():
     tocada = tocar(seguidor, "A2", en=1.5 + 2.0)
     assert (tocada.indice, tocada.acertada) == (1, True)
     assert tocada.clasificacion == "tarde"
+
+
+def test_en_el_instante_exacto_de_una_nota_el_indice_ya_es_suyo():
+    """El borde de `_indice_en_curso`: la nota en curso es la que YA empezo.
+
+    Las dos conductas del borde estan prometidas en los docstrings de
+    `EstadoCarril` y de `_indice_en_curso`, las lee la interfaz para el cursor y
+    el contador, y no las fijaba ninguna prueba: cambiar el `side="right"` de la
+    busqueda por `side="left"` dejaba la suite entera en verde mientras el
+    cabezal se quedaba una nota por detras en el instante del ataque, que es
+    justo el instante que importa.
+    """
+    seguidor = SeguidorPieza(pieza_de([40, 45, 50, 55], tempo=80))  # 0, 0,75, 1,5, 2,25
+    assert seguidor.avanzar_a(0.0).indice_actual == 0
+    assert seguidor.avanzar_a(0.74).indice_actual == 0
+    assert seguidor.avanzar_a(0.75).indice_actual == 1
+    assert seguidor.avanzar_a(0.76).indice_actual == 1
+    assert seguidor.avanzar_a(1.5).indice_actual == 2
+
+
+def test_un_acorde_en_su_propio_instante_senala_a_su_ultima_nota():
+    """La arbitrariedad declarada, medida DONDE se nota: en el instante del acorde.
+
+    Con dos notas en el mismo inicio, `indice_actual` señala a la ultima de
+    ellas. Es arbitrario entre iguales -el seguidor no sabe seguir acordes-, pero
+    es lo que lee la interfaz, y medido un cuadro mas tarde la prueba no
+    distinguia esa eleccion de la contraria.
+    """
+    notas = (
+        NotaEnPieza(midi=40, cuerda=6, traste=0, inicio_pulsos=0.0, duracion_pulsos=1.0),
+        NotaEnPieza(midi=47, cuerda=5, traste=2, inicio_pulsos=1.0, duracion_pulsos=1.0),
+        NotaEnPieza(midi=52, cuerda=4, traste=2, inicio_pulsos=1.0, duracion_pulsos=1.0),
+        NotaEnPieza(midi=55, cuerda=3, traste=0, inicio_pulsos=2.0, duracion_pulsos=1.0),
+    )
+    pieza = Pieza(
+        nombre="con acorde", perfil="guitarra_estandar", tempo=80, compas=(4, 4), notas=notas
+    )
+    seguidor = SeguidorPieza(pieza)
+    assert seguidor.avanzar_a(0.75).indice_actual == 2
+    assert seguidor.avanzar_a(0.76).indice_actual == 2
