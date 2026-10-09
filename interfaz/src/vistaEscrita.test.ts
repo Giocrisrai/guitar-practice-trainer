@@ -94,4 +94,43 @@ describe("vista escrita", () => {
     expect(llevaSostenido(42)).toBe(true);
     expect(llevaSostenido(40)).toBe(false);
   });
+
+  it("la tablatura de un compás exacto: guiones, barras y el traste en su casilla", () => {
+    const lineas = lineaDeTablatura(compasesDe(PIEZA)[0], 6);
+    const vacia = "|" + "-".repeat(48) + "|";
+    expect(lineas[5]).toBe("|0" + "-".repeat(47) + "|"); // E2 en el pulso 0
+    expect(lineas[4]).toBe("|---" + "-".repeat(9) + "0" + "-".repeat(35) + "|"); // A2 en el pulso 1
+    expect(lineas[0]).toBe(vacia);
+  });
+
+  it("dos notas en la misma casilla de una cuerda: la línea sigue cuadrada y las celdas dicen lo escrito", () => {
+    const compas = compasesDe({
+      ...PIEZA,
+      notas: [
+        { midi: 40, nombre: "E2", cuerda: 6, traste: 0, inicio_pulsos: 0, duracion_pulsos: 1 },
+        { midi: 41, nombre: "F2", cuerda: 6, traste: 1, inicio_pulsos: 0, duracion_pulsos: 1 },
+      ],
+    })[0];
+    const lineas = lineaDeTablatura(compas, 6);
+    expect(new Set(lineas.map((l) => l.length)).size).toBe(1);
+    expect(lineas[5].startsWith("|1")).toBe(true);
+    const celdas = celdasDeTablatura(compas, 6);
+    expect(celdas).toHaveLength(1);
+    expect(celdas[0].texto).toBe("1");
+  });
+
+  it("una escala ascendente sube de forma monótona en el pentagrama, con alteradas", () => {
+    for (let midi = 40; midi < 88; midi += 1) {
+      expect(alturaEnPentagrama(midi + 1)).toBeLessThanOrEqual(alturaEnPentagrama(midi));
+    }
+    // Do y do# comparten altura (el sostenido se dice con el símbolo); do y re no.
+    expect(alturaEnPentagrama(61)).toBe(alturaEnPentagrama(60));
+    expect(alturaEnPentagrama(62)).toBeLessThan(alturaEnPentagrama(60));
+  });
+
+  it("un compás de 3/4 dura tres pulsos", () => {
+    const pieza = { ...PIEZA, compas: [3, 4] as [number, number], duracion_pulsos: 6 };
+    expect(compasesDe(pieza)).toHaveLength(2);
+    expect(compasesDe(pieza)[0].pulsos).toBe(3);
+  });
 });

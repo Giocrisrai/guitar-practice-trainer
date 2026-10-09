@@ -21,15 +21,21 @@ import {
  * tiene su propio color y su propio texto: nunca se muestra como 0.
  */
 
-/** Cuántas cuerdas hay: las del perfil, o la más alta que la pieza toca. */
 export interface PropiedadesVistaEscrita {
   pieza: Pieza;
   estado: EstadoCarril | null;
+  /** Cuántas cuerdas hay: las del perfil, o la más alta que la pieza toca. */
   cuerdas: number;
+  /** Nombre de cada cuerda, de la 1 (aguda) a la última (grave): "E4", "B3"...
+   * Si faltan, las líneas se rotulan con el número de cuerda. */
+  etiquetas?: string[];
 }
 
 const COLOR_PENDIENTE = "#cfd6e0";
 const COLOR_LINEA = "#6b7686";
+/** La nota en curso: el aro que dice "esta es la que toca ahora". */
+const COLOR_ACTUAL = "#ffd166";
+const ANCHO_ETIQUETA = 3;
 
 const ANCHO_COMPAS = 240;
 const MARGEN_X = 14;
@@ -47,6 +53,12 @@ function textoCents(cents: number | null): string {
   return `${redondeado > 0 ? "+" : ""}${redondeado} c`;
 }
 
+/** La nota que el alumno tocó cuando no era la pedida; `null` si acertó la altura
+ * o aún no tocó. Se compara el MIDI tal cual lo manda el núcleo. */
+function tocadaDistinta(midiPedido: number, tocada: NotaTocada | undefined): NotaTocada | null {
+  return tocada !== undefined && tocada.midi !== midiPedido ? tocada : null;
+}
+
 function titulo(nombre: string, tocada: NotaTocada | undefined): string {
   if (tocada === undefined) return nombre;
   return tocada.cents === null
@@ -58,10 +70,14 @@ function Tablatura({
   compas,
   cuerdas,
   tocadas,
+  actual,
+  etiquetas,
 }: {
   compas: Compas;
   cuerdas: number;
   tocadas: Map<number, NotaTocada>;
+  actual: number | null;
+  etiquetas: string[] | undefined;
 }) {
   const lineas = lineaDeTablatura(compas, cuerdas);
   const celdas = celdasDeTablatura(compas, cuerdas);
@@ -74,13 +90,20 @@ function Tablatura({
         const trozos = [];
         let cursor = 0;
         for (const celda of suyas) {
+          // Una celda que empieza antes del cursor ya está cubierta por la línea.
+          if (celda.columna < cursor) continue;
           if (celda.columna > cursor) trozos.push(linea.slice(cursor, celda.columna));
           const tocada = tocadas.get(celda.indice);
+          const enCurso = celda.indice === actual;
           trozos.push(
-            tocada === undefined ? (
+            tocada === undefined && !enCurso ? (
               celda.texto
             ) : (
-              <span key={celda.indice} style={{ color: colorDeDesviacion(tocada.cents) }}>
+              <span
+                key={celda.indice}
+                className={enCurso ? "nota-actual" : undefined}
+                style={tocada === undefined ? undefined : { color: colorDeDesviacion(tocada.cents) }}
+              >
                 {celda.texto}
               </span>
             )
@@ -88,20 +111,47 @@ function Tablatura({
           cursor = celda.columna + celda.texto.length;
         }
         trozos.push(linea.slice(cursor));
-        return <div key={numeroLinea}>{trozos}</div>;
+        const rotulo = (etiquetas?.[numeroLinea] ?? String(numeroLinea + 1)).padEnd(ANCHO_ETIQUETA);
+        return (
+          <div key={numeroLinea}>
+            <span className="etiqueta-cuerda">{rotulo}</span>
+            {trozos}
+          </div>
+        );
       })}
     </pre>
+  );
+}
+
+/** Lo que el alumno tocó cuando no era la nota pedida, dicho con palabras: es lo
+ * que deja ver una cuerda desafinada más de un semitono. */
+function Equivocadas({ compas, tocadas }: { compas: Compas; tocadas: Map<number, NotaTocada> }) {
+  const filas = compas.notas.flatMap((nota) => {
+    const distinta = tocadaDistinta(nota.midi, tocadas.get(nota.indice));
+    return distinta === null ? [] : [{ nota, distinta }];
+  });
+  if (filas.length === 0) return null;
+  return (
+    <ul className="equivocadas">
+      {filas.map(({ nota, distinta }) => (
+        <li key={nota.indice} style={{ color: colorDeDesviacion(distinta.cents) }}>
+          Pedida {nota.nombre}, tocaste {distinta.nombre} ({textoCents(distinta.cents)})
+        </li>
+      ))}
+    </ul>
   );
 }
 
 function Pentagrama({
   compas,
   tocadas,
+  actual,
   alturaMinima,
   alturaMaxima,
 }: {
   compas: Compas;
   tocadas: Map<number, NotaTocada>;
+  actual: number | null;
   alturaMinima: number;
   alturaMaxima: number;
 }) {
@@ -140,6 +190,7 @@ function Pentagrama({
         const tocada = tocadas.get(nota.indice);
         const color = tocada === undefined ? COLOR_PENDIENTE : colorDeDesviacion(tocada.cents);
         const hueca = nota.duracion_pulsos >= 2;
+        const distinta = tocadaDistinta(nota.midi, tocada);
         return (
           <g key={nota.indice}>
             <title>{titulo(nota.nombre, tocada)}</title>
@@ -153,6 +204,39 @@ function Pentagrama({
                 stroke={COLOR_LINEA}
               />
             ))}
+            {nota.indice === actual && (
+              <circle
+                data-testid="nota-actual"
+                cx={cx}
+                cy={y(altura)}
+                r={ESPACIO * 2.2}
+                fill="none"
+                stroke={COLOR_ACTUAL}
+                strokeWidth={2}
+              />
+            )}
+            {distinta !== null && (
+              <g data-testid="nota-tocada-distinta">
+                <ellipse
+                  cx={cx + 3 * ESPACIO}
+                  cy={y(alturaEnPentagrama(distinta.midi))}
+                  rx={ESPACIO * 1.1}
+                  ry={ESPACIO * 0.8}
+                  fill="none"
+                  stroke={colorDeDesviacion(distinta.cents)}
+                  strokeDasharray="2 2"
+                />
+                <text
+                  x={cx + 3 * ESPACIO}
+                  y={y(alturaEnPentagrama(distinta.midi)) - ESPACIO * 1.5}
+                  fontSize={9}
+                  textAnchor="middle"
+                  fill={colorDeDesviacion(distinta.cents)}
+                >
+                  {distinta.nombre}
+                </text>
+              </g>
+            )}
             {llevaSostenido(nota.midi) && (
               <text x={cx - 17} y={y(altura) + 4} fontSize={12} fill={color}>
                 #
@@ -194,12 +278,18 @@ function Pentagrama({
   );
 }
 
-export function VistaEscrita({ pieza, estado, cuerdas }: PropiedadesVistaEscrita) {
+export function VistaEscrita({ pieza, estado, cuerdas, etiquetas }: PropiedadesVistaEscrita) {
   const compases = compasesDe(pieza);
   const tocadas = tocadasPorIndice(estado);
+  // La nota en curso la dice el núcleo (`indice_actual`); no se deduce. Con la
+  // pieza terminada ya no hay ninguna en curso.
+  const actual = estado === null || estado.completado ? null : estado.indice_actual;
 
   // El mismo rango vertical en todos los compases, para que se lean alineados.
-  const alturas = pieza.notas.map((nota) => alturaEnPentagrama(nota.midi));
+  const alturas = [
+    ...pieza.notas.map((nota) => alturaEnPentagrama(nota.midi)),
+    ...[...tocadas.values()].map((t) => alturaEnPentagrama(t.midi)),
+  ];
   const alturaMinima = Math.min(-2, ...alturas.map((a) => a - 6)); // sitio para la plica
   const alturaMaxima = Math.max(10, ...alturas.map((a) => a + 4)); // y para los cents
 
@@ -211,10 +301,18 @@ export function VistaEscrita({ pieza, estado, cuerdas }: PropiedadesVistaEscrita
           <Pentagrama
             compas={compas}
             tocadas={tocadas}
+            actual={actual}
             alturaMinima={alturaMinima}
             alturaMaxima={alturaMaxima}
           />
-          <Tablatura compas={compas} cuerdas={cuerdas} tocadas={tocadas} />
+          <Tablatura
+            compas={compas}
+            cuerdas={cuerdas}
+            tocadas={tocadas}
+            actual={actual}
+            etiquetas={etiquetas}
+          />
+          <Equivocadas compas={compas} tocadas={tocadas} />
         </div>
       ))}
     </div>

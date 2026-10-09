@@ -260,6 +260,15 @@ export function Carril() {
     [pieza, perfiles]
   );
 
+  /** Cómo se llama cada cuerda del perfil, de la 1 a la última. */
+  const etiquetas = useMemo(() => {
+    const perfil = perfiles.find((p) => p.clave === pieza?.perfil);
+    return perfil?.cuerdas
+      .slice()
+      .sort((a, b) => a.numero - b.numero)
+      .map((cuerda) => cuerda.nota);
+  }, [pieza, perfiles]);
+
   /** En qué posición de la pieza está cada nota. `notasVisibles` devuelve las
    * mismas notas que recibe, así que esta tabla sirve para reconocerlas. */
   const indices = useMemo(() => {
@@ -387,7 +396,7 @@ export function Carril() {
       </div>
 
       {vista === "escrita" && (
-        <VistaEscrita pieza={pieza} estado={estado} cuerdas={cuerdas} />
+        <VistaEscrita pieza={pieza} estado={estado} cuerdas={cuerdas} etiquetas={etiquetas} />
       )}
 
       {dibujando && (

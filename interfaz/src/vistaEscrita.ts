@@ -3,7 +3,7 @@
  * compases, como tablatura y como pentagrama. Puro y sin React ni DOM: lo que
  * puede estar mal (qué nota cae en qué compás, en qué línea de la tablatura va
  * cada traste, a qué altura se escribe cada nota) está aquí y se prueba aquí.
- * `VistaEscrita.tsx` solo pinta lo que este módulo devuelve.
+ * `VistaEscritaPieza.tsx` solo pinta lo que este módulo devuelve.
  */
 
 import type { NotaDePieza, Pieza } from "./tiposPieza";
@@ -87,7 +87,7 @@ function casillaDe(compas: Compas, nota: NotaDePieza): number {
  * antes que escribirla en la línea equivocada.
  */
 export function celdasDeTablatura(compas: Compas, cuerdas: number): CeldaDeTablatura[] {
-  return compas.notas
+  const celdas = compas.notas
     .filter((nota) => nota.cuerda >= 1 && nota.cuerda <= cuerdas)
     .map((nota) => ({
       indice: nota.indice,
@@ -96,6 +96,16 @@ export function celdasDeTablatura(compas: Compas, cuerdas: number): CeldaDeTabla
       columna: 1 + casillaDe(compas, nota) * ANCHO_CASILLA,
       texto: String(nota.traste),
     }));
+  // Dos notas en la misma casilla de la misma cuerda no caben: en el texto la
+  // última sobrescribe (como en `lineaDeTablatura`), así que la anterior se
+  // descarta aquí para que las celdas describan exactamente lo escrito.
+  return celdas.filter(
+    (celda, posicion) =>
+      !celdas.some(
+        (otra, posterior) =>
+          posterior > posicion && otra.linea === celda.linea && otra.columna === celda.columna
+      )
+  );
 }
 
 /** Las líneas de la tablatura del compás, de la cuerda 1 (arriba) a la más
@@ -120,7 +130,7 @@ const ES_ALTERADA = [false, true, false, true, false, false, true, false, true, 
 /** La guitarra suena una octava por debajo de lo que se escribe (clave de sol 8vb). */
 const OCTAVA_DE_ESCRITURA = 12;
 
-/** Paso diatónico absoluto (do central escrito = 28) de un MIDI ya transpuesto. */
+/** Paso diatónico absoluto (do central, midi 60, = 35) de un MIDI ya transpuesto. */
 function pasoAbsoluto(midiEscrito: number): number {
   return Math.floor(midiEscrito / 12) * 7 + PASO_DIATONICO[((midiEscrito % 12) + 12) % 12];
 }
