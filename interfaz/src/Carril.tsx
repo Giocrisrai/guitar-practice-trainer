@@ -424,8 +424,11 @@ export function Carril() {
 
       {completado && estado !== null && <ResumenCarril pieza={pieza} estado={estado} />}
 
+      {/* `indice_actual` es un INDICE (base 0) y esto es una CUENTA: en la
+          ultima nota de una pieza de 12 se leia «11 / 12». La cuenta de la nota
+          en curso es su indice mas uno, y no pasa del total. */}
       <p className="contador-progreso">
-        {Math.min(estado?.indice_actual ?? 0, total)} / {total}
+        {Math.min((estado?.indice_actual ?? 0) + 1, total)} / {total}
       </p>
 
       <button type="button" onClick={() => void detener()}>

@@ -353,7 +353,8 @@ describe("Carril", () => {
     expect(screen.queryByText(/a tiempo/i)).toBeNull();
     // La pieza nueva, en su primer cuadro y con el lienzo puesto.
     expect(screen.getByTestId("lienzo-carril")).toBeTruthy();
-    expect(screen.getByText("0 / 3")).toBeTruthy();
+    // La primera nota de tres: el contador es una CUENTA, no el indice.
+    expect(screen.getByText("1 / 3")).toBeTruthy();
   });
 
   /**
@@ -389,7 +390,24 @@ describe("Carril", () => {
       pausado: false,
       tocadas: [],
     });
-    expect(screen.getByText("1 / 3")).toBeTruthy();
+    expect(screen.getByText("2 / 3")).toBeTruthy();
+  });
+
+  /**
+   * El contador pintaba `indice_actual`, que es un INDICE (base 0), como si fuera
+   * una cuenta: en la ultima nota de una pieza de tres se leia «2 / 3», y en una
+   * de doce, «11 / 12».
+   */
+  it("en la última nota el contador llega al total", async () => {
+    vi.stubGlobal("fetch", crearFetchFalso());
+    render(<Carril />);
+    await pulsarEmpezar();
+
+    enviarEstado({
+      instante_s: 2.5, indice_actual: 2, total: 3, completado: false, pausado: false,
+      tocadas: [],
+    });
+    expect(screen.getByText("3 / 3")).toBeTruthy();
   });
 
   it("la familia que viaja es la que publica el servidor", async () => {
