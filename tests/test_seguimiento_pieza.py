@@ -469,3 +469,50 @@ def test_la_altura_tampoco_salta_hacia_delante_dentro_del_piso():
     pulso_s = 60.0 / 150.0
     tocada = tocar(seguidor, "D3", en=2 * pulso_s)
     assert (tocada.indice, tocada.acertada) == (2, False)
+
+
+def pieza_con_redonda_a_40():
+    """Nota 0: E3 negra en t=0. Nota 1: A2 REDONDA en t=1,5 (40 ppm, pulso 1,5 s).
+
+    La redonda dura 4 pulsos, 6 s, asi que su ventana de reclamo hacia atras es
+    de 6,08 s. Aplicada tambien hacia delante, autorizaba reclamarla 6,08 s ANTES
+    de su instante.
+    """
+    notas = (
+        NotaEnPieza(midi=52, cuerda=4, traste=2, inicio_pulsos=0.0, duracion_pulsos=1.0),
+        NotaEnPieza(midi=45, cuerda=5, traste=0, inicio_pulsos=1.0, duracion_pulsos=4.0),
+    )
+    return Pieza(
+        nombre="redonda", perfil="guitarra_estandar", tempo=40, compas=(4, 4), notas=notas
+    )
+
+
+def test_una_figura_larga_no_se_puede_reclamar_de_lejos_hacia_atras():
+    """La duracion acota el lado TARDE; el lado pronto lo acota el piso.
+
+    El alumno toca A2 en t=0,5: la nota equivocada, medio segundo tarde sobre la
+    nota 0, que sigue sonando y es de quien es el intento. Con la ventana
+    simetrica eso se adjudicaba a la nota 1 -la redonda, un segundo en el futuro-
+    con `acertada=True` y "pronto": un acierto fabricado antes de que la nota
+    exista, y la nota 0 sin marca.
+
+    Medio segundo, y no cero, para que lo que se mide sea la ventana y no la
+    cercania: a 0,5 s de la nota 0 no hay ninguna nota dentro de la ventana de "a
+    tiempo", asi que la preferencia por altura puede mirar donde quiera y lo
+    unico que la detiene es el lado pronto de la ventana.
+    """
+    seguidor = SeguidorPieza(pieza_con_redonda_a_40())
+    tocada = tocar(seguidor, "A2", en=0.5)
+    assert (tocada.indice, tocada.acertada) == (0, False)
+
+
+def test_una_figura_larga_si_se_puede_reclamar_tarde():
+    """El otro lado sigue como estaba: la nota todavia suena, sigue siendo suya.
+
+    A2 tocada 2 s despues de su instante esta muy fuera del piso de 0,5 s y se
+    adjudica igual, porque la redonda dura 6 s.
+    """
+    seguidor = SeguidorPieza(pieza_con_redonda_a_40())
+    tocada = tocar(seguidor, "A2", en=1.5 + 2.0)
+    assert (tocada.indice, tocada.acertada) == (1, True)
+    assert tocada.clasificacion == "tarde"

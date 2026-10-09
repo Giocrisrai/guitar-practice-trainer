@@ -169,11 +169,13 @@ class SeguidorPieza:
     y adjudicar esa pulsacion a la nota anterior convertiria un adelanto de 50 ms
     en un fallo y ademas dejaria la nota buena sin cobrar. Cada nota se cobra una
     sola vez, acertada o no: una segunda pulsacion busca otra nota. Y todo esto tiene
-    un limite: cada nota solo se puede reclamar desde su ventana de reclamo (su
-    duracion escrita mas la ventana de "a tiempo", con un piso de
-    `VENTANA_RECLAMO_MINIMA_S`; ver `_ventanas_reclamo_s`), y una pulsacion que no alcanza a ninguna no se anota ni
-    cuenta como fallo. Sin ese limite, una nota que el alumno nunca toco acababa en
-    el informe como tocada -y acertada- con un desfase absurdo.
+    un limite: cada nota solo se puede reclamar desde su ventana de reclamo, que
+    es ASIMETRICA -llegando tarde, su duracion escrita mas la ventana de "a
+    tiempo", con un piso de `VENTANA_RECLAMO_MINIMA_S` (`_ventanas_reclamo_s`);
+    llegando pronto, solo ese piso (`_ventana_reclamo_pronto_s`)-, y una pulsacion
+    que no alcanza a ninguna no se anota ni cuenta como fallo. Sin ese limite,
+    una nota que el alumno nunca toco acababa en el informe como tocada -y
+    acertada- con un desfase absurdo.
 
     NO SABE SEGUIR ACORDES. `Pieza` admite dos notas con el mismo
     `inicio_pulsos` a proposito (los archivos de Guitar Pro de la etapa 3b los
@@ -209,7 +211,9 @@ class SeguidorPieza:
             [pulsos_a_segundos(nota.inicio_pulsos, pieza.tempo) for nota in pieza.notas],
             dtype=float,
         )
-        # Hasta donde puede estirarse una pulsacion para reclamar cada nota.
+        # Hasta donde puede estirarse una pulsacion para reclamar cada nota
+        # LLEGANDO TARDE. El lado "pronto" no se deriva de la duracion: ver
+        # `_ventana_reclamo_pronto_s` justo debajo.
         #
         # Se deriva de la PIEZA y no es un numero clavado: la duracion escrita de
         # la nota mas la ventana de "a tiempo". Al bajar el tempo para practicar
@@ -236,6 +240,25 @@ class SeguidorPieza:
             ),
             ventana_reclamo_minima_s,
         )
+        # Lo mas PRONTO que se puede reclamar una nota. No se deriva de la
+        # duracion escrita, y por eso no es un vector sino un solo numero.
+        #
+        # El argumento de la duracion es un argumento sobre llegar TARDE: la nota
+        # todavia suena, asi que una pulsacion que cae dentro sigue siendo un
+        # intento de ella. Aplicado tambien hacia atras autorizaba reclamarla
+        # igual de pronto, y eso no se sostiene: una redonda a 40 ppm se podia
+        # reclamar 6,08 s ANTES de su instante, asi que una nota equivocada
+        # tocada en el sitio de otra se adjudicaba a la redonda del futuro -con
+        # `acertada=True` y 1,5 s de "pronto"- en vez de a la nota que estaba
+        # debajo del dedo. Hoy lo tapaban los cuatro generadores, que producen
+        # `pulsos=1.0`; la etapa 3b, que es para lo que existe `nucleo/piezas/`,
+        # trae figuras largas de verdad.
+        #
+        # Tocar antes de tiempo es lo normal, asi que el lado pronto no puede ser
+        # cero: lo acota la ventana de "a tiempo" con el mismo piso que el otro
+        # lado, es decir lo que se tolera de error humano, no lo que dure la
+        # figura.
+        self._ventana_reclamo_pronto_s = max(ventana_a_tiempo_s, ventana_reclamo_minima_s)
         # Las alturas escritas, para adjudicar por nombre y no solo por cercania.
         self._midis = np.array([nota.midi for nota in pieza.notas], dtype=int)
         self._duracion_s = pieza.duracion_s
@@ -341,7 +364,8 @@ class SeguidorPieza:
         tres casos:
 
         1. Ninguna nota sin cobrar cae dentro de su ventana de reclamo
-           (`_ventanas_reclamo_s`). Una pulsacion parasita -o una nota tocada
+           (`_ventanas_reclamo_s` hacia atras, `_ventana_reclamo_pronto_s` hacia
+           delante). Una pulsacion parasita -o una nota tocada
            muchisimo despues del final- no puede adjudicarse a una nota que el
            alumno nunca toco: eso la meteria en el informe como tocada, y encima
            acertada si coincidia la altura.
@@ -370,8 +394,15 @@ class SeguidorPieza:
             instante_para_buscar = instante_onset
 
         midi_tocado = midi_de_nombre(pulsacion.nota)
-        distancias = np.abs(self._inicios_s - instante_para_buscar)
-        reclamables = (~self._cobradas) & (distancias <= self._ventanas_reclamo_s)
+        # La ventana de reclamo es ASIMETRICA: hacia atras la manda la duracion
+        # escrita (la nota todavia suena), hacia delante solo la tolerancia al
+        # error humano (ver `_ventana_reclamo_pronto_s`).
+        desfases = instante_para_buscar - self._inicios_s
+        distancias = np.abs(desfases)
+        limites = np.where(
+            desfases >= 0, self._ventanas_reclamo_s, self._ventana_reclamo_pronto_s
+        )
+        reclamables = (~self._cobradas) & (distancias <= limites)
         if not reclamables.any():
             return
         # La altura primero, la cercania despues. Cuando las notas van a 75 ms unas
