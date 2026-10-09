@@ -157,6 +157,13 @@ class SeguidorPieza:
     salia "a_tiempo" y equivocada. Los fallos de altura siguen yendo por cercania,
     que es donde tienen sentido.
 
+    La altura DESEMPATA, no se salta nada: si la pulsacion cae a menos de
+    `ventana_a_tiempo_s` del instante de una nota sin cobrar, se adjudica a una
+    nota que el alumno ya haya alcanzado, coincida o no la altura. Una
+    coincidencia de altura mas adelante en la pieza -una nota a la que el alumno
+    todavia no ha llegado- no puede cobrar por delante de la que tiene debajo del
+    dedo (ver `_adjudicar`).
+
     En ningun caso se adjudica a la nota en curso por estar en curso. Tocar antes
     de tiempo es lo normal -es lo que hace un musico que va con el pulso-,
     y adjudicar esa pulsacion a la nota anterior convertiria un adelanto de 50 ms
@@ -376,6 +383,28 @@ class SeguidorPieza:
         # cercana en el tiempo: ahi es donde se anotan los fallos de altura, que
         # siguen saliendo con `acertada=False`.
         coincidentes = reclamables & (self._midis == midi_tocado)
+        # Pero la altura DESEMPATA entre candidatas cercanas; no autoriza saltar
+        # hacia delante por encima de una nota que esta debajo del dedo. Si hay
+        # una nota sin cobrar a menos de `ventana_a_tiempo_s` de la pulsacion, la
+        # coincidencia de altura solo puede estar en una nota que el alumno YA
+        # haya alcanzado (su instante no queda mas alla de esa misma ventana).
+        #
+        # Sin este limite, las dos decisiones de rondas anteriores -la ventana de
+        # reclamo derivada de la figura y la preferencia por altura- se juntaban
+        # y se invertia el veredicto de dos notas: con la escala de C mayor a 80
+        # ppm, un dedo un traste bajo sobre la nota 5 (F3, sonando E3) se
+        # adjudicaba a la nota 6 (E3, a 750 ms, que el alumno aun no habia
+        # alcanzado) y salia ACERTADA, la nota 5 se quedaba sin marca, y al tocar
+        # la 6 bien la unica libre cerca era la 5, de otra altura, y salia
+        # fallada. Lo correcto salia como error y el error como acierto.
+        #
+        # El caso que motivo la preferencia por altura sigue intacto, porque ahi
+        # la nota de la altura buena esta DETRAS de la pulsacion: la semicorchea
+        # a 200 ppm tocada 200 ms tarde se sigue adjudicando a ella y no a la
+        # vecina que le cae a 20 ms.
+        if (reclamables & (distancias <= self.ventana_a_tiempo_s)).any():
+            alcanzadas = self._inicios_s <= instante_para_buscar + self.ventana_a_tiempo_s
+            coincidentes = coincidentes & alcanzadas
         candidatas = coincidentes if coincidentes.any() else reclamables
         indice = int(np.argmin(np.where(candidatas, distancias, np.inf)))
         nota = self.pieza.notas[indice]

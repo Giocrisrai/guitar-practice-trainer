@@ -423,3 +423,49 @@ def test_en_un_pasaje_denso_una_altura_que_no_esta_sigue_yendo_por_cercania():
     assert tocada.indice == 3
     assert tocada.acertada is False
     assert tocada.clasificacion == "a_tiempo"
+
+
+# La escala de C mayor "ambas" como la devuelve `generar_escala`: C3 D3 E3 F3 G3
+# F3 E3 D3 C3, negras, al tempo por defecto de 80 ppm (0,75 s por nota).
+ESCALA_C_MAYOR_AMBAS = (48, 50, 52, 53, 55, 53, 52, 50, 48)
+NOMBRES_ESCALA = ("C3", "D3", "E3", "F3", "G3", "F3", "E3", "D3", "C3")
+PULSO_A_80_S = 60.0 / 80.0
+
+
+def test_la_altura_no_cobra_una_nota_que_el_alumno_no_ha_alcanzado():
+    """Un traste bajo marca la nota que se estaba tocando, no la de mas adelante.
+
+    El alumno acierta las cinco primeras y en la sexta (F3) pone el dedo un
+    traste bajo, sonando E3. Esa altura existe mas adelante en la pieza -la nota
+    6, a 750 ms-, y la preferencia por altura se la adjudicaba a ella: salia
+    ACERTADA una nota que el alumno todavia no habia alcanzado, la que de verdad
+    fallo se quedaba sin marca, y al tocar la 6 bien la unica libre cerca era la
+    5, de otra altura, asi que el acierto salia fallado. Lo correcto como error y
+    el error como acierto.
+    """
+    seguidor = SeguidorPieza(pieza_de(ESCALA_C_MAYOR_AMBAS, tempo=80))
+    for indice in range(5):
+        tocar(seguidor, NOMBRES_ESCALA[indice], en=indice * PULSO_A_80_S)
+
+    fallo = tocar(seguidor, "E3", en=5 * PULSO_A_80_S)
+    assert (fallo.indice, fallo.acertada) == (5, False)
+    assert fallo.clasificacion == "a_tiempo"
+
+    siguiente = tocar(seguidor, "E3", en=6 * PULSO_A_80_S)
+    assert (siguiente.indice, siguiente.acertada) == (6, True)
+    assert [t.indice for t in seguidor.estado.tocadas] == [0, 1, 2, 3, 4, 5, 6]
+
+
+def test_la_altura_tampoco_salta_hacia_delante_dentro_del_piso():
+    """El mismo salto, con la nota de la altura buena DENTRO del piso de 0,5 s.
+
+    A 150 ppm la negra son 0,4 s, asi que la nota 3 (D3) cae a 0,4 s de la nota 2
+    y sigue siendo reclamable por el piso aunque la ventana derivada de la figura
+    no llegue. La pieza es C3 G3 E3 D3 E3: la unica D3 sin cobrar esta DELANTE, en
+    la nota 3. Tocar D3 en el instante de la nota 2 es un fallo de altura sobre la
+    nota 2, no un acierto adelantado de la 3.
+    """
+    seguidor = SeguidorPieza(pieza_de((48, 55, 52, 50, 52), tempo=150))
+    pulso_s = 60.0 / 150.0
+    tocada = tocar(seguidor, "D3", en=2 * pulso_s)
+    assert (tocada.indice, tocada.acertada) == (2, False)
