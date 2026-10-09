@@ -221,3 +221,51 @@ def test_el_onset_del_camino_b_es_el_comienzo_de_la_racha_no_el_final():
     assert instante_racha_estable - instante_ataque > 0.25  # el ataque ya es viejo
     assert instante_racha_estable > instante_inicio_racha  # comienzo != final
     assert onset == pytest.approx(instante_inicio_racha)
+
+
+def cuadros_con_descarte_del_camino_b(cuadros_de_la_nota_nueva: int):
+    """La secuencia exacta del defecto del onset nulo.
+
+    1. Seis cuadros de silencio y doce de E2: la pulsacion se resuelve y E2 queda
+       sellada como `_ultima_nota_resuelta`.
+    2. Tres cuadros de E2 diez dB mas fuerte: un hinchado de volumen sobre la
+       nota que ya se conto. El salto marca un ataque nuevo, asi que el camino A
+       se anota una lectura pendiente para 60 ms despues; el camino B, que lleva
+       la racha de E2, resuelve antes y la DESCARTA por nombre.
+    3. La nota cambia a A2 justo en el cuadro en que vencia la lectura pendiente.
+    """
+    return (
+        [silencio()] * 6
+        + [suena()] * 12
+        + [suena(nivel=-15.0)] * 3
+        + [suena("A2", nivel=-15.0)] * cuadros_de_la_nota_nueva
+    )
+
+
+def test_el_descarte_por_nombre_no_deja_al_camino_a_resolver_sin_onset():
+    """El descarte del camino B borraba el ataque pero no la lectura pendiente.
+
+    Asi que el camino A resolvia despues con `instante=None`: una pulsacion
+    fantasma -un solo cuadro de A2, que el camino B no habria dado por estable- y
+    encima sin onset. En un ejercicio costaba una muestra de `regularidad_ms`; en
+    el carril, el seguidor se queda sin onset y busca con el reloj del cuadro,
+    hasta 250 ms despues del ataque real, con lo que puede cobrar la nota
+    siguiente.
+    """
+    detector = DetectorPulsaciones()
+    salidas = correr(detector, cuadros_con_descarte_del_camino_b(1))
+    assert [pulsacion.nota for pulsacion in salidas] == ["E2"]
+    assert all(pulsacion.instante is not None for pulsacion in salidas)
+
+
+def test_la_nota_nueva_que_de_verdad_suena_se_resuelve_igual_y_con_su_onset():
+    """La otra mitad: cancelar la lectura pendiente no se come ninguna nota real.
+
+    Si A2 sigue sonando, el camino B la da por estable y la resuelve con su
+    propio onset. Lo que se pierde es solo la pulsacion de un unico cuadro que
+    ningun camino habria confirmado.
+    """
+    detector = DetectorPulsaciones()
+    salidas = correr(detector, cuadros_con_descarte_del_camino_b(4))
+    assert [pulsacion.nota for pulsacion in salidas] == ["E2", "A2"]
+    assert all(pulsacion.instante is not None for pulsacion in salidas)

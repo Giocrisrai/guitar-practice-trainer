@@ -254,11 +254,22 @@ class DetectorPulsaciones:
             nota_estable = self._actualizar_candidata(resultado, instante)
             if nota_estable is not None:
                 pulsacion = self._sellar(resultado, self._onset_camino_b(instante))
-                if pulsacion is not None:
-                    # Esta nota ya se resolvio por el camino B: si habia una
-                    # lectura pendiente del camino A para el mismo sonido, se
-                    # cancela para no contarla otra vez cuando le toque su turno.
-                    self._lectura_pendiente = None
+                # Esta nota ya la vio el camino B: si habia una lectura pendiente
+                # del camino A para el mismo sonido, se cancela.
+                #
+                # Se cancela tanto si se sello como si se DESCARTO por nombre, y
+                # eso ultimo es lo que faltaba: el descarte por nombre borra
+                # `_instante_ataque` (para no firmar con el el onset de la
+                # pulsacion siguiente) pero dejaba la lectura pendiente puesta,
+                # asi que el camino A resolvia despues con `instante=None`. En un
+                # ejercicio eso costaba una muestra de `regularidad_ms`; en el
+                # carril, `SeguidorPieza._adjudicar` se queda sin onset y busca
+                # con el reloj del cuadro -hasta 250 ms despues del ataque real-,
+                # con lo que puede cobrar la nota siguiente.
+                #
+                # Con `nota_estable` puesto el cuadro era creible, asi que el
+                # unico descarte posible de `_sellar` es el de nombre.
+                self._lectura_pendiente = None
 
         return pulsacion
 
