@@ -121,13 +121,17 @@ ejercicio la nota pedida aguarda hasta que la aciertas; en el carril el reloj
 corre solo. Una nota que no tocas pasa y se queda sin marca; una nota que
 tocas queda marcada, acertada o no, y el resumen final dice de cada una si fue *a
 tiempo*, *pronto* o *tarde* y por cuántos milisegundos; en la vista escrita, si
-tocaste otra nota en lugar de la pedida, se ve cuál. Fallar no detiene nada: informa. Con
-un tope: si el nivel lleva **más de 5 segundos por debajo del umbral de ruido**, el
-carril se **pausa** y sigue donde estaba en cuanto vuelves a sonar. Eso incluye
-tanto un cable desenchufado como quien simplemente deja de tocar; el carril no
-distingue una cosa de otra. También se pausa, desde el primer momento, si la
-captura de audio no está abierta (cable sin enchufar o permiso de micrófono sin
-conceder al arrancar).
+tocaste otra nota en lugar de la pedida, se ve cuál. Fallar no detiene nada: informa.
+
+El carril se pausa por dos reglas distintas:
+
+- **Cinco segundos por debajo del umbral de ruido**: el cable está puesto pero no
+  suena nada, o dejas de tocar. El carril se pausa a los 5 s y sigue donde estaba
+  en cuanto vuelves a sonar.
+- **Captura cerrada**: desenchufas el cable con el carril en marcha, o arrancas sin
+  él (o sin permiso de micrófono). La sesión revisa cada segundo si el dispositivo
+  sigue ahí, así que al desenchufar el carril se pausa en cosa de un segundo, no
+  de cinco; al arrancar sin captura, desde el primer momento.
 
 **No hay cuenta atrás ni metrónomo.** La primera nota está escrita en el instante
 cero, el mismo en que pulsas **Empezar**, así que llegar *a tiempo* a la primera
@@ -149,7 +153,9 @@ pertenece una pulsación, cada nota solo puede ser reclamada desde una ventana: 
 duración escrita más 80 ms, con un **mínimo** de 0,5 s (`VENTANA_RECLAMO_MINIMA_S`,
 tampoco medido tocando). Una negra a 240 ppm tiene 0,5 s; a 80 ppm, 0,83 s. **Una
 pulsación que no cae en la ventana de ninguna nota no se marca «tarde»: se
-descarta sin dejar rastro**, y no cuenta como fallo ni aparece en el resumen.
+descarta sin dejar rastro**, y no cuenta como fallo ni aparece en el resumen. Las
+notas ya cobradas tampoco cuentan como ventana disponible: una pulsación cuya
+única nota cercana ya se cobró se descarta igual.
 
 **La vista escrita.** El botón **Tablatura y pentagrama** del conmutador de vista
 muestra la misma pieza repartida en compases, para leerla antes de tocar y para

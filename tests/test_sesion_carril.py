@@ -547,3 +547,54 @@ def test_con_una_sesion_real_sin_captura_el_carril_esta_pausado():
     assert estado["pausado"] is True
     assert estado["instante_s"] == pytest.approx(0.0, abs=0.001)
     sesion_carril.detener()
+
+
+def test_los_cuadros_con_la_captura_cerrada_pausan_sin_esperar_a_una_consulta():
+    """La guarda de `_observar`, sola: no se llama a `estado()` entre medias, que
+    es la otra mitad que mira la captura y taparia su ausencia."""
+    reloj = RelojFalso()
+    sesion_carril, sesion = carril(reloj)
+    sesion_carril.iniciar(pieza_de([40, 45, 50]))
+    sesion.activa = False
+    reloj.avanzar(0.05)
+    publicar(sesion, reloj, SILENCIO, cuadros=3)
+    assert sesion_carril._pausado is True
+    assert sesion_carril._instante == pytest.approx(0.0, abs=1e-9)
+    sesion_carril.detener()
+    sesion.detener()
+
+
+def test_desenchufar_con_el_carril_en_marcha_lo_pausa_por_captura_cerrada():
+    """Con la `Sesion` de verdad: el dispositivo desaparece, ella cierra la
+    captura en su siguiente revision y el carril se pausa por eso -la regla de
+    captura cerrada-, no por los 5 s de `senal_ausente`, que sigue en falso."""
+    import time
+
+    from nucleo.captura import NOMBRE_ROCKSMITH, DispositivoAudio
+    from servidor.sesion import Sesion
+    from tests.test_sesion import CapturaFalsa
+
+    cable = DispositivoAudio(3, NOMBRE_ROCKSMITH, 1, 48000.0)
+    conectados = [cable]
+    real = Sesion(
+        Configuracion(),
+        crear_captura=lambda **kw: CapturaFalsa(**kw),
+        listar=lambda: list(conectados),
+    )
+    real.intervalo_revision = 0.05
+    real.iniciar()
+    sesion_carril = SesionCarril(real)
+    try:
+        sesion_carril.iniciar(pieza_de([40, 45, 50]))
+        assert real.activa is True
+        assert sesion_carril.estado()["pausado"] is False
+
+        conectados.clear()
+        limite = time.monotonic() + 3.0
+        while not sesion_carril.estado()["pausado"] and time.monotonic() < limite:
+            time.sleep(0.01)
+        assert sesion_carril.estado()["pausado"] is True
+        assert real.senal_ausente is False
+    finally:
+        sesion_carril.detener()
+        real.detener()
