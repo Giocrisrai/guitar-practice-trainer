@@ -12,7 +12,7 @@ export interface NotaDePieza {
 }
 
 /**
- * La pieza entera: la manda `GET /api/piezas/desde-ejercicio` y también viaja
+ * La pieza entera: la manda `POST /api/piezas/desde-ejercicio` (con cuerpo) y también viaja
  * dentro de la respuesta de `POST /api/piezas/iniciar` (bajo la clave `pieza`).
  * El WebSocket `/ws/piezas` NUNCA la manda: viajó una sola vez al iniciar, y
  * repetirla treinta veces por segundo desperdiciaría el canal en notas que no
@@ -35,11 +35,13 @@ export type Clasificacion = "a_tiempo" | "pronto" | "tarde";
  * Una pulsación ya adjudicada a una nota de la pieza, tal y como la manda
  * `NotaTocada.a_dict()` (nucleo/piezas/seguimiento.py).
  *
- * `cents`, `desfase_s` y `clasificacion` valen `null` juntos cuando la
- * pulsación llegó sin instante: no se supo cuándo empezó, así que no hay ni
- * desviación ni desfase ni clasificación que atribuirle. `null` NO significa
- * "cero" ni "a tiempo": significa que no se supo. Confundirlo pintaría en
- * verde, o marcaría a tiempo, una nota de la que no sabemos nada.
+ * `desfase_s` y `clasificacion` valen `null` juntos cuando la pulsación llegó
+ * sin instante: no se supo cuándo empezó (`SeguidorPieza`, seguimiento.py).
+ * `cents` es independiente de eso: sale de `pulsacion.cents`, que es
+ * `float | None` por motivos propios, así que una pulsación sin instante puede
+ * traer cents válidos, y una con instante puede traerlos nulos. No se deduce
+ * uno del otro. En ningún caso `null` significa "cero" ni "a tiempo": significa
+ * que ese dato no se supo, y pintarlo como afinado o puntual sería mentir.
  */
 export interface NotaTocada {
   indice: number;

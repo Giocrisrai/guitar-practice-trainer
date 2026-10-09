@@ -62,4 +62,24 @@ describe("geometría del carril", () => {
     expect(colorDeDesviacion(30)).not.toBe(colorDeDesviacion(-30));
     expect(colorDeDesviacion(null)).not.toBe(colorDeDesviacion(0));
   });
+
+  // Refuerzos (no son del brief).
+  it("la escala vertical es proporcional: 1 s son alto/ventana píxeles", () => {
+    const rect = rectanguloDeNota(nota(3, 6, 1), 2.0, 60, LIENZO);
+    expect(rect.y).toBeCloseTo(LIENZO.alto - 100, 5);
+    expect(rect.alto).toBeCloseTo(100, 5);
+  });
+
+  it("con otra ventana, una nota visible sigue cayendo dentro del lienzo", () => {
+    const ventana = 2.0;
+    const n = nota(1.9);
+    expect(notasVisibles([n], 0, 60, ventana)).toHaveLength(1);
+    const rect = rectanguloDeNota(n, 0, 60, LIENZO, ventana);
+    expect(rect.y).toBeGreaterThan(0);
+  });
+
+  it("5 cents ya no es afinada, igual que en el núcleo (estricto)", () => {
+    expect(colorDeDesviacion(5)).not.toBe(colorDeDesviacion(0));
+    expect(colorDeDesviacion(4.9)).toBe(colorDeDesviacion(0));
+  });
 });

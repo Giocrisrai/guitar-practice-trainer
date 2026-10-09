@@ -70,11 +70,21 @@ export function notasVisibles(
  * Vertical: el fondo del lienzo (`lienzo.alto`) es la línea de ataque, donde
  * suena la nota que toca AHORA. Una nota futura se dibuja más arriba (`y`
  * menor) cuanto más lejos esté en el tiempo, a razón de `lienzo.alto /
- * VENTANA_VISIBLE_S` píxeles por segundo; esa misma escala fija el alto del
+ * ventanaS` píxeles por segundo; esa misma escala fija el alto del
  * rectángulo a partir de la duración de la nota. Subir el tempo acorta en
  * segundos la distancia hasta cualquier nota (los mismos pulsos caben en
  * menos tiempo), así que a más tempo la nota llega antes: más cerca de la
  * línea de ataque para el mismo instante.
+ *
+ * OJO con `y`: es el borde de ATAQUE de la nota, es decir su borde INFERIOR
+ * (el que llega primero a la línea de ataque), no el superior. La nota que
+ * suena ahora da `y = lienzo.alto`. El rectángulo ocupa por tanto de `y -
+ * alto` a `y`; quien use `fillRect` debe pasar `y - alto` como esquina
+ * superior, o pintará fuera del lienzo.
+ *
+ * `ventanaS` es la misma ventana que se le dio a `notasVisibles`; si se usa
+ * una distinta de la por defecto hay que pasarla aquí también, o una nota
+ * visible caería fuera del lienzo.
  *
  * Horizontal: cada cuerda tiene su propio carril, repartiendo `lienzo.ancho`
  * en `lienzo.cuerdas` franjas iguales; la cuerda 1 va al carril de más a la
@@ -85,9 +95,10 @@ export function rectanguloDeNota(
   nota: NotaDePieza,
   instanteS: number,
   tempo: number,
-  lienzo: LienzoCarril
+  lienzo: LienzoCarril,
+  ventanaS: number = VENTANA_VISIBLE_S
 ): RectanguloNota {
-  const pixelesPorSegundo = lienzo.alto / VENTANA_VISIBLE_S;
+  const pixelesPorSegundo = lienzo.alto / ventanaS;
 
   const inicioS = pulsosASegundos(nota.inicio_pulsos, tempo);
   const duracionS = pulsosASegundos(nota.duracion_pulsos, tempo);
@@ -103,13 +114,13 @@ export function rectanguloDeNota(
   return { x, y, ancho: anchoCarril, alto };
 }
 
-/** Tolerancia, en cents, dentro de la cual una desviación se pinta como
- * afinada. Es la misma que usa el núcleo para su propio veredicto
- * (`nucleo.musica.esta_afinada`), pero aquí no hay ningún veredicto de
- * acierto que dependa de este número: solo elige un color. */
+/** Escala de color que IMITA la tolerancia del núcleo
+ * (`nucleo.musica.esta_afinada`: `abs(cents) < 5.0`, estricto). Es una copia
+ * visual, no la fuente de verdad: algún día debería venir dada por el núcleo.
+ * No hay ningún veredicto de acierto que dependa de este número. */
 const TOLERANCIA_AFINADA_CENTS = 5;
 
-const COLOR_DESCONOCIDO = "#7d848f"; // gris: no se supo el instante de la pulsación
+const COLOR_DESCONOCIDO = "#7d848f"; // gris: la desviación no se supo
 const COLOR_AFINADA = "#34d17a"; // verde: dentro de la tolerancia
 const COLOR_ALTA = "#e8a33d"; // ámbar: sonó por encima
 const COLOR_BAJA = "#3d8ee8"; // azul: sonó por debajo
@@ -117,13 +128,14 @@ const COLOR_BAJA = "#3d8ee8"; // azul: sonó por debajo
 /**
  * Color para pintar la desviación en cents de una nota tocada.
  *
- * `cents === null` significa que no se supo el instante de la pulsación (ver
- * `NotaTocada` en `tiposPieza.ts`), NO que sonara perfectamente afinada: por
- * eso tiene su propio color, distinto del de `cents === 0`. Confundir los dos
- * pintaría en verde una nota de la que no se sabe nada.
+ * `cents === null` significa que la desviación no se supo (el detector no la
+ * dio; es independiente de si se supo el instante, ver `NotaTocada` en
+ * `tiposPieza.ts`), NO que sonara perfectamente afinada: por eso tiene su
+ * propio color, distinto del de `cents === 0`. Confundirlos pintaría en verde
+ * una nota de la que no se sabe nada.
  */
 export function colorDeDesviacion(cents: number | null): string {
   if (cents === null) return COLOR_DESCONOCIDO;
-  if (Math.abs(cents) <= TOLERANCIA_AFINADA_CENTS) return COLOR_AFINADA;
+  if (Math.abs(cents) < TOLERANCIA_AFINADA_CENTS) return COLOR_AFINADA;
   return cents > 0 ? COLOR_ALTA : COLOR_BAJA;
 }
