@@ -120,8 +120,9 @@ línea de abajo. Eliges la familia, opcionalmente un tempo, y pulsas **Empezar**
 ejercicio la nota pedida aguarda hasta que la aciertas; en el carril el reloj
 corre solo. Una nota que no tocas pasa y se queda sin marca; una nota que
 tocas queda marcada, acertada o no, y el resumen final dice de cada una si fue *a
-tiempo*, *pronto* o *tarde* y por cuántos milisegundos; en la vista escrita, si
-tocaste otra nota en lugar de la pedida, se ve cuál. Fallar no detiene nada: informa.
+tiempo*, *pronto* o *tarde* y por cuántos milisegundos. Si tocaste otra nota en
+lugar de la pedida, se ve cuál: tanto en el resumen («Pedida A2, tocaste A#2»)
+como en la vista escrita. Fallar no detiene nada: informa.
 
 El carril se pausa por dos reglas distintas:
 
@@ -149,13 +150,22 @@ parece indulgente o severo, hay que ajustarlo: es la constante `VENTANA_A_TIEMPO
 de `nucleo/piezas/seguimiento.py`.
 
 **La ventana de reclamo, y lo que queda fuera de ella.** Para decidir a qué nota
-pertenece una pulsación, cada nota solo puede ser reclamada desde una ventana: su
-duración escrita más 80 ms, con un **mínimo** de 0,5 s (`VENTANA_RECLAMO_MINIMA_S`,
-tampoco medido tocando). Una negra a 240 ppm tiene 0,5 s; a 80 ppm, 0,83 s. **Una
+pertenece una pulsación, cada nota solo puede ser reclamada desde una ventana, y
+esa ventana es **asimétrica**. Llegando tarde: su duración escrita más 80 ms, con
+un **mínimo** de 0,5 s (`VENTANA_RECLAMO_MINIMA_S`, tampoco medido tocando); una
+negra a 240 ppm tiene 0,5 s y a 80 ppm, 0,83 s. Llegando pronto: solo ese mínimo
+de 0,5 s, porque el argumento de la duración —la nota todavía suena, así que sigue
+siendo un intento de ella— solo vale hacia un lado, y aplicado hacia el otro
+dejaba reclamar una redonda a 40 ppm seis segundos antes de que existiera. **Una
 pulsación que no cae en la ventana de ninguna nota no se marca «tarde»: se
 descarta sin dejar rastro**, y no cuenta como fallo ni aparece en el resumen. Las
 notas ya cobradas tampoco cuentan como ventana disponible: una pulsación cuya
 única nota cercana ya se cobró se descarta igual.
+
+**Lo que ya sonó se queda a la vista.** Una nota tocada no desaparece en cuanto
+termina: sigue bajando un segundo por debajo de la línea de ataque, con su color.
+Es lo que permite ver el patrón de una afinación de un vistazo —si todas las notas
+de una cuerda salen del mismo color, no es tu dedo, es la cuerda—.
 
 **La vista escrita.** El botón **Tablatura y pentagrama** del conmutador de vista
 muestra la misma pieza repartida en compases, para leerla antes de tocar y para
