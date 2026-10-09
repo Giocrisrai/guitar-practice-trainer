@@ -213,6 +213,81 @@ describe("Carril", () => {
   });
 
   /**
+   * El estado de una pieza no se pinta nunca sobre otra.
+   *
+   * El WebSocket sigue hablando mientras el `POST /iniciar` viaja, y un paquete
+   * que llegue en ese hueco puede ser todavía de la pieza ANTERIOR. Cuando pasa,
+   * el carril se queda sin estado hasta el primer paquete posterior al POST: ni
+   * el paquete en vuelo ni el estado inicial de la respuesta describen lo que hay
+   * en pantalla.
+   *
+   * Sin esto se veía un fotograma de salida falsa —"Pieza terminada", el contador
+   * y el resumen de la pieza anterior sobre una pieza que acaba de empezar—, y se
+   * llegaba cambiando de módulo con una pieza en marcha y volviendo.
+   */
+  it("un paquete en vuelo no describe la pieza que acaba de entrar", async () => {
+    const pendiente: { responder?: (respuesta: Response) => void } = {};
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        const direccion = String(url);
+        if (direccion.includes("/api/ejercicios/familias")) return responder(FAMILIAS);
+        if (direccion.includes("/api/perfiles")) return responder(PERFILES);
+        if (direccion.includes("/api/piezas/iniciar")) {
+          return new Promise<Response>((cumplir) => {
+            pendiente.responder = cumplir;
+          });
+        }
+        return responder(ESTADO_APAGADO);
+      })
+    );
+
+    render(<Carril />);
+    fireEvent.click(await screen.findByRole("button", { name: /empezar/i }));
+    await waitFor(() => expect(pendiente.responder).toBeDefined());
+
+    // Un paquete de la pieza anterior, de siete notas y ya terminada, mientras
+    // el POST de la pieza nueva —de tres notas— todavía viaja.
+    enviarEstado({
+      instante_s: 9.0,
+      indice_actual: 7,
+      total: 7,
+      completado: true,
+      pausado: false,
+      tocadas: [
+        { indice: 5, midi: 52, cents: 0, desfase_s: 0, clasificacion: "a_tiempo", acertada: true },
+      ],
+    });
+
+    await act(async () => {
+      pendiente.responder!({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve(RESPUESTA_INICIAR),
+      } as Response);
+    });
+
+    expect(screen.queryByText(/pieza terminada/i)).toBeNull();
+    expect(screen.queryByText(/notas acertadas/i)).toBeNull();
+    expect(screen.queryByText(/a tiempo/i)).toBeNull();
+    // La pieza nueva, en su primer cuadro y con el lienzo puesto.
+    expect(screen.getByTestId("lienzo-carril")).toBeTruthy();
+    expect(screen.getByText("0 / 3")).toBeTruthy();
+  });
+
+  it("avisa mientras el WebSocket no conecta, y calla al conectar", async () => {
+    vi.stubGlobal("fetch", crearFetchFalso());
+    render(<Carril />);
+    await pulsarEmpezar();
+    expect(screen.getByText(/sin conexión/i)).toBeTruthy();
+
+    act(() => {
+      WebSocketFalso.ultimo!.onopen?.();
+    });
+    expect(screen.queryByText(/sin conexión/i)).toBeNull();
+  });
+
+  /**
    * Un bucle de `requestAnimationFrame` que sobrevive al componente sigue
    * dibujando sobre un canvas que ya no está en el documento. Se comprueba de
    * verdad: se sustituyen las dos funciones del navegador, se deja correr un

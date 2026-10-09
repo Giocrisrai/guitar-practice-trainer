@@ -26,11 +26,6 @@ import { useCarril } from "./useCarril";
  *   pinta. Lo único suyo son los colores y el bucle de dibujo.
  */
 
-/** La familia con la que arranca el carril mientras no ha llegado el catálogo de
- * `/api/ejercicios/familias`. El selector la sustituye en cuanto llega: es un
- * valor por defecto, no una copia del catálogo. */
-const FAMILIA_POR_DEFECTO = "escala";
-
 const COLOR_FONDO = "#12161b";
 const COLOR_SEPARADOR = "#262d36";
 const COLOR_LINEA_ATAQUE = "#e6e9ee";
@@ -224,10 +219,13 @@ function ResumenCarril({ pieza, estado }: { pieza: Pieza; estado: EstadoCarril }
 
 /** Pantalla del carril: elige la pieza, la toca y la resume. */
 export function Carril() {
-  const { estado, pieza, error, iniciando, instante, iniciar, detener } = useCarril();
+  const { estado, pieza, conectado, error, iniciando, instante, iniciar, detener } = useCarril();
   const [familias, setFamilias] = useState<FamiliaEjercicio[]>([]);
   const [perfiles, setPerfiles] = useState<PerfilAfinacion[]>([]);
-  const [familia, setFamilia] = useState(FAMILIA_POR_DEFECTO);
+  // La familia la elige el usuario de entre las que publica el servidor. Nunca
+  // se escribe aquí una clave del catálogo: la primera que llega es la que queda
+  // seleccionada, igual que en `Configurador`.
+  const [familia, setFamilia] = useState("");
   const [tempo, setTempo] = useState("");
 
   const lienzoRef = useRef<HTMLCanvasElement | null>(null);
@@ -238,7 +236,10 @@ export function Carril() {
   useEffect(() => {
     fetch("/api/ejercicios/familias")
       .then((r) => r.json())
-      .then(setFamilias);
+      .then((datos: FamiliaEjercicio[]) => {
+        setFamilias(datos);
+        if (datos.length > 0) setFamilia(datos[0].clave);
+      });
   }, []);
 
   useEffect(() => {
@@ -299,6 +300,10 @@ export function Carril() {
       const parametros: Record<string, unknown> = {};
       const numero = Number(tempo);
       if (tempo !== "" && Number.isFinite(numero)) parametros.tempo = numero;
+      // Si el catálogo todavía no ha llegado, la familia viaja vacía y el
+      // servidor contesta cuáles hay (`SesionPractica.generar`). Es mejor que
+      // adivinar una clave: lo que se ve seleccionado y lo que viaja son siempre
+      // lo mismo.
       void iniciar({ familia, parametros });
     };
 
@@ -351,6 +356,15 @@ export function Carril() {
   return (
     <section className="carril-en-curso">
       <h2>{pieza.nombre}</h2>
+
+      {/* Un WebSocket caído deja el carril quieto; decirlo es la diferencia
+          entre "no llega el estado" y "el programa no funciona". Se reconecta
+          solo, así que el aviso se va sin que el usuario haga nada. */}
+      {!conectado && (
+        <p className="aviso-carril pausado">
+          Sin conexión con el servidor: el carril está quieto. Se reconecta solo.
+        </p>
+      )}
 
       {/* La pausa se dice, no se disimula: el carril está quieto porque no llega
           señal del cable, y eso se arregla volviendo a tocar. */}

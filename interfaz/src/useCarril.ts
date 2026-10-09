@@ -76,6 +76,9 @@ export function useCarril(url = `ws://${window.location.host}/ws/piezas`): Sesio
   /** Cuántos paquetes ha traído el WebSocket. Solo sirve para saber si alguno
    * llegó mientras un `POST /iniciar` viajaba (ver `iniciar`). */
   const paquetes = useRef(0);
+  /** El último instante que `instante` llegó a devolver, es decir el que se
+   * pintó. Es lo que se congela al entrar en pausa (ver `instante`). */
+  const instanteMostrado = useRef(0);
   const temporizador = useRef<number | null>(null);
 
   /** Registra un paquete del servidor: estado nuevo y reloj sincronizado. */
@@ -98,10 +101,20 @@ export function useCarril(url = `ws://${window.location.host}/ws/piezas`): Sesio
   const instante = useCallback((ahoraLocal: number): number => {
     const ultimo = ultimoEstado.current;
     if (ultimo === null) return 0;
-    // Pausado: el cabezal se queda donde el servidor lo dejó. Interpolar aquí
-    // sería inventar tiempo de pieza que el servidor no está contando.
-    if (ultimo.pausado) return ultimo.instante_s;
-    return reloj.current.instante(ahoraLocal);
+    // Pausado: el cabezal se queda quieto, porque interpolar aquí sería inventar
+    // tiempo de pieza que el servidor no está contando.
+    //
+    // Se congela en lo ÚLTIMO QUE SE PINTÓ, no en el instante del servidor: el
+    // reloj venía interpolando por delante del último paquete (hasta 33 ms, unos
+    // tres píxeles), y volver al valor del servidor haría retroceder el cabezal
+    // justo al entrar en pausa. Que el cabezal no retroceda nunca es la garantía
+    // por la que existe `relojCarril`; contradecirla aquí, aunque sea por tres
+    // píxeles, es contradecirla.
+    const valor = ultimo.pausado
+      ? Math.max(instanteMostrado.current, ultimo.instante_s)
+      : reloj.current.instante(ahoraLocal);
+    instanteMostrado.current = valor;
+    return valor;
   }, []);
 
   const iniciar = useCallback(
@@ -123,19 +136,36 @@ export function useCarril(url = `ws://${window.location.host}/ws/piezas`): Sesio
         }
         const { pieza: piezaNueva, ...estadoInicial } = cuerpo;
         setPieza(piezaNueva);
-        if (paquetes.current === paquetesAlPedir) {
-          // Reloj nuevo con cada pieza: el de la anterior tiene por suelo un
-          // instante que en esta pieza está en el futuro, y el suelo solo sube.
-          reloj.current = crearReloj();
-          relojCaduco.current = false;
+        // Reloj nuevo con cada pieza: el de la anterior tiene por suelo un
+        // instante que en esta pieza está en el futuro, y el suelo solo sube.
+        reloj.current = crearReloj();
+        relojCaduco.current = false;
+        instanteMostrado.current = 0;
+        const enVuelo = paquetes.current === paquetesAlPedir ? null : ultimoEstado.current;
+        if (enVuelo === null) {
           recibir(estadoInicial);
+        } else if (enVuelo.total === piezaNueva.notas.length) {
+          // Llegó un paquete mientras el POST viajaba y cuenta las notas de ESTA
+          // pieza, así que habla de ella y es más nuevo que el estado inicial de
+          // la respuesta: manda él. Adoptar el inicial haría retroceder el
+          // cabezal. Se vuelve a registrar para que sincronice el reloj recién
+          // hecho, que es el que va a usar el carril.
+          recibir(enVuelo);
         } else {
-          // Llegó un paquete mientras el POST viajaba. Ese paquete es MÁS NUEVO
-          // que este estado inicial, así que manda él: adoptar el inicial haría
-          // retroceder el cabezal. Pero puede venir todavía de la pieza
-          // anterior, y un instante viejo se le queda al reloj como suelo para
-          // siempre; por eso se declara caduco y el paquete siguiente —33 ms—
-          // hará uno nuevo tomando su instante como línea base limpia.
+          // El paquete en vuelo cuenta OTRAS notas: es de la pieza anterior, que
+          // seguía en marcha (`total` lo saca el servidor de la pieza). Ni él ni
+          // el estado inicial sirven —si se adoptara el inicial y el paquete
+          // siguiente fuera más viejo, el cabezal retrocedería—, así que el
+          // carril se queda sin estado hasta el primer paquete posterior al POST,
+          // 33 ms después.
+          //
+          // Quedarse con el paquete viejo pintaba el estado de una pieza sobre
+          // otra: con una pieza nueva de una nota y un paquete en vuelo que decía
+          // `completado, total: 7`, la pantalla mostraba "Pieza terminada", "1 de
+          // 7 notas acertadas", el contador en 7/7 y un resumen con una pulsación
+          // que en esta pieza no existe.
+          setEstado(null);
+          ultimoEstado.current = null;
           relojCaduco.current = true;
         }
       } catch (excepcion) {
@@ -155,6 +185,7 @@ export function useCarril(url = `ws://${window.location.host}/ws/piezas`): Sesio
     setEstado(null);
     ultimoEstado.current = null;
     relojCaduco.current = true;
+    instanteMostrado.current = 0;
   }, []);
 
   useEffect(() => {
