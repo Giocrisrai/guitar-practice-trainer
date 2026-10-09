@@ -114,7 +114,9 @@ de la nota pedida. Ese reloj se reinicia al acertar, no al fallar.
 El módulo **Carril** (junto a Afinador y Ejercicios) toma uno de los ejercicios
 generados, lo convierte en una **pieza** —cada nota con su cuerda, su traste y su
 sitio en el tiempo— y la hace llegar hacia ti: toca cada nota cuando alcance la
-línea de abajo. Eliges la familia, opcionalmente un tempo, y pulsas **Empezar**.
+línea de ataque, la que cruza el carril cerca del borde de abajo (por debajo de
+ella queda la estela de lo que ya sonó). Eliges la familia, opcionalmente un
+tempo, y pulsas **Empezar**.
 
 **La diferencia con los ejercicios es de fondo: aquí la música no espera.** En un
 ejercicio la nota pedida aguarda hasta que la aciertas; en el carril el reloj
@@ -123,6 +125,12 @@ tocas queda marcada, acertada o no, y el resumen final dice de cada una si fue *
 tiempo*, *pronto* o *tarde* y por cuántos milisegundos. Si tocaste otra nota en
 lugar de la pedida, se ve cuál: tanto en el resumen («Pedida A2, tocaste A#2»)
 como en la vista escrita. Fallar no detiene nada: informa.
+
+**Cambiar de afinación corta la pieza.** Si cambias el perfil con una pieza en
+marcha, el carril se detiene y la pantalla lo dice: la pieza estaba escrita para
+la afinación anterior y seguir dibujando sus trastes es peor que no dibujar nada
+(spec §7, la misma razón por la que una pieza en otra afinación se rechaza al
+empezar). Se vuelve a empezar cuando quieras, ya en la afinación nueva.
 
 El carril se pausa por dos reglas distintas:
 

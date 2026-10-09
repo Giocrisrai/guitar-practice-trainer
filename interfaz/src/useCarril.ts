@@ -29,6 +29,24 @@ const ESPERA_RECONEXION_MS = 1000;
  */
 const TECHO_TRAMO_S = 0.1;
 
+/** El `arranque` que publica un carril SIN pieza (`ARRANQUE_NINGUNO` en
+ * servidor/piezas.py). Los arranques de verdad empiezan en 1, así que el cero no
+ * es el de ninguna pieza. */
+const ARRANQUE_NINGUNO = 0;
+
+/**
+ * Lo que se le dice al alumno cuando el carril se apaga desde el servidor.
+ *
+ * No dice el motivo porque el navegador no lo sabe: el carril apagado se publica
+ * igual lo apague quien lo apague. Hoy el camino que lo provoca es cambiar la
+ * afinación con una pieza en marcha (`PUT /api/config`, servidor/app.py), que es
+ * la spec §7 aplicada a mitad de pieza: dibujar trastes que tu instrumento no
+ * tiene es peor que no dibujar nada.
+ */
+const AVISO_APAGADO_DESDE_EL_SERVIDOR =
+  "El carril se detuvo desde el servidor. Pasa, por ejemplo, al cambiar de " +
+  "afinación con una pieza en marcha: la pieza estaba escrita para la anterior.";
+
 /** Lo que hace falta para pedir una pieza. Misma forma que el cuerpo de
  * `/api/ejercicios/iniciar`, porque una pieza se genera del mismo catálogo de
  * familias (`POST /api/piezas/iniciar`, servidor/app.py). */
@@ -118,10 +136,40 @@ export function useCarril(url = `ws://${window.location.host}/ws/piezas`): Sesio
    * es de esta pieza se adopta, y si no se olvida.
    */
   const paqueteEnEspera = useRef<EstadoCarril | null>(null);
+  /**
+   * Si el SOCKET ya trajo un paquete de la pieza que tenemos.
+   *
+   * Es lo que permite distinguir los dos paquetes de carril apagado, que son
+   * indistinguibles por su contenido (los dos llevan `arranque: 0`): el de antes
+   * de empezar y el de haberse apagado ya. Un socket entrega en orden, así que un
+   * apagado que llega DESPUÉS de un paquete nuestro se emitió después y habla del
+   * final de nuestra pieza; uno que llega antes puede ser del rato anterior al
+   * arranque, y ése se descarta como siempre.
+   *
+   * El estado inicial de la respuesta de `/iniciar` no cuenta: viene por el otro
+   * canal y no está ordenado respecto a los paquetes del socket.
+   */
+  const vistoPorElSocket = useRef(false);
   /** El último instante que `instante` llegó a devolver, es decir el que se
    * pintó. Es lo que se congela al entrar en pausa (ver `instante`). */
   const instanteMostrado = useRef(0);
   const temporizador = useRef<number | null>(null);
+
+  /** Deja de haber pieza: sin estado, sin arranque nuestro y sin reloj válido.
+   * Lo comparten `detener` -que además lo pide al servidor- y el apagado que
+   * llega por el socket. */
+  const soltarLaPieza = useCallback(() => {
+    setPieza(null);
+    setEstado(null);
+    ultimoEstado.current = null;
+    relojCaduco.current = true;
+    instanteMostrado.current = 0;
+    vistoPorElSocket.current = false;
+    // Sin pieza no hay arranque nuestro, así que ningún paquete vuelve a entrar
+    // hasta que se arranque otra.
+    arranque.current = null;
+    paqueteEnEspera.current = null;
+  }, []);
 
   /**
    * Registra un paquete del servidor: estado nuevo y reloj sincronizado.
@@ -133,35 +181,58 @@ export function useCarril(url = `ws://${window.location.host}/ws/piezas`): Sesio
    * respuesta— y también el caso de todos los días, el carril apagado
    * (`arranque: 0`) emitiendo treinta veces por segundo antes de empezar.
    *
+   * Con UNA excepción: un carril apagado que llega por el socket DESPUÉS de un
+   * paquete de nuestra pieza es el final de la nuestra, no un paquete ajeno (ver
+   * `vistoPorElSocket` y `AVISO_APAGADO_DESDE_EL_SERVIDOR`).
+   *
    * Esto sustituye a una heurística anterior que comparaba el número de notas
    * para adivinar de qué pieza venía un paquete. Adivinaba mal justo en el caso
    * más normal: dos piezas del mismo tamaño -tocar dos veces la misma escala, o
    * recargar la pieza al terminarla- tienen el mismo total, así que el resumen
    * de la anterior salía encima de la nueva.
    */
-  const recibir = useCallback((nuevo: EstadoCarril) => {
-    if (nuevo.arranque !== arranque.current) {
-      paqueteEnEspera.current = nuevo;
-      return;
-    }
-    ultimoEstado.current = nuevo;
-    setEstado(nuevo);
-    if (nuevo.pausado) {
-      // Sin señal no hay nada que interpolar: el instante del servidor está
-      // parado a propósito y es lo que se pinta tal cual (ver `instante`).
-      relojCaduco.current = true;
-      return;
-    }
-    if (relojCaduco.current) {
-      reloj.current = crearReloj();
-      relojCaduco.current = false;
-      // El cabezal pintado era del reloj que se acaba de tirar, y su piso de
-      // no-retroceso se ha ido con él: arrastrarlo a la próxima pausa congelaría
-      // el carril en un instante que ya no describe esta pieza.
-      instanteMostrado.current = 0;
-    }
-    reloj.current.sincronizar(nuevo.instante_s, performance.now());
-  }, []);
+  const recibir = useCallback(
+    (nuevo: EstadoCarril, delSocket = false) => {
+      if (nuevo.arranque !== arranque.current) {
+        // Salvo uno: el carril APAGADO que llega después de un paquete de
+        // nuestra pieza no es un paquete ajeno, es el final de la nuestra,
+        // decidido fuera del navegador (hoy, cambiar la afinación a mitad de
+        // pieza). Descartarlo dejaba la pantalla con el contador y el lienzo de
+        // una pieza que ya no existe y sin un solo aviso.
+        if (
+          delSocket &&
+          nuevo.arranque === ARRANQUE_NINGUNO &&
+          arranque.current !== null &&
+          vistoPorElSocket.current
+        ) {
+          soltarLaPieza();
+          setError(AVISO_APAGADO_DESDE_EL_SERVIDOR);
+          return;
+        }
+        paqueteEnEspera.current = nuevo;
+        return;
+      }
+      if (delSocket) vistoPorElSocket.current = true;
+      ultimoEstado.current = nuevo;
+      setEstado(nuevo);
+      if (nuevo.pausado) {
+        // Sin señal no hay nada que interpolar: el instante del servidor está
+        // parado a propósito y es lo que se pinta tal cual (ver `instante`).
+        relojCaduco.current = true;
+        return;
+      }
+      if (relojCaduco.current) {
+        reloj.current = crearReloj();
+        relojCaduco.current = false;
+        // El cabezal pintado era del reloj que se acaba de tirar, y su piso de
+        // no-retroceso se ha ido con él: arrastrarlo a la próxima pausa
+        // congelaría el carril en un instante que ya no describe esta pieza.
+        instanteMostrado.current = 0;
+      }
+      reloj.current.sincronizar(nuevo.instante_s, performance.now());
+    },
+    [soltarLaPieza]
+  );
 
   const instante = useCallback((ahoraLocal: number): number => {
     const ultimo = ultimoEstado.current;
@@ -215,6 +286,9 @@ export function useCarril(url = `ws://${window.location.host}/ws/piezas`): Sesio
         reloj.current = crearReloj();
         relojCaduco.current = false;
         instanteMostrado.current = 0;
+        // Pieza nueva, socket todavía sin decir nada de ella (ver
+        // `vistoPorElSocket`).
+        vistoPorElSocket.current = false;
         // A partir de aquí, los paquetes de esta pieza son los que traen este
         // arranque; cualquier otro se descarta en `recibir`. El estado inicial de
         // la respuesta viene de la misma llamada que fijó el arranque, así que
@@ -243,16 +317,8 @@ export function useCarril(url = `ws://${window.location.host}/ws/piezas`): Sesio
 
   const detener = useCallback(async () => {
     await fetch("/api/piezas/detener", { method: "POST" });
-    setPieza(null);
-    setEstado(null);
-    ultimoEstado.current = null;
-    relojCaduco.current = true;
-    instanteMostrado.current = 0;
-    // Sin pieza no hay arranque nuestro, así que ningún paquete vuelve a entrar
-    // hasta que se arranque otra.
-    arranque.current = null;
-    paqueteEnEspera.current = null;
-  }, []);
+    soltarLaPieza();
+  }, [soltarLaPieza]);
 
   useEffect(() => {
     let vivo = true;
@@ -266,7 +332,7 @@ export function useCarril(url = `ws://${window.location.host}/ws/piezas`): Sesio
 
       socket.onmessage = (evento) => {
         try {
-          recibir(JSON.parse(evento.data) as EstadoCarril);
+          recibir(JSON.parse(evento.data) as EstadoCarril, true);
         } catch {
           // Un mensaje corrupto se descarta; el siguiente llega en 33 ms.
         }

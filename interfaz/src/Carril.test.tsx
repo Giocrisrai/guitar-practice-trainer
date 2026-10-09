@@ -394,6 +394,59 @@ describe("Carril", () => {
   });
 
   /**
+   * Cambiar la afinación con una pieza en marcha detiene el carril en el servidor
+   * (spec §7: dibujar trastes que tu instrumento no tiene es peor que no dibujar
+   * nada). El navegador se enteraba por ningún sitio: el estado del carril
+   * apagado llega con `arranque: 0` y la guarda de `recibir` lo descartaba como
+   * un paquete ajeno, así que la pantalla seguía con su contador y su lienzo
+   * puestos, sin un solo aviso, sobre una pieza que ya no existía.
+   */
+  it("un carril apagado desde el servidor termina la pieza y lo dice", async () => {
+    vi.stubGlobal("fetch", crearFetchFalso());
+    render(<Carril />);
+    await pulsarEmpezar();
+
+    enviarEstado({
+      instante_s: 1.0, indice_actual: 1, total: 3, completado: false, pausado: false,
+      tocadas: [],
+    });
+    expect(screen.getByText("2 / 3")).toBeTruthy();
+
+    act(() => {
+      WebSocketFalso.ultimo!.enviar(ESTADO_APAGADO);
+    });
+
+    expect(screen.queryByText("2 / 3")).toBeNull();
+    expect(screen.queryByTestId("lienzo-carril")).toBeNull();
+    expect(screen.getByText(/se detuvo desde el servidor/i)).toBeTruthy();
+    expect(screen.getByText(/cambiar de afinación/i)).toBeTruthy();
+    // Y se puede volver a empezar: la pantalla es la de elegir pieza.
+    expect(screen.getByRole("button", { name: /empezar/i })).toBeTruthy();
+  });
+
+  /**
+   * Los dos paquetes de carril apagado son indistinguibles por su contenido: el
+   * de antes de empezar y el de haberse apagado ya llevan los dos `arranque: 0`.
+   * Lo que los separa es el orden del socket, que entrega en orden: uno que llega
+   * ANTES del primer paquete de nuestra pieza puede ser del rato anterior al
+   * arranque -el carril apagado emite treinta veces por segundo- y no puede
+   * tumbar la pieza que se acaba de pedir.
+   */
+  it("un apagado anterior al primer paquete de la pieza no la tumba", async () => {
+    vi.stubGlobal("fetch", crearFetchFalso());
+    render(<Carril />);
+    await pulsarEmpezar();
+
+    act(() => {
+      WebSocketFalso.ultimo!.enviar(ESTADO_APAGADO);
+    });
+
+    expect(screen.queryByText(/se detuvo desde el servidor/i)).toBeNull();
+    expect(screen.getByTestId("lienzo-carril")).toBeTruthy();
+    expect(screen.getByText("1 / 3")).toBeTruthy();
+  });
+
+  /**
    * El contador pintaba `indice_actual`, que es un INDICE (base 0), como si fuera
    * una cuenta: en la ultima nota de una pieza de tres se leia «2 / 3», y en una
    * de doce, «11 / 12».
