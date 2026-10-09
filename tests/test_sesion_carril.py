@@ -208,12 +208,24 @@ def test_detener_quita_el_observador_y_deja_de_avanzar():
     sesion.detener()
 
 
-def test_detener_dos_veces_no_falla():
+def test_detener_dos_veces_no_falla_y_la_segunda_deja_el_carril_parado():
+    """Y lo deja PARADO: no basta con que no reviente.
+
+    Tal y como estaba, esta prueba sobrevivia a que `detener` fuera un no-op: no
+    aseveraba nada. Lo que hay que fijar es que el segundo `detener` no deshace
+    el primero -que no vuelve a registrar el observador ni resucita la pieza- y
+    que el estado publicado sigue siendo el de un carril apagado.
+    """
     reloj = RelojFalso()
     sesion_carril, sesion = carril(reloj)
     sesion_carril.iniciar(pieza_de([40]))
     sesion_carril.detener()
     sesion_carril.detener()
+    assert sesion_carril.activa is False
+    assert sesion_carril.pieza is None
+    assert sesion.observadores == []
+    estado = sesion_carril.estado()
+    assert (estado["total"], estado["instante_s"], estado["arranque"]) == (0, 0.0, 0)
     sesion.detener()
 
 
