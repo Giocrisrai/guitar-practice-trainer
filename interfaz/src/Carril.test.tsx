@@ -439,6 +439,78 @@ describe("Carril", () => {
   });
 
   /**
+   * El quinto camino del hueco de 30 s: el reloj del navegador.
+   *
+   * Los tres tapones del hueco son del servidor; aquí no había ninguno.
+   * `relojCarril` interpola sin techo —`sincronizar(2.0)` y 30 s sin un solo
+   * paquete dan 32.0—, y eso es correcto mientras el servidor siga contando. Deja
+   * de serlo cuando el servidor se pausa por falta de señal: su instante está
+   * parado a propósito, y congelar lo interpolado dejaba el cabezal en el segundo
+   * 32 de una pieza que va por el 2; al volver la señal, el carril retrocedía
+   * esos 30 s, que es lo único declarado intolerable.
+   */
+  it("al pausar, el cabezal no se congela más de un techo por delante del servidor", async () => {
+    vi.stubGlobal("fetch", crearFetchFalso());
+    vi.spyOn(performance, "now").mockReturnValue(1000);
+
+    const { result } = renderHook(() => useCarril());
+    await act(async () => {
+      await result.current.iniciar({ familia: "escala", parametros: {} });
+    });
+
+    act(() => {
+      WebSocketFalso.ultimo!.enviar(enCurso({ instante_s: 2.0 }));
+    });
+    // El WebSocket se cae (o el portátil se suspende) y pasan 30 s sin paquetes:
+    // el reloj sigue interpolando y pinta el segundo 32 de la pieza.
+    expect(result.current.instante(31000)).toBeCloseTo(32.0, 1);
+
+    // Vuelve el canal, pero el servidor está pausado por falta de señal: su
+    // instante sigue donde estaba. El cabezal se congela ahí, no en el 32.
+    act(() => {
+      WebSocketFalso.ultimo!.enviar(enCurso({ instante_s: 2.1, pausado: true }));
+    });
+    expect(result.current.instante(31000)).toBeCloseTo(2.2, 5);
+  });
+
+  /**
+   * Y el cabezal pintado se suelta al sustituir el reloj, no solo al iniciar otra
+   * pieza: el piso de no-retroceso vive dentro de la instancia del reloj, así que
+   * cuando `relojCaduco` la tira, lo que pintó deja de describir nada.
+   */
+  it("el cabezal pintado no sobrevive al reloj que lo pintó", async () => {
+    vi.stubGlobal("fetch", crearFetchFalso());
+    vi.spyOn(performance, "now").mockReturnValue(1000);
+
+    const { result } = renderHook(() => useCarril());
+    await act(async () => {
+      await result.current.iniciar({ familia: "escala", parametros: {} });
+    });
+
+    act(() => {
+      WebSocketFalso.ultimo!.enviar(enCurso({ instante_s: 2.0 }));
+    });
+    // 30 s sin paquetes: el reloj viejo pinta el segundo 32.
+    expect(result.current.instante(31000)).toBeCloseTo(32.0, 1);
+    act(() => {
+      WebSocketFalso.ultimo!.enviar(enCurso({ instante_s: 2.1, pausado: true }));
+    });
+    // Congelado en 2,2: el techo sobre lo que el reloj viejo llegó a pintar.
+    expect(result.current.instante(31000)).toBeCloseTo(2.2, 5);
+
+    // Vuelve la señal (reloj nuevo) y se va otra vez sin que se haya pintado un
+    // solo cuadro con él. Lo único que describe la pieza es el instante del
+    // servidor; el 2,2 del reloj anterior ya no cuenta.
+    act(() => {
+      WebSocketFalso.ultimo!.enviar(enCurso({ instante_s: 2.1 }));
+    });
+    act(() => {
+      WebSocketFalso.ultimo!.enviar(enCurso({ instante_s: 2.15, pausado: true }));
+    });
+    expect(result.current.instante(1000)).toBeCloseTo(2.15, 5);
+  });
+
+  /**
    * Y el cabezal congelado no se hereda: es del arranque que lo congeló. Sin
    * soltarlo al iniciar, una pieza nueva pausada se quedaría clavada en el
    * instante de la anterior, que puede estar minutos por delante.

@@ -6,6 +6,29 @@ import type { EstadoCarril, Pieza, RespuestaIniciarPieza } from "./tiposPieza";
 /** Espera antes de reintentar la conexión. Desconectar el cable es habitual. */
 const ESPERA_RECONEXION_MS = 1000;
 
+/**
+ * Lo más que el cabezal congelado puede ir por delante del instante que declaró
+ * el servidor. Es el mismo techo que `TECHO_TRAMO_S` en `servidor/piezas.py`, y
+ * por el mismo motivo: un hueco largo no entra en la pieza por ningún camino.
+ *
+ * Los tres tapones del hueco de 30 s son del servidor; este reloj no tenía
+ * ninguno. Interpolando sin paquetes, `relojCarril` crece sin techo —con el
+ * WebSocket caído 30 s, `sincronizar(2.0)` y 30 s después da 32.0— y eso es
+ * CORRECTO mientras el servidor siga contando, porque con audio entrando su
+ * reloj avanza con los cuadros aunque el canal esté roto. Deja de serlo en
+ * cuanto el servidor se pausa por falta de señal: ahí su instante está parado a
+ * propósito, y congelar lo interpolado dejaba el cabezal en el segundo 32 de una
+ * pieza que va por el 2. Y al volver la señal, el carril retrocedía esos 30 s
+ * —lo único que la Task 7 declaró intolerable— porque el piso de no-retroceso
+ * vive DENTRO de la instancia del reloj y al reanudar se tira el reloj.
+ *
+ * Así que la pausa congela como mucho un techo por delante de lo que el servidor
+ * dice. El margen sigue absorbiendo lo que la pausa tiene que absorber: los
+ * hasta 33 ms que el reloj llevaba interpolados sobre el último paquete, que es
+ * la razón por la que no se congela en el instante del servidor a secas.
+ */
+const TECHO_TRAMO_S = 0.1;
+
 /** Lo que hace falta para pedir una pieza. Misma forma que el cuerpo de
  * `/api/ejercicios/iniciar`, porque una pieza se genera del mismo catálogo de
  * familias (`POST /api/piezas/iniciar`, servidor/app.py). */
@@ -132,6 +155,10 @@ export function useCarril(url = `ws://${window.location.host}/ws/piezas`): Sesio
     if (relojCaduco.current) {
       reloj.current = crearReloj();
       relojCaduco.current = false;
+      // El cabezal pintado era del reloj que se acaba de tirar, y su piso de
+      // no-retroceso se ha ido con él: arrastrarlo a la próxima pausa congelaría
+      // el carril en un instante que ya no describe esta pieza.
+      instanteMostrado.current = 0;
     }
     reloj.current.sincronizar(nuevo.instante_s, performance.now());
   }, []);
@@ -148,8 +175,18 @@ export function useCarril(url = `ws://${window.location.host}/ws/piezas`): Sesio
     // justo al entrar en pausa. Que el cabezal no retroceda nunca es la garantía
     // por la que existe `relojCarril`; contradecirla aquí, aunque sea por tres
     // píxeles, es contradecirla.
+    //
+    // Pero con TECHO: lo pintado solo vale por delante del servidor hasta
+    // `TECHO_TRAMO_S` (ver la constante). Un reloj que llevaba mucho rato sin
+    // paquetes se congelaba en un valor desbocado, y al reanudar el carril
+    // retrocedía de golpe. Acotar aquí no contradice el no-retroceso: lo
+    // sostiene, porque corta el único valor desde el que el cabezal podía
+    // retroceder.
     const valor = ultimo.pausado
-      ? Math.max(instanteMostrado.current, ultimo.instante_s)
+      ? Math.min(
+          Math.max(instanteMostrado.current, ultimo.instante_s),
+          ultimo.instante_s + TECHO_TRAMO_S
+        )
       : reloj.current.instante(ahoraLocal);
     instanteMostrado.current = valor;
     return valor;
