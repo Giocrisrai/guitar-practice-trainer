@@ -246,6 +246,32 @@ describe("Carril", () => {
     expect(await screen.findByText(/tarde/i)).toBeTruthy();
   });
 
+  /**
+   * El resumen es la pantalla que el alumno mira al terminar, y no decia que nota
+   * habia salido mal: todas las filas llevaban el nombre PEDIDO, asi que debajo
+   * de «1 de 3 notas acertadas» venian tres lineas que no se distinguian en lo
+   * que importa. El color del punto es la desviacion en cents, que es otra cosa.
+   */
+  it("el resumen dice qué nota salió mal y cuál era la pedida", async () => {
+    vi.stubGlobal("fetch", crearFetchFalso());
+    render(<Carril />);
+    fireEvent.click(await screen.findByRole("button", { name: /empezar/i }));
+    enviarEstado({
+      instante_s: 4.0, indice_actual: 2, total: 3, completado: true, pausado: false,
+      tocadas: [
+        { indice: 0, midi: 40, nombre: "E2", cents: 0, desfase_s: 0.01,
+          clasificacion: "a_tiempo", acertada: true, afinada: true },
+        // La nota 1 pedia A2 (MIDI 45) y sonó A#2: fallada, y bien afinada.
+        { indice: 1, midi: 46, nombre: "A#2", cents: 1.0, desfase_s: 0.02,
+          clasificacion: "a_tiempo", acertada: false, afinada: true },
+      ],
+    });
+    expect(await screen.findByText(/1 de 3 notas acertadas/i)).toBeTruthy();
+    expect(screen.getByText(/Pedida A2, tocaste A#2/)).toBeTruthy();
+    expect(screen.getAllByTestId("fila-fallada")).toHaveLength(1);
+    expect(screen.getAllByTestId("fila-acertada")).toHaveLength(1);
+  });
+
   it("escucha el WebSocket del carril, no el de los ejercicios", async () => {
     vi.stubGlobal("fetch", crearFetchFalso());
     render(<Carril />);

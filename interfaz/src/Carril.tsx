@@ -64,9 +64,24 @@ function textoDesfase(desfaseS: number | null): string {
   return `(${ms > 0 ? "+" : ""}${ms} ms)`;
 }
 
-/** El nombre de la nota, que lo trae la pieza y no la pulsación. */
-function nombreDeTocada(pieza: Pieza, tocada: NotaTocada): string {
+/** El nombre de la nota PEDIDA, que lo trae la pieza y no la pulsación. */
+function nombrePedido(pieza: Pieza, tocada: NotaTocada): string {
   return pieza.notas[tocada.indice]?.nombre ?? `MIDI ${tocada.midi}`;
+}
+
+/**
+ * Qué nota es cada fila del resumen: la pedida, y lo que sonó cuando no fue esa.
+ *
+ * Todas las filas decían el nombre ESPERADO, así que debajo de «3 de 9 notas
+ * acertadas» venían nueve líneas idénticas en lo que importa y nada distinguía
+ * las acertadas de las falladas. El color del punto es la desviación en cents,
+ * que es otra cosa: una nota equivocada puede estar perfectamente afinada. El
+ * veredicto es `acertada`, que lo publica el núcleo, y la forma de decirlo es la
+ * misma que ya usa la vista escrita.
+ */
+function textoDeFila(pieza: Pieza, tocada: NotaTocada): string {
+  const pedida = nombrePedido(pieza, tocada);
+  return tocada.acertada ? pedida : `Pedida ${pedida}, tocaste ${tocada.nombre}`;
 }
 
 /**
@@ -204,12 +219,16 @@ function ResumenCarril({ pieza, estado }: { pieza: Pieza; estado: EstadoCarril }
       </p>
       <ul className="desviaciones-carril">
         {estado.tocadas.map((tocada) => (
-          <li key={tocada.indice}>
+          <li
+            key={tocada.indice}
+            className={tocada.acertada ? undefined : "nota-fallada"}
+            data-testid={tocada.acertada ? "fila-acertada" : "fila-fallada"}
+          >
             <span
               className="punto-desviacion"
               style={{ background: colorDeDesviacion(tocada) }}
             />
-            {nombreDeTocada(pieza, tocada)} — {textoClasificacion(tocada.clasificacion)}{" "}
+            {textoDeFila(pieza, tocada)} — {textoClasificacion(tocada.clasificacion)}{" "}
             {textoDesfase(tocada.desfase_s)}
           </li>
         ))}

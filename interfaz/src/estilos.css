@@ -179,6 +179,9 @@ body {
   display: inline-block; width: 8px; height: 8px; border-radius: 50%;
   margin-right: 8px; vertical-align: middle;
 }
+/* La fila de una nota que no se acerto. El color del punto es la desviacion en
+   cents, que es otra cosa: una nota equivocada puede estar bien afinada. */
+.desviaciones-carril .nota-fallada { color: var(--desviada); }
 
 /* --- Vista escrita --- */
 .conmutador-vista { display: flex; gap: 8px; margin: 8px 0; }
