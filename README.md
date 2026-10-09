@@ -242,5 +242,6 @@ grabaciones todavía no existen, así que esas pruebas aparecen como saltadas
 Etapas 1, 2a y 3a completas. Las siguientes, según el diseño:
 
 2b. Ejercicios de acordes
-3. Grabación de sesiones y medición de progreso
-4. Canciones desde tablatura, entrenamiento de oído y efectos
+3b. Importar canciones: Guitar Pro, MusicXML, MIDI y tablatura ASCII
+3c. Practicar una pieza entera: compases, bucles y tempo ajustable
+4. Grabación de sesiones, medición de progreso, entrenamiento de oído y efectos
