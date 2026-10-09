@@ -44,11 +44,11 @@ describe("VistaEscrita", () => {
       <VistaEscrita pieza={PIEZA} estado={estado({ indice_actual: 1 })} cuerdas={6} />
     );
     expect(screen.getAllByTestId("nota-actual")).toHaveLength(1);
-    const enTablatura = container.querySelectorAll(".tablatura .nota-actual");
+    const enTablatura = container.querySelectorAll(".tablatura .traste-actual");
     expect(enTablatura).toHaveLength(1);
     // La nota 1 es la A2: cuerda 5, la segunda línea de abajo.
     const lineas = screen.getByLabelText("Tablatura del compás 1").querySelectorAll("div");
-    expect(within(lineas[4] as HTMLElement).getByText("0").className).toBe("nota-actual");
+    expect(within(lineas[4] as HTMLElement).getByText("0").className).toBe("traste-actual");
   });
 
   it("con la pieza terminada ya no hay nota en curso", () => {

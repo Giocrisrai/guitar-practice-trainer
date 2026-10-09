@@ -116,11 +116,11 @@ class SesionCarril:
     y la instantanea se construye ENTERA debajo de el: en la etapa 2a se colo un
     fallo por leer dos campos sin candado y devolver un estado a medias.
 
-    Frontera con la sesion de audio: solo tres miembros, `senal_ausente`,
-    `registrar_observador` y `quitar_observador`. Nada mas. Es una frontera
-    estrecha a proposito: asi una prueba puede darle un doble de tres lineas en
-    vez de obligar a `Sesion` a llevar un interruptor que solo sirva para los
-    tests.
+    Frontera con la sesion de audio: `senal_ausente`, `registrar_observador` y
+    `quitar_observador`, mas `activa` (opcional: un doble que no la tenga se da
+    por activo). Es una frontera estrecha a proposito: asi una prueba puede darle
+    un doble de pocas lineas en vez de obligar a `Sesion` a llevar un interruptor
+    que solo sirva para los tests.
     """
 
     def __init__(
@@ -254,7 +254,7 @@ class SesionCarril:
         ahora = self._reloj()
         # Fuera del candado: en la sesion de verdad es una propiedad que mira su
         # historial de niveles, y no hay motivo para hacerla esperar a nadie.
-        ausente = bool(self._sesion_audio.senal_ausente)
+        ausente = self._sin_senal()
         # Este candado se retiene mientras `_instantanea` espera el del seguidor,
         # que puede estar en manos de un `procesar` en curso. Es a proposito: la
         # instantanea tiene que salir entera de una sola lectura. La espera es de
@@ -264,6 +264,21 @@ class SesionCarril:
         with self._candado:
             self._mirar(ahora, ausente)
             return self._instantanea(ahora)
+
+    def _sin_senal(self) -> bool:
+        """Si el carril debe tratarse como sin señal: no hay audio que oir.
+
+        Son dos casos distintos y hacen falta los dos. `senal_ausente` es el nivel
+        por debajo del umbral de ruido durante mas de 5 s (incluido quien deja de
+        tocar). Pero mientras la captura NO esta abierta -el cable sin enchufar al
+        arrancar, o el permiso de microfono sin conceder- el bucle de la sesion
+        reintenta sin publicar nada, ni siquiera un silencio, asi que
+        `senal_ausente` nunca llega a ser verdadero y el carril corria con la
+        pieza entera fallandose sin que el alumno oyera nada. La captura cerrada
+        cuenta como ausente de inmediato.
+        """
+        activa = getattr(self._sesion_audio, "activa", True)
+        return bool(self._sesion_audio.senal_ausente) or not activa
 
     def _perfil_activo(self) -> str:
         """La afinacion con la que el usuario esta tocando ahora mismo.
@@ -303,7 +318,7 @@ class SesionCarril:
         que pueda resolverse.
         """
         ahora = self._reloj()
-        ausente = bool(self._sesion_audio.senal_ausente)
+        ausente = self._sin_senal()
         with self._candado:
             self._mirar(ahora, ausente)
             seguidor = self._seguidor

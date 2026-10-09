@@ -101,7 +101,7 @@ function Tablatura({
             ) : (
               <span
                 key={celda.indice}
-                className={enCurso ? "nota-actual" : undefined}
+                className={enCurso ? "traste-actual" : undefined}
                 style={tocada === undefined ? undefined : { color: colorDeDesviacion(tocada.cents) }}
               >
                 {celda.texto}

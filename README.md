@@ -121,20 +121,35 @@ ejercicio la nota pedida aguarda hasta que la aciertas; en el carril el reloj
 corre solo. Una nota que no tocas pasa y se queda sin marca; una nota que
 tocas queda marcada, acertada o no, y el resumen final dice de cada una si fue *a
 tiempo*, *pronto* o *tarde* y por cuántos milisegundos; en la vista escrita, si
-tocaste otra nota en lugar de la pedida, se ve cuál. Fallar no detiene nada: informa. Si
-se pierde la señal del cable, el carril se **pausa** y sigue donde estaba al volver
-a tocar.
+tocaste otra nota en lugar de la pedida, se ve cuál. Fallar no detiene nada: informa. Con
+un tope: si el nivel lleva **más de 5 segundos por debajo del umbral de ruido**, el
+carril se **pausa** y sigue donde estaba en cuanto vuelves a sonar. Eso incluye
+tanto un cable desenchufado como quien simplemente deja de tocar; el carril no
+distingue una cosa de otra. También se pausa, desde el primer momento, si la
+captura de audio no está abierta (cable sin enchufar o permiso de micrófono sin
+conceder al arrancar).
+
+**No hay cuenta atrás ni metrónomo.** La primera nota está escrita en el instante
+cero, el mismo en que pulsas **Empezar**, así que llegar *a tiempo* a la primera
+nota es prácticamente imposible, y nada en el carril marca el pulso: el ritmo lo
+llevas tú con lo que ves caer.
 
 **La ventana de ±80 ms.** Una pulsación cuenta como *a tiempo* si cae a menos de
-80 ms de donde la nota está escrita; más allá se marca *pronto* o *tarde*. **Ese
+80 ms de donde la nota está escrita; entre 80 ms y el límite de la ventana de
+reclamo (más abajo) se marca *pronto* o *tarde*. **Ese
 número está razonado, no medido tocando**: sale de que por debajo de unos 30 ms dos
 ataques no se oyen separados, de que por encima de unos 100 ms el desfase ya se
 oye como error, y de la latencia del cable (13,8 ms según la medición anotada en el código), pero nadie ha
 sentado a un alumno con la guitarra a ver cuándo siente que llegó tarde. Si te
 parece indulgente o severo, hay que ajustarlo: es la constante `VENTANA_A_TIEMPO_S`
-de `nucleo/piezas/seguimiento.py`. Lo mismo vale para `VENTANA_RECLAMO_MINIMA_S`
-(0,5 s), lo más lejos que una pulsación puede estar de una nota y seguir siendo un
-intento de ella.
+de `nucleo/piezas/seguimiento.py`.
+
+**La ventana de reclamo, y lo que queda fuera de ella.** Para decidir a qué nota
+pertenece una pulsación, cada nota solo puede ser reclamada desde una ventana: su
+duración escrita más 80 ms, con un **mínimo** de 0,5 s (`VENTANA_RECLAMO_MINIMA_S`,
+tampoco medido tocando). Una negra a 240 ppm tiene 0,5 s; a 80 ppm, 0,83 s. **Una
+pulsación que no cae en la ventana de ninguna nota no se marca «tarde»: se
+descarta sin dejar rastro**, y no cuenta como fallo ni aparece en el resumen.
 
 **La vista escrita.** El botón **Tablatura y pentagrama** del conmutador de vista
 muestra la misma pieza repartida en compases, para leerla antes de tocar y para
@@ -158,8 +173,9 @@ el patrón sobre una guitarra desafinada a propósito**: esa prueba sigue pendie
   viene después. Basta para una escala en una posición; para una canción
   producirá saltos absurdos, porque la elección buena minimiza el movimiento de
   la mano a lo largo de toda la pieza.
-- **El pentagrama es aproximado.** Está en clave de sol (escrito una octava por
-  encima de lo que suena, como se escribe la guitarra) y no lleva indicación de
+- **El pentagrama es aproximado.** Está en clave de sol (las notas se escriben una
+  octava por encima de lo que suenan, como se escribe la guitarra, pero la clave
+  es un 𝄞 simple, sin el «8» que lo indica) y no lleva indicación de
   compás, ni corchetes en las corcheas, ni silencios, ni puntillos, y escribe los
   bemoles como sostenidos (un si bemol sale como la sostenido). Sirve para leer
   dónde tocar, no para editar partituras.

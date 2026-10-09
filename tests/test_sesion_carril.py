@@ -508,3 +508,42 @@ def test_cada_arranque_tiene_su_etiqueta_y_el_carril_apagado_no_tiene_ninguna():
     sesion_carril.detener()
     assert sesion_carril.estado()["arranque"] == ARRANQUE_NINGUNO
     sesion.detener()
+
+
+def test_con_la_captura_cerrada_el_carril_no_corre():
+    """Arrancar sin el cable (o sin permiso de microfono): la sesion reintenta sin
+    publicar nada, `senal_ausente` nunca se activa y el carril corria nueve
+    segundos fallando la pieza entera sin que el alumno oyera nada."""
+    reloj = RelojFalso()
+    sesion_carril, sesion = carril(reloj)
+    sesion.activa = False
+    sesion_carril.iniciar(pieza_de([40, 45, 50]))
+    assert sesion.senal_ausente is False
+
+    estado = avanzar_mirando(sesion_carril, reloj, 9.0)
+    assert estado["instante_s"] == pytest.approx(0.0, abs=0.001)
+    assert estado["indice_actual"] == 0
+    assert estado["pausado"] is True
+
+    # Al abrirse la captura el carril arranca desde donde estaba, sin saltos.
+    sesion.activa = True
+    estado = avanzar_mirando(sesion_carril, reloj, 0.5)
+    assert estado["pausado"] is False
+    assert estado["instante_s"] == pytest.approx(0.5, abs=0.001)
+    sesion_carril.detener()
+    sesion.detener()
+
+
+def test_con_una_sesion_real_sin_captura_el_carril_esta_pausado():
+    """Lo mismo con la `Sesion` de verdad, sin arrancar: no hay captura abierta."""
+    from servidor.sesion import Sesion
+
+    reloj = RelojFalso()
+    real = Sesion(Configuracion())
+    assert real.activa is False
+    sesion_carril = SesionCarril(real, reloj=reloj)
+    sesion_carril.iniciar(pieza_de([40, 45, 50]))
+    estado = avanzar_mirando(sesion_carril, reloj, 9.0)
+    assert estado["pausado"] is True
+    assert estado["instante_s"] == pytest.approx(0.0, abs=0.001)
+    sesion_carril.detener()
