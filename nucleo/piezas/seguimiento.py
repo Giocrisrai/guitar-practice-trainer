@@ -61,6 +61,32 @@ VENTANA_A_TIEMPO_S = 0.080
 # en la mano. Esa calibracion sigue pendiente.
 VENTANA_RECLAMO_MINIMA_S = 0.500
 
+# Lo mas lejos que puede estar una coincidencia de ALTURA para que todavia sea la
+# nota que el alumno estaba intentando, y no otra nota de la pieza que se llama
+# igual. Simetrica: vale lo mismo llegando tarde que pronto.
+#
+# De donde sale: la preferencia por altura existe porque en un pasaje denso el
+# tiempo no distingue cual se quiso tocar y el nombre de la nota si (ver
+# `SeguidorPieza`). Pero sin tope, esa preferencia alcanzaba notas a 750 ms -mas
+# de una negra entera a 80 ppm- y le adjudicaba la pulsacion a una nota que el
+# alumno no habia tocado todavia, o que se habia saltado hacia atras. Asi que la
+# altura necesita su propia vecindad, mas estrecha que la ventana de reclamo: la
+# del error humano, no la de la figura.
+#
+# Por que 0,25 s: cae entre las dos medidas que hay que respetar a la vez. Por
+# arriba, el caso que motivo la preferencia -una semicorchea a 200 ppm tocada 200
+# ms tarde o pronto- tiene que seguir yendo por altura, asi que el tope no puede
+# bajar de 0,205 s. Por abajo, una nota de la misma altura a 400 ms ya no es un
+# intento de ella: es otra nota de la pieza, y adjudicarsela deja la que de
+# verdad se fallo sin marca. Entre 0,205 y 0,4, el cuarto de segundo es el numero
+# redondo.
+#
+# NO esta calibrado tocando, igual que VENTANA_A_TIEMPO_S y
+# VENTANA_RECLAMO_MINIMA_S: es un orden de magnitud razonado entre dos medidas
+# hechas con el codigo, no el resultado de medirle el error a nadie con la
+# guitarra en la mano. Esa calibracion sigue pendiente.
+VENTANA_ALTURA_S = 0.250
+
 
 @dataclass(frozen=True)
 class NotaTocada:
@@ -166,12 +192,13 @@ class SeguidorPieza:
     salia "a_tiempo" y equivocada. Los fallos de altura siguen yendo por cercania,
     que es donde tienen sentido.
 
-    La altura DESEMPATA, no se salta nada: si la pulsacion cae a menos de
-    `ventana_a_tiempo_s` del instante de una nota sin cobrar, se adjudica a una
-    nota que el alumno ya haya alcanzado, coincida o no la altura. Una
-    coincidencia de altura mas adelante en la pieza -una nota a la que el alumno
-    todavia no ha llegado- no puede cobrar por delante de la que tiene debajo del
-    dedo (ver `_adjudicar`).
+    La altura DESEMPATA ENTRE VECINAS, con su propia ventana y simetrica
+    (`VENTANA_ALTURA_S`, un cuarto de segundo): una nota de la misma altura mas
+    lejos que eso no es la que el alumno estaba intentando, es otra nota de la
+    pieza que se llama igual, y adjudicarsela deja sin marca la que de verdad
+    fallo. Es un tope de DISTANCIA, no de direccion: adelantarse es tan normal
+    como retrasarse, y acotar solo un lado devolvia el fantasma por el otro (ver
+    `_adjudicar`).
 
     En ningun caso se adjudica a la nota en curso por estar en curso. Tocar antes
     de tiempo es lo normal -es lo que hace un musico que va con el pulso-,
@@ -209,11 +236,13 @@ class SeguidorPieza:
         detector: DetectorPulsaciones | None = None,
         ventana_a_tiempo_s: float = VENTANA_A_TIEMPO_S,
         ventana_reclamo_minima_s: float = VENTANA_RECLAMO_MINIMA_S,
+        ventana_altura_s: float = VENTANA_ALTURA_S,
     ) -> None:
         self.pieza = pieza
         self._detector = detector or DetectorPulsaciones()
         self.ventana_a_tiempo_s = ventana_a_tiempo_s
         self.ventana_reclamo_minima_s = ventana_reclamo_minima_s
+        self.ventana_altura_s = ventana_altura_s
         # Los instantes escritos, ya en segundos: se consultan en cada cuadro
         # (buscar la nota en curso y la mas cercana) y no cambian nunca.
         self._inicios_s = np.array(
@@ -422,29 +451,33 @@ class SeguidorPieza:
         # misma altura gana la mas cercana. Si ninguna coincide, se cae a la mas
         # cercana en el tiempo: ahi es donde se anotan los fallos de altura, que
         # siguen saliendo con `acertada=False`.
-        coincidentes = reclamables & (self._midis == midi_tocado)
-        # Pero la altura DESEMPATA entre candidatas cercanas; no autoriza saltar
-        # hacia delante por encima de una nota que esta debajo del dedo. Si hay
-        # una nota sin cobrar a menos de `ventana_a_tiempo_s` de la pulsacion, la
-        # coincidencia de altura solo puede estar en una nota que el alumno YA
-        # haya alcanzado (su instante no queda mas alla de esa misma ventana).
         #
-        # Sin este limite, las dos decisiones de rondas anteriores -la ventana de
-        # reclamo derivada de la figura y la preferencia por altura- se juntaban
-        # y se invertia el veredicto de dos notas: con la escala de C mayor a 80
-        # ppm, un dedo un traste bajo sobre la nota 5 (F3, sonando E3) se
-        # adjudicaba a la nota 6 (E3, a 750 ms, que el alumno aun no habia
-        # alcanzado) y salia ACERTADA, la nota 5 se quedaba sin marca, y al tocar
-        # la 6 bien la unica libre cerca era la 5, de otra altura, y salia
-        # fallada. Lo correcto salia como error y el error como acierto.
+        # Pero la altura DESEMPATA ENTRE VECINAS, y por eso tiene su propia
+        # ventana, `VENTANA_ALTURA_S`, mas estrecha que la de reclamo y SIMETRICA:
+        # una coincidencia de altura mas lejos que eso no es la nota que el alumno
+        # estaba intentando, es otra nota de la pieza que se llama igual.
         #
-        # El caso que motivo la preferencia por altura sigue intacto, porque ahi
-        # la nota de la altura buena esta DETRAS de la pulsacion: la semicorchea
-        # a 200 ppm tocada 200 ms tarde se sigue adjudicando a ella y no a la
-        # vecina que le cae a 20 ms.
-        if (reclamables & (distancias <= self.ventana_a_tiempo_s)).any():
-            alcanzadas = self._inicios_s <= instante_para_buscar + self.ventana_a_tiempo_s
-            coincidentes = coincidentes & alcanzadas
+        # Lo que separa los dos casos es la DISTANCIA, no la direccion. Sin este
+        # tope, las dos decisiones de rondas anteriores -la ventana de reclamo
+        # derivada de la figura y la preferencia por altura- se juntaban y se
+        # invertia el veredicto de dos notas en los dos sentidos, con la escala de
+        # C mayor a 80 ppm (negras de 0,75 s):
+        #
+        # - Un dedo un traste bajo sobre la nota 5 (F3, sonando E3) se adjudicaba
+        #   a la nota 6 (E3, 750 ms POR DELANTE) y salia acertada; la nota 5 se
+        #   quedaba sin marca y el acierto siguiente salia fallado.
+        # - El espejo: saltarse la nota 0 y poner el dedo un traste bajo en la 1
+        #   (D3, sonando C3) se adjudicaba a la nota 0 (C3, 755 ms POR DETRAS) y
+        #   salia acertada una nota que el alumno NUNCA toco.
+        #
+        # Una guarda por direccion solo tapa el primero, y encima rompe al alumno
+        # que se adelanta: a 200 ppm, una nota tocada 200 ms PRONTO se iria a la
+        # vecina, que es el fantasma que la preferencia por altura vino a matar.
+        # Adelantarse es lo normal (ver la clase), asi que el tope es igual por
+        # los dos lados.
+        coincidentes = reclamables & (self._midis == midi_tocado) & (
+            distancias <= self.ventana_altura_s
+        )
         candidatas = coincidentes if coincidentes.any() else reclamables
         indice = int(np.argmin(np.where(candidatas, distancias, np.inf)))
         nota = self.pieza.notas[indice]

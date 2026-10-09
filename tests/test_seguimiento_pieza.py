@@ -11,6 +11,7 @@ from nucleo.ejercicios.pulsaciones import Pulsacion
 from nucleo.piezas.modelo import NotaEnPieza, Pieza
 from nucleo.piezas.seguimiento import (
     VENTANA_A_TIEMPO_S,
+    VENTANA_ALTURA_S,
     VENTANA_RECLAMO_MINIMA_S,
     SeguidorPieza,
 )
@@ -411,6 +412,22 @@ def test_en_un_pasaje_denso_manda_la_altura_y_no_la_vecina():
     assert tocada.clasificacion == "tarde"
 
 
+def test_en_un_pasaje_denso_manda_la_altura_tambien_si_el_alumno_se_adelanta():
+    """Adelantarse es tan normal como retrasarse, y la altura vale igual.
+
+    La nota 3 (G3) se toca 200 ms PRONTO. Por cercania sola cae en la vecina, que
+    saldria "a_tiempo" y equivocada mientras la nota 3 se queda sin cobrar: el
+    mismo fantasma que la preferencia por altura vino a matar, en el otro sentido.
+    Un tope por direccion -la altura solo hacia atras- lo reintroducia; el tope de
+    distancia vale por los dos lados.
+    """
+    seguidor = SeguidorPieza(pieza_rapida([40, 45, 50, 55, 59]))
+    tocada = tocar(seguidor, "G3", en=0.225 - 0.2)
+    assert tocada.indice == 3
+    assert tocada.acertada is True
+    assert tocada.clasificacion == "pronto"
+
+
 def test_en_un_pasaje_denso_una_altura_que_no_esta_sigue_yendo_por_cercania():
     """Los fallos de altura no cambian: van a la nota mas cercana y no aciertan.
 
@@ -456,19 +473,44 @@ def test_la_altura_no_cobra_una_nota_que_el_alumno_no_ha_alcanzado():
     assert [t.indice for t in seguidor.estado.tocadas] == [0, 1, 2, 3, 4, 5, 6]
 
 
-def test_la_altura_tampoco_salta_hacia_delante_dentro_del_piso():
-    """El mismo salto, con la nota de la altura buena DENTRO del piso de 0,5 s.
+def test_el_espejo_de_lo_mismo_hacia_atras():
+    """Una nota que el alumno NUNCA toco no puede salir acertada hacia atras.
 
-    A 150 ppm la negra son 0,4 s, asi que la nota 3 (D3) cae a 0,4 s de la nota 2
-    y sigue siendo reclamable por el piso aunque la ventana derivada de la figura
-    no llegue. La pieza es C3 G3 E3 D3 E3: la unica D3 sin cobrar esta DELANTE, en
-    la nota 3. Tocar D3 en el instante de la nota 2 es un fallo de altura sobre la
-    nota 2, no un acierto adelantado de la 3.
+    Misma escala, mismo tempo, misma magnitud, el otro sentido: el alumno se salta
+    la nota 0 y en la 1 (D3) deja el dedo un traste bajo, sonando C3. Esa altura
+    existe en la nota 0, a 755 ms POR DETRAS, y se le adjudicaba a ella: salia
+    `acertada=True` y "tarde" una nota que nunca se toco, la nota 1 -la que de
+    verdad fallo- se quedaba sin marca, y al llegar a la 2 y tocarla bien la unica
+    libre cerca era la 1, de otra altura, asi que el acierto salia fallado.
+
+    Es el agujero que una guarda por direccion no tapa, porque la nota 1 esta a
+    5 ms del dedo: la nota que cobraba estaba DETRAS, no delante. Lo que lo cierra
+    es el tope de distancia de `VENTANA_ALTURA_S`.
+    """
+    seguidor = SeguidorPieza(pieza_de(ESCALA_C_MAYOR_AMBAS, tempo=80))
+
+    fallo = tocar(seguidor, "C3", en=1 * PULSO_A_80_S)
+    assert (fallo.indice, fallo.acertada) == (1, False)
+    assert fallo.clasificacion == "a_tiempo"
+
+    siguiente = tocar(seguidor, "E3", en=2 * PULSO_A_80_S)
+    assert (siguiente.indice, siguiente.acertada) == (2, True)
+
+
+def test_una_altura_que_coincide_lejos_no_es_la_nota_que_se_intentaba():
+    """El borde de `VENTANA_ALTURA_S`: a 0,4 s, la misma altura ya es otra nota.
+
+    A 150 ppm la negra son 0,4 s, asi que la nota 3 (D3) sigue siendo RECLAMABLE
+    desde el instante de la nota 2 -el piso de reclamo son 0,5 s-, pero esta fuera
+    de la vecindad de la altura. La pieza es C3 G3 E3 D3 E3: tocar D3 en el
+    instante de la nota 2 es un fallo de altura sobre la nota 2, no un acierto
+    adelantado de la 3.
     """
     seguidor = SeguidorPieza(pieza_de((48, 55, 52, 50, 52), tempo=150))
     pulso_s = 60.0 / 150.0
     tocada = tocar(seguidor, "D3", en=2 * pulso_s)
     assert (tocada.indice, tocada.acertada) == (2, False)
+    assert pulso_s > VENTANA_ALTURA_S  # reclamable, pero no por altura
 
 
 def pieza_con_redonda_a_40():
