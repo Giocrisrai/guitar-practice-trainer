@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { Afinador } from "./Afinador";
+import { Carril } from "./Carril";
 import { Ejercicios } from "./Ejercicios";
 import "./estilos.css";
 import type { Diagnostico, Modulo } from "./tipos";
@@ -60,6 +61,7 @@ export function App() {
       <main>
         {activo === "afinador" && <Afinador />}
         {activo === "ejercicios" && <Ejercicios />}
+        {activo === "carril" && <Carril />}
       </main>
     </div>
   );
