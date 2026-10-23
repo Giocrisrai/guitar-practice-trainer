@@ -435,7 +435,7 @@ def test_el_informe_de_una_pieza_sin_compases_es_vacio_aunque_el_plan_diga_cero(
     assert sesion.cerrar_repeticion().compases == ()
 
 
-def test_el_informe_se_serializa_con_el_desfase_redondeado_y_none_intacto():
+def test_el_informe_se_serializa_con_el_desfase_y_none_intacto():
     sesion = SesionDeEstudio(pieza_de_doce_compases())
     tocar(sesion, "E2", en=-0.3)
     datos = sesion.informe.a_dict()
@@ -454,4 +454,51 @@ def test_una_nota_a_tiempo_pero_con_otra_altura_no_cuenta_en_la_proporcion_limpi
     compas = compas_numero(sesion.informe, 1)
     assert compas.a_tiempo == 1
     assert compas.acertadas == 0
+    assert proporcion_limpia(sesion.informe) == pytest.approx(0.0)
+
+
+def test_el_desfase_medio_se_redondea_a_milisegundos_al_serializar():
+    compas = CompasDelInforme(
+        numero=1, notas_escritas=1, notas_medibles=1, acertadas=1, a_tiempo=1,
+        pronto=0, tarde=0, limpias=1, desfase_medio_s=0.123456, tiene_acordes=False,
+    )
+    assert compas.a_dict()["desfase_medio_s"] == 0.123
+    sin_medir = CompasDelInforme(
+        numero=2, notas_escritas=1, notas_medibles=1, acertadas=0, a_tiempo=0,
+        pronto=0, tarde=0, limpias=0, desfase_medio_s=None, tiene_acordes=False,
+    )
+    assert sin_medir.a_dict()["desfase_medio_s"] is None
+
+
+def test_dos_vueltas_limpias_seguidas_dan_proporcion_uno_y_no_dos():
+    sesion = SesionDeEstudio(pieza_de([0.0]))
+    tocar(sesion, "E2", en=0.0)
+    sesion.cerrar_repeticion()
+    tocar(sesion, "E2", en=0.0)
+    informe = sesion.informe
+    assert informe.repeticiones == 2
+    assert compas_numero(informe, 1).limpias == 2
+    assert proporcion_limpia(informe) == pytest.approx(1.0)
+    assert informe.a_dict()["repeticiones"] == 2
+
+
+def test_el_informe_de_cerrar_la_repeticion_dice_que_lleva_una_sola_vuelta():
+    sesion = SesionDeEstudio(pieza_de([0.0]))
+    tocar(sesion, "E2", en=0.0)
+    assert sesion.cerrar_repeticion().repeticiones == 1
+    assert sesion.cerrar_repeticion().repeticiones == 1
+    assert sesion.informe.repeticiones == 3
+
+
+def test_acertada_pero_tarde_y_a_tiempo_pero_de_otra_altura_no_suman_una_limpia():
+    # Dos notas en el mismo compas: una acertada 0,4 s tarde y otra a tiempo pero
+    # de otra altura. Hay un acierto y un "a tiempo", pero ninguna nota fue las
+    # dos cosas: la proporcion verdadera es 0,0 y no 0,5.
+    sesion = SesionDeEstudio(pieza_de([0.0, 1.0]))
+    tocar(sesion, "A2", en=0.0)
+    tocar(sesion, "E2", en=1.4)
+    compas = compas_numero(sesion.informe, 1)
+    assert compas.acertadas == 1
+    assert compas.a_tiempo == 1
+    assert compas.limpias == 0
     assert proporcion_limpia(sesion.informe) == pytest.approx(0.0)
