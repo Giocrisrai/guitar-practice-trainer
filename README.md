@@ -4,7 +4,8 @@ Software libre para practicar guitarra en macOS con el cable Rocksmith Real Tone
 Etapa 1: afinador y monitor de notas en el mástil. Etapa 2a: ejercicios
 monofónicos (escalas, arpegios, intervalos y lectura) con corrección de nota,
 afinación y tempo. Etapa 3a: el carril, para tocar una pieza con la música
-corriendo.
+corriendo. Etapa 3b: importar canciones de Guitar Pro, MusicXML, MIDI y
+tablatura de texto.
 
 ## Requisitos
 
@@ -193,10 +194,11 @@ el patrón sobre una guitarra desafinada a propósito**: esa prueba sigue pendie
   de un acorde lee una sola altura. Las demás notas se quedan sin cobrar por muy
   bien que las toques.
 - **Sin ligados ni bends.** El modelo de nota no tiene dónde guardarlos.
-- **La digitación se elige por cercanía al traste anterior**, sin mirar lo que
-  viene después. Basta para una escala en una posición; para una canción
-  producirá saltos absurdos, porque la elección buena minimiza el movimiento de
-  la mano a lo largo de toda la pieza.
+- **En las piezas que salen de un ejercicio, la digitación se elige por cercanía
+  al traste anterior**, sin mirar lo que viene después (`elegir_posicion` de
+  `nucleo/piezas/desde_ejercicio.py`). Basta para una escala en una posición. Las
+  canciones importadas **no** pasan por ahí: usan el coste mínimo sobre la pieza
+  entera que se explica en la sección siguiente.
 - **El pentagrama es aproximado.** Está en clave de sol (las notas se escriben una
   octava por encima de lo que suenan, como se escribe la guitarra, pero la clave
   es un 𝄞 simple, sin el «8» que lo indica) y no lleva indicación de
@@ -205,13 +207,164 @@ el patrón sobre una guitarra desafinada a propósito**: esa prueba sigue pendie
   dónde tocar, no para editar partituras.
 - **La tablatura cuantiza a semicorcheas**: una nota que empieza entre dos
   casillas se escribe en la más cercana.
-- Las piezas que hay hoy son las que salen de los generadores de ejercicios
+- Las piezas de esta sección son las que salen de los generadores de ejercicios
   (escalas, arpegios, intervalos y lectura). En el carril el intervalo no hace
-  sonar la nota de referencia.
+  sonar la nota de referencia. Las canciones importadas llegan al mismo carril y
+  por la misma puerta; están en la sección siguiente.
 
-**Importar canciones** de Guitar Pro, MusicXML, MIDI y tablatura ASCII es la
-**etapa siguiente**, y no se podía hacer sin este modelo de pieza: es el destino
-al que esos formatos tienen que traducirse.
+### Canciones
+
+El módulo **Canciones** (junto a Afinador, Ejercicios y Carril) importa una
+canción de un archivo y la convierte en una **pieza**, el mismo modelo que mueve
+el carril. Se llega de dos maneras, y las dos están en la misma pantalla: la
+**biblioteca** es la carpeta `canciones/` de la raíz del proyecto, y encima de la
+lista hay **Añadir una canción**, que sube un archivo desde el disco. No hay base
+de datos: la carpeta ES la base de datos, y el identificador de una canción es el
+nombre de su archivo. La carpeta la crea el servidor al guardar la primera
+canción; antes de eso no existe.
+
+**La carpeta `canciones/` está fuera de git**, y a propósito: las partituras y las
+tablaturas son material de terceros con derechos de autor. El programa es software
+libre; su contenido no es nuestro. Está en `.gitignore` y no hay ni un archivo de
+canciones registrado en el repositorio.
+
+**Los cuatro formatos, y qué trae cada uno.** Esto es lo que de verdad decide
+cuánto se parece lo que ves a lo que el autor escribió:
+
+| Formato | Extensiones | Qué trae |
+|---|---|---|
+| Guitar Pro | `.gp3` `.gp4` `.gp5` | **Todo**: cuerda, traste, ritmo, tempo, compás, afinación y los marcadores como secciones. El lector no recalcula la digitación: si la canción dice que el sol se toca en el traste 3 de la sexta, se toca ahí. |
+| MusicXML | `.xml` `.musicxml` `.mxl` | El **ritmo**, el tempo y el compás siempre; la **tablatura solo a veces** —cuando la nota trae `<string>` y `<fret>`—, y entonces se respeta. Cuando no viene, la pone el algoritmo de digitación. **No declara la afinación** nunca, ni aunque traiga tablatura. |
+| MIDI | `.mid` `.midi` | Las **alturas y el ritmo exactos**, y **nada de dónde se toca**: no hay cuerda ni traste. Toda la digitación la pone el algoritmo. No declara la afinación. |
+| Tablatura de texto | `.txt` `.tab` | Cuerda y traste —y la afinación, si la primera columna trae las letras de las cuerdas—. **No trae ritmo**: las duraciones se deducen del espaciado, la pieza sale marcada como aproximada y la pantalla lo avisa antes de empezar. |
+
+**`.gpx` y `.gp` se admiten por la extensión y el lector los rechaza.** Son los
+formatos de Guitar Pro 6 y 7, y la librería que usamos (PyGuitarPro 0.11) solo
+sabe leer gp3, gp4 y gp5: subir uno funciona, y al pedirle las pistas contesta
+«No se pudo leer … como un archivo de Guitar Pro (gp3, gp4 o gp5)». No es menos
+cobertura, es ninguna. Exporta a `.gp5` desde Guitar Pro o TuxGuitar.
+
+**La digitación por coste mínimo.** Donde el archivo no dice dónde se toca cada
+nota —MIDI siempre, MusicXML sin tablatura—, la pone `nucleo/piezas/digitacion.py`
+resolviendo la pieza **entera** por programación dinámica, no nota a nota: el
+estado es la pareja (posición, traste donde está la mano) y el resultado es el
+mínimo exacto, no una aproximación. Mil notas se digitan en unos **35 ms**
+(mediana de siete pasadas en un MacBook Pro M1 Pro; entre 32 y 37 ms).
+
+Lo que está comprobado y lo que no, por separado:
+
+- **Comprobado**: el camino que elige nunca cuesta más que el de la heurística de
+  cercanía de la etapa 3a, medido con la misma función de coste para las dos
+  (`tests/test_digitacion.py`). En cincuenta secuencias aleatorias no hay ni una
+  en que salga peor.
+- **Comprobado**: sobre material aleatorio, el recorrido de la mano baja alrededor
+  de un **37 %** respecto a la heurística (200 secuencias de 20 notas), y en una
+  escala de do mayor de 120 notas baja mucho más. Pero el número no es uno: depende
+  entero del material. Y **si en vez del recorrido de la mano se mide el salto
+  crudo de traste a traste entre notas pisadas, sale un 10 % PEOR**, porque el
+  coste mínimo prefiere las cuerdas al aire —que no cuestan nada— y eso separa los
+  trastes de las notas pisadas sin mover la mano. Las dos cosas son verdad; la que
+  importa es la primera, pero la segunda explica por qué no se publica una cifra
+  única.
+- **Los pesos del coste están razonados y NO medidos tocando.** Son datos
+  (`CosteDigitacion`: mover la mano un traste cuesta 1,0, cruzar una cuerda 0,3,
+  una cuerda al aire 0, y los dedos abarcan 5 trastes), y están elegidos con el
+  argumento de que mover la mano cuesta mucho más que cruzar una cuerda con los
+  dedos. Nadie se ha sentado con la guitarra a ver si la digitación que sale es
+  la cómoda. Si sale incómoda se cambia un número, no el algoritmo.
+
+**Si la canción está en otra afinación, te dice a cuál afinarte y te lleva al
+afinador.** Al elegir una canción, el servidor compara la afinación que pide el
+archivo con la tuya activa y contesta `coincide`, que tiene **tres** valores y los
+tres significan cosas distintas:
+
+- `true`: la canción está en tu afinación. No hay nada que hacer.
+- `false`: está en otra. La pantalla lo dice y ofrece **Afinarme a … e ir al
+  afinador**, que cambia el perfil activo y te lleva allí.
+- `null`: **el archivo no dice en qué afinación está**, que es lo que pasa con
+  MIDI y con MusicXML. Entonces no hay nada que avisar: la pieza se importa en el
+  perfil activo y el carril la acepta. Aquí no se te pide afinarte nada.
+
+**El carril no la aceptará hasta que lo hagas, y esa es la regla de la etapa 3a, no
+una nueva de esta**: una pieza escrita para otra afinación se rechaza con un 400 al
+empezar, por la misma razón por la que cambiar de perfil con una pieza en marcha la
+corta. Dibujar los trastes de una afinación con la guitarra en otra es peor que no
+dibujar nada. Previsualizar sí se puede: importar una canción y ver sus notas no
+pasa por el carril, que es justo lo que hace falta para saber a qué afinarte.
+
+Dos avisos sobre el aviso, porque la honestidad está en los bordes:
+
+- **Solo Guitar Pro y la tablatura de texto declaran su afinación.** MIDI y
+  MusicXML no, así que con ellos `coincide` es siempre `null` y la pieza se lee en
+  tu perfil activo, cuadre o no con lo que el autor tocaba.
+- Con una afinación **que no es de fábrica** (de fábrica son estándar, Drop D y los
+  dos bajos), la primera vez que miras las pistas no hay ningún perfil al que
+  afinarte: el perfil se da de alta al **importar** la canción, no al listarla, y
+  hasta entonces la pantalla dice que no tiene a qué afinarte en vez de ofrecer un
+  botón que no lleva a ninguna parte. Vuelve a elegir la canción después de
+  importar una pista y el botón aparece. Es torpe y está sin arreglar.
+
+**Poner una canción en el carril** es `POST /api/piezas/iniciar` con
+`{cancion, pista, perfil}` —el nombre del archivo, el número de pista en base 1 y,
+opcionalmente, la afinación con la que leerla—. Es una forma nueva de esta etapa,
+al lado de la `{familia, parametros}` de la etapa 3a. La canción la lee el
+**servidor**, no el navegador: así hay una sola puerta al carril, la que comprueba
+la afinación.
+
+**El techo de la subida son 10 MB por archivo**, y la letra pequeña importa porque
+la versión anterior de esta promesa era falsa. Con un `Content-Length` honesto, la
+petición se rechaza antes de leer el cuerpo. Si la cabecera miente, o no viene
+(`chunked`), **el cuerpo entero llega** y lo que lo para es la medida real del
+archivo ya recibido. Las tres rutas acaban en un 400 con el número de bytes de
+verdad; lo que no se promete es que un archivo enorme no viaje por el cable. Una
+partitura de una canción entera ocupa decenas de kilobytes: diez megas son dos
+órdenes de magnitud de margen.
+
+**Límites de esta etapa**, sin maquillar:
+
+- **Los acordes se importan y no se siguen.** El modelo de pieza admite varias
+  notas en el mismo instante y el carril las pinta, pero debajo hay un detector de
+  tono monofónico: de un acorde lee una sola altura, se cobra **una** nota y las
+  demás quedan sin cobrar por bien que las toques.
+- **Ligados, bends y armónicos se ignoran.** No es una decisión, es que la nota de
+  una pieza tiene cinco campos —altura, cuerda, traste, instante y duración— y no
+  hay dónde guardarlos. En Guitar Pro una ligadura sí hace lo correcto, que es
+  alargar la nota anterior en vez de pedir un ataque nuevo, y una nota muerta
+  desaparece. En la tablatura de texto `h`, `p`, `b`, `/`, `\`, `~`, `x` y los
+  paréntesis se tiran: `5h7` son dos ataques, un 5 y un 7, y la `x` no existe.
+- **Las repeticiones se expanden**, que es lo correcto: una repetición corriente
+  suena dos veces y la pieza dura lo que suena. Pero **las casillas de primera y
+  segunda vez producen un compás de más, en silencio**: con `|: A | B(1ª vez) :|`
+  y `C` como segunda vez, lo que debería sonar es A B A C y lo que suena es
+  A B A B C. El lector no mira las casillas, nada avisa, y la pieza queda un
+  compás más larga de lo que el autor escribió.
+- **Las secciones se importan y todavía no las usa nada.** Los marcadores de
+  Guitar Pro, las marcas de ensayo de MusicXML y los marcadores de texto de MIDI
+  entran en la pieza porque reconstruirlos después sería imposible, pero ninguna
+  pantalla los muestra: son para la etapa 3c.
+- **Un cambio de tempo o de compás se detecta, se guarda y no te lo dice nadie.**
+  La pieza queda marcada, pero el único aviso que llega a la pantalla es el del
+  ritmo aproximado de la tablatura de texto. Y la vista escrita trocea la pieza con
+  **un** compás constante, así que con un 3/4 en medio las barras caen en el sitio
+  equivocado desde ahí hasta el final.
+- El ritmo que se deduce de una tablatura de texto es una heurística declarada:
+  la distancia más corta de toda la tablatura se toma como una negra. Funciona en
+  tablaturas bien alineadas y falla sin avisar en las que no.
+- **Nada de esto se ha probado con la guitarra en las manos.** Que un `.gp5`
+  exportado de verdad entre y se toque, que la digitación salga cómoda, que el
+  aviso de afinación sirva con el instrumento delante, que el ritmo de una
+  tablatura pegada de un foro se pueda seguir y que una canción de tres minutos no
+  atasque el carril: las cinco **están pendientes**, y las cinco necesitan el cable
+  y archivos reales.
+
+**Practicar por secciones, con bucles y tempo ajustable, es la etapa 3c.** Y hay
+una cosa que conviene tener delante antes de construirla: **la investigación
+disponible sugiere alternar pasajes en vez de repetir uno en bucle**, al revés que
+el *Riff Repeater* de Rocksmith. Es Carter y Grahn (2016, *Frontiers in
+Psychology*), que compararon práctica en bloque contra intercalada y encontraron
+que gana la intercalada —y, de propina, que la mayoría de los participantes creía
+lo contrario—. **Son diez sujetos**: es una señal, no una ley, y sin ese matiz la
+frase suena a verdad establecida.
 
 ## Verificar el cable
 
@@ -248,18 +401,22 @@ grabaciones todavía no existen, así que esas pruebas aparecen como saltadas
 
 - `nucleo/` — captura de audio, análisis y teoría musical. Python puro, sin
   dependencias del servidor ni de la interfaz.
-- `servidor/` — FastAPI: registro de módulos, configuración, diagnóstico y
-  emisión por WebSocket. El registro de módulos es lo que permitirá añadir
-  ejercicios y canciones en las etapas siguientes sin tocar el armazón.
+- `servidor/` — FastAPI: registro de módulos, configuración, diagnóstico,
+  biblioteca de canciones y emisión por WebSocket. El registro de módulos es lo
+  que ha permitido añadir ejercicios, el carril y las canciones sin tocar el
+  armazón.
+- `canciones/` — tu biblioteca. **No está en git**: son archivos de terceros. La
+  crea el servidor al guardar la primera canción.
 - `interfaz/` — React + Vite.
 - `herramientas/` — utilidades de línea de comandos.
 - `docs/superpowers/` — especificación y plan.
 
 ## Estado
 
-Etapas 1, 2a y 3a completas. Las siguientes, según el diseño:
+Etapas 1, 2a, 3a y 3b completas, con la salvedad de que las cinco
+comprobaciones de la 3b que necesitan la guitarra y archivos reales siguen
+pendientes (están listadas en **Canciones**). Las siguientes, según el diseño:
 
 2b. Ejercicios de acordes
-3b. Importar canciones: Guitar Pro, MusicXML, MIDI y tablatura ASCII
-3c. Practicar una pieza entera: compases, bucles y tempo ajustable
+3c. Practicar una pieza entera: secciones, bucles y tempo ajustable
 4. Grabación de sesiones, medición de progreso, entrenamiento de oído y efectos
