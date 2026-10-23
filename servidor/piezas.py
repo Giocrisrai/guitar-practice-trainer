@@ -210,6 +210,12 @@ class SesionCarril:
         # repeticion empieza en 1 porque es la primera vuelta, no la vuelta cero.
         self._termino_anunciado = False
         self._repeticion_anunciada = 1
+        # El factor que el historial sugiere para la pasada SIGUIENTE, o None si
+        # no hay nada que sugerir. Solo se llena con el tempo automatico y SIN
+        # bucle, que es el caso en que el plan no se puede tocar sin reiniciar la
+        # pasada acabada (ver `_cerrar_lo_que_termino`). Lo aplica la interfaz al
+        # empezar la pasada siguiente, y por eso viaja en el estado.
+        self._factor_sugerido: float | None = None
         # Que arranque publica el estado: sube en cada `iniciar` y nunca se
         # reutiliza. Es lo que le permite al navegador saber de QUE pieza habla un
         # paquete, en vez de adivinarlo.
@@ -292,6 +298,7 @@ class SesionCarril:
                 )
                 self._termino_anunciado = False
                 self._repeticion_anunciada = 1
+                self._factor_sugerido = None
                 self._arranque += 1
                 # NO cero: con un plan que empieza en el compas 5 el cabezal
                 # arranca donde diga el estudio, que es quien sabe donde cae ese
@@ -336,6 +343,7 @@ class SesionCarril:
                 self._pausado = False
                 self._termino_anunciado = False
                 self._repeticion_anunciada = 1
+                self._factor_sugerido = None
 
     def estado(self) -> dict:
         """Instantanea para la interfaz: el `EstadoEstudio` mas `pausado`.
@@ -515,17 +523,27 @@ class SesionCarril:
         trae el estudio dentro de `a_dict()`, y `pausado` -la falta de señal- la
         añade esta clase. El nucleo no sabe nada de cables, y la interfaz necesita
         poder decir "sin señal" en vez de fingir que la pieza va sola.
+
+        `factor_sugerido` lo añade tambien esta clase, y por una razon parecida: el
+        nucleo no lleva historial, y la sugerencia sale de el. Vale None cuando no
+        hay nada que sugerir, que es casi siempre.
         """
         estudio = self._estudio
         if estudio is None:
             return {
                 **_ESTUDIO_APAGADO.a_dict(),
                 "pausado": False,
+                "factor_sugerido": None,
                 "arranque": ARRANQUE_NINGUNO,
             }
         estado = estudio.estado
         self._cerrar_lo_que_termino(estado)
-        return {**estado.a_dict(), "pausado": self._pausado, "arranque": self._arranque}
+        return {
+            **estado.a_dict(),
+            "pausado": self._pausado,
+            "factor_sugerido": self._factor_sugerido,
+            "arranque": self._arranque,
+        }
 
     def _cerrar_lo_que_termino(self, estado: EstadoEstudio) -> None:
         """Anota en el historial lo que acabo de cerrarse, y mueve el tempo si toca.
@@ -540,6 +558,16 @@ class SesionCarril:
 
         `cerrar_repeticion` devuelve el informe de SOLO esa vuelta, que es lo que
         se anota: anotar el acumulado contaria las vueltas anteriores otra vez.
+
+        Y el tempo automatico se aplica SOLO con bucle. Sin bucle no se toca el
+        plan: se publica la sugerencia en `factor_sugerido` y la interfaz la
+        aplicara al empezar la pasada siguiente. La razon es que `cambiar_plan`
+        recoloca el cabezal cuando el pulso cae fuera del tramo y limpia
+        `tramo_terminado` -es su contrato, no un defecto-, asi que llamarlo con la
+        pasada ya acabada arrancaba solo un bucle que nadie pidio: la pantalla
+        decia "terminado" 33 ms, el cabezal se iba al principio y esa pasada
+        fantasma no se anotaba nunca. Con bucle no hay nada de eso: la vuelta
+        siguiente empieza ya y el cabezal lo esta recolocando el propio bucle.
         """
         estudio = self._estudio
         if estudio is None:
@@ -558,10 +586,22 @@ class SesionCarril:
         if informe is None:
             return
         self._historial.anotar(informe)
-        if estudio.plan.tempo_automatico:
-            sugerido = self._historial.factor_sugerido(estudio.plan.factor_tempo)
-            if sugerido != estudio.plan.factor_tempo:
-                estudio.cambiar_plan(replace(estudio.plan, factor_tempo=sugerido))
+        if not estudio.plan.tempo_automatico:
+            return
+        # `factor_sugerido` CONSUME la racha al decidir, asi que se le pregunta
+        # una sola vez por pasada anotada, aqui.
+        sugerido = self._historial.factor_sugerido(estudio.plan.factor_tempo)
+        if sugerido == estudio.plan.factor_tempo:
+            return
+        if estudio.plan.en_bucle:
+            # El reloj del plan nuevo se adopta en el acto: `cambiar_plan`
+            # recoloca el cabezal en el mismo pulso, y entre esto y la mirada
+            # siguiente puede colarse una pausa que lo colocaria en el viejo.
+            self._instante = estudio.cambiar_plan(
+                replace(estudio.plan, factor_tempo=sugerido)
+            ).carril.instante_s
+        else:
+            self._factor_sugerido = sugerido
 
     def _estudio_o_falla(self) -> SesionDeEstudio:
         """La sesion de estudio en marcha, o el `ValueError` que sale como 400.
@@ -580,7 +620,17 @@ class SesionCarril:
     def cambiar_plan(self, plan: PlanDePasada) -> dict:
         """Cambia el plan SIN reiniciar la pasada: lo tocado sigue contando."""
         with self._candado:
-            self._estudio_o_falla().cambiar_plan(plan)
+            estudio = self._estudio_o_falla()
+            # El reloj que devuelve el nucleo se adopta AQUI, y no se deja para la
+            # mirada siguiente: si la señal ya se habia ido y nadie ha mirado
+            # desde entonces, la primera mirada entra por la rama de la pausa y
+            # coloca el cabezal en `self._instante`, que seria el de antes de esta
+            # orden. Asi se perdia justo la primera accion del usuario tras un
+            # apagon, que es el caso que la etapa 3a documenta como real.
+            self._instante = estudio.cambiar_plan(plan).carril.instante_s
+            # Un plan nuevo puesto a mano deja sin sentido la sugerencia anterior:
+            # el historial la hizo sobre el plan que ya no esta.
+            self._factor_sugerido = None
         return self.estado()
 
     def saltar(self, numero: int) -> dict:
@@ -590,7 +640,12 @@ class SesionCarril:
         como 400 igual que los demas: saltar fuera del tramo es cambiar el plan.
         """
         with self._candado:
-            self._estudio_o_falla().saltar_al_compas(numero)
+            # El reloj que devuelve el nucleo se adopta aqui, por lo mismo que en
+            # `cambiar_plan`: sin esto, un salto pedido con la señal ya perdida y
+            # sin ninguna mirada por medio se quedaba en el sitio viejo.
+            self._instante = self._estudio_o_falla().saltar_al_compas(
+                numero
+            ).carril.instante_s
         return self.estado()
 
     def pausa(self, activa: bool) -> dict:

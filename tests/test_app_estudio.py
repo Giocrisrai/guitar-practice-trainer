@@ -248,10 +248,13 @@ def test_saltar_sin_decir_el_compas_se_rechaza_diciendolo(cliente):
 def test_la_pausa_del_usuario_es_distinta_de_la_falta_de_senal(cliente):
     iniciar(cliente)
     datos = cliente.post("/api/piezas/pausa", json={"activa": True}).json()
+    # Las dos a la vez, y con valores distintos: el usuario ha pausado y el cable
+    # sigue dando señal. Son dos cosas, no una con dos nombres.
     assert datos["en_pausa"] is True
-    assert "pausado" in datos          # el de la señal sigue existiendo, aparte
+    assert datos["pausado"] is False
     datos = cliente.post("/api/piezas/pausa", json={"activa": False}).json()
     assert datos["en_pausa"] is False
+    assert datos["pausado"] is False
 
 
 def test_la_pausa_del_usuario_congela_el_cabezal(cliente):
@@ -290,7 +293,7 @@ def test_una_vuelta_del_bucle_suma_una_pasada_al_historial(cliente):
     )
     estado = esperar(cliente, lambda e: e["repeticion"] > 1)
     assert estado["repeticion"] > 1
-    assert cliente.get("/api/piezas/informe").json()["historial"]["pasadas"] >= 1
+    assert cliente.get("/api/piezas/informe").json()["historial"]["pasadas"] == 1
 
 
 def test_el_tramo_que_acaba_sin_bucle_suma_una_sola_pasada(cliente):
@@ -364,7 +367,9 @@ def test_el_carril_apagado_publica_las_mismas_claves_que_el_encendido(cliente):
     """
     encendido = set(iniciar(cliente)) - {"pieza", "secciones_en_compases"}
     cliente.post("/api/piezas/detener")
-    assert set(cliente.get("/api/piezas/estado").json()) == encendido
+    apagado = cliente.get("/api/piezas/estado").json()
+    assert set(apagado) == encendido
+    assert apagado["factor_sugerido"] is None
 
 
 def test_los_endpoints_de_estudio_sin_pieza_en_marcha_dan_cuatrocientos(cliente):
@@ -377,15 +382,6 @@ def test_los_endpoints_de_estudio_sin_pieza_en_marcha_dan_cuatrocientos(cliente)
         assert respuesta.status_code == 400, ruta
         assert "pieza" in respuesta.json()["detail"].lower(), ruta
     assert cliente.get("/api/piezas/informe").status_code == 400
-
-
-def test_tras_la_cuenta_atras_el_cabezal_no_salta_hacia_delante(cliente):
-    # El reloj del servidor no puede seguir corriendo durante la cuenta atras:
-    # al acabarla, el cabezal saltaria el tamaño de la cuenta.
-    iniciar(cliente, primer_compas=1, ultimo_compas=1, en_bucle=True)
-    cliente.post("/api/piezas/saltar", json={"compas": 1})
-    datos = cliente.get("/api/piezas/estado").json()
-    assert datos["instante_s"] <= 1.0
 
 
 def test_el_websocket_publica_los_campos_del_estudio(cliente):
@@ -699,6 +695,185 @@ def test_la_pieza_siguiente_anota_su_pasada_y_no_hereda_las_marcas():
         carril.iniciar(pieza_rapida(), PlanDePasada(ultimo_compas=1))
         mirar_hasta(carril, reloj, lambda e: e["completado"])
         assert carril.informe()["historial"]["pasadas"] == 1
+    finally:
+        carril.detener()
+        sesion.detener()
+
+
+def test_tras_la_cuenta_atras_el_cabezal_no_salta_hacia_delante():
+    """La regla del reloj, medida dejando que la cuenta atras se agote de verdad.
+
+    Es la prueba del paso 5 del brief, reescrita con el reloj inyectado. La que
+    venia alli -mirar el estado sin dejar pasar tiempo y pedir `instante_s <= 1`-
+    no podia fallar: `TECHO_TRAMO_S` acota cada mirada a 0,1 s, asi que ese limite
+    era cierto para cualquier implementacion, y la prueba llevaba el nombre de la
+    regla sin vigilarla.
+
+    Lo que se vigila aqui es el salto de verdad: durante la cuenta atras el reloj
+    del estudio esta QUIETO en el inicio del tramo, y si el servidor llevara su
+    propia cuenta en paralelo, al acabarla el cabezal estaria un compas entero mas
+    adelante -los 4 s de la cuenta- en vez de en el inicio. El tramo es el compas
+    2 (de 4 s a 8 s) para que el inicio no sea cero y el error no se confunda con
+    un cabezal en reposo.
+    """
+    carril, sesion, reloj = carril_a_mano()
+    try:
+        carril.iniciar(
+            pieza_de_doce_compases(),
+            PlanDePasada(
+                primer_compas=2, ultimo_compas=2, en_bucle=True,
+                compases_de_cuenta_atras=1,
+            ),
+        )
+        assert carril.estado()["instante_s"] == pytest.approx(4.0, abs=0.001)
+
+        # Una vuelta entera, que abre la cuenta atras de un compas (4 s).
+        estado = mirar_hasta(carril, reloj, lambda e: e["repeticion"] > 1)
+        assert estado["repeticion"] == 2
+        assert estado["cuenta_atras_restante_s"] == pytest.approx(4.0, abs=0.05)
+
+        # Y la cuenta se agota mirando, como en produccion.
+        estado = mirar_hasta(carril, reloj, lambda e: e["cuenta_atras_restante_s"] == 0)
+        assert estado["cuenta_atras_restante_s"] == 0.0
+        assert estado["instante_s"] == pytest.approx(4.0, abs=0.05), (
+            "el cabezal salto hacia delante el tamaño de la cuenta atras"
+        )
+        assert estado["compas_en_curso"] == 2
+
+        # Y a partir de ahi el tramo corre desde su inicio, no desde el salto.
+        estado = mirar_hasta(carril, reloj, lambda e: e["instante_s"] >= 5.0)
+        assert estado["instante_s"] == pytest.approx(5.0, abs=0.05)
+        # Con la señal perdida, el cabezal se queda donde esta: la rama de la
+        # pausa coloca el estudio en el reloj de esta clase, asi que si ese reloj
+        # no fuera el espejo del estudio, aqui se veria.
+        sesion.senal_ausente = True
+        estado = carril.estado()
+        assert estado["pausado"] is True
+        assert estado["instante_s"] == pytest.approx(5.0, abs=0.05)
+    finally:
+        carril.detener()
+        sesion.detener()
+
+
+def test_el_tempo_automatico_sin_bucle_sugiere_y_no_reinicia_la_pasada():
+    """Sin bucle la pasada se ha acabado, y no hay nada que acelerar.
+
+    Aplicar el plan aqui arrancaba solo un bucle que nadie pidio: `cambiar_plan`
+    recoloca el cabezal cuando el pulso cae fuera del tramo y limpia
+    `tramo_terminado`, asi que la pantalla decia "terminado" una mirada y luego el
+    carril volvia al principio y se ponia a correr, y esa pasada fantasma no se
+    anotaba nunca. La sugerencia viaja en el estado y la aplica la interfaz al
+    empezar la pasada siguiente.
+    """
+    carril, sesion, reloj = carril_a_mano()
+    try:
+        carril.iniciar(
+            pieza_de_doce_compases(),
+            PlanDePasada(primer_compas=2, ultimo_compas=2, tempo_automatico=True),
+        )
+        estado = mirar_hasta(carril, reloj, lambda e: e["completado"])
+        assert estado["completado"] is True
+        acabado = estado["instante_s"]
+        assert acabado == pytest.approx(8.0, abs=0.05)
+
+        # La mirada siguiente, que es donde el detector ya ha anotado la pasada.
+        estado = carril.estado()
+        assert estado["factor_sugerido"] == pytest.approx(1.0 - PASO_DEL_FACTOR)
+        assert estado["factor_tempo"] == 1.0, "el plan no se toca con la pasada acabada"
+        assert estado["completado"] is True
+        assert estado["compas_en_curso"] == 2
+        assert estado["instante_s"] == pytest.approx(acabado, abs=0.001)
+
+        # Y sigue quieto mirada tras mirada: nadie arranca una pasada nueva.
+        estado = mirar_hasta(carril, reloj, lambda e: False, pasos=30)
+        assert estado["instante_s"] == pytest.approx(acabado, abs=0.001)
+        assert estado["completado"] is True
+        # Una sola pasada anotada, no una por mirada.
+        assert carril.informe()["historial"]["pasadas"] == 1
+
+        # Y la sugerencia es de la pasada que acabo: la siguiente empieza limpia,
+        # porque si no la pantalla ofreceria bajar un tempo que ya esta bajado.
+        carril.iniciar(
+            pieza_de_doce_compases(),
+            PlanDePasada(primer_compas=2, ultimo_compas=2, tempo_automatico=True),
+        )
+        assert carril.estado()["factor_sugerido"] is None
+    finally:
+        carril.detener()
+        sesion.detener()
+
+
+def test_el_tempo_automatico_con_bucle_aplica_el_factor_y_no_sugiere_nada():
+    """Con bucle la vuelta siguiente empieza ya, asi que el factor se aplica.
+
+    El cabezal lo esta recolocando el propio bucle, de modo que `cambiar_plan` no
+    puede arrancar nada que no estuviera arrancado. Y entonces no hay nada que
+    sugerir: `factor_sugerido` se queda a None, porque ya esta hecho.
+
+    El tramo es el compas 2 y la señal se pierde SIN ninguna mirada por medio, y
+    las dos cosas son a proposito: `cambiar_plan` deja el cabezal en el mismo
+    PULSO, que con el factor nuevo es otro segundo (4 / 0,95 = 4,21), asi que si
+    el carril no adoptara el reloj que devuelve esa llamada, la primera mirada sin
+    señal recolocaria el cabezal 0,21 s antes de donde el estudio lo tiene. Con el
+    tramo empezando en el compas 1 los dos numeros serian cero y no se veria.
+    """
+    carril, sesion, reloj = carril_a_mano()
+    try:
+        carril.iniciar(
+            pieza_de_doce_compases(),
+            PlanDePasada(
+                primer_compas=2, ultimo_compas=2, en_bucle=True,
+                compases_de_cuenta_atras=0, tempo_automatico=True,
+            ),
+        )
+        mirar_hasta(carril, reloj, lambda e: e["repeticion"] > 1)
+        # Sin mirar: la vuelta acaba de pasar y el factor acaba de cambiar.
+        sesion.senal_ausente = True
+        estado = carril.estado()
+        assert estado["factor_tempo"] == pytest.approx(1.0 - PASO_DEL_FACTOR)
+        assert estado["factor_sugerido"] is None
+        assert estado["pausado"] is True
+        assert estado["instante_s"] == pytest.approx(4.0 / 0.95, abs=0.02)
+        # Y aqui NO se mira `compas_en_curso`: el cabezal esta clavado en la
+        # frontera del compas 2 y el viaje de segundos a pulsos por el factor
+        # (4 / 0,95 * 0,95 = 3,9999999999999996) lo deja un pelo por debajo, asi
+        # que el nucleo lee compas 1. Es cosa de `SesionDeEstudio.estado`, no de
+        # esta clase, y lo que esta prueba vigila es el reloj.
+    finally:
+        carril.detener()
+        sesion.detener()
+
+
+def test_una_orden_del_usuario_no_se_pierde_si_la_senal_ya_se_fue():
+    """El caso de la etapa 3a: dispositivo desaparecido y nadie mirando.
+
+    La rama de la pausa coloca el estudio en `self._instante`, asi que si ese
+    reloj solo se refrescara al final de la mirada, la primera orden del usuario
+    tras el apagon se perdia: el salto -o el plan nuevo- se iba al sitio de antes.
+    A 30 Hz lo tapa el WebSocket, pero el caso que importa es justo el que no
+    tiene a nadie mirando.
+    """
+    carril, sesion, reloj = carril_a_mano()
+    try:
+        carril.iniciar(pieza_de_doce_compases())
+        mirar_hasta(carril, reloj, lambda e: e["instante_s"] >= 1.0)
+
+        # La señal se va, y NADIE mira entre eso y la orden: la orden misma es la
+        # primera mirada, la unica que entra por la rama de la pausa.
+        sesion.senal_ausente = True
+        assert carril.saltar(9)["compas_en_curso"] == 9
+        assert carril.estado()["compas_en_curso"] == 9
+
+        # Y lo mismo con el plan, que es la otra orden que mueve el cabezal. Hay
+        # que volver a perder la señal desde cero: con el carril ya pausado, la
+        # rama de la pausa no se vuelve a pisar y el fallo no se veria.
+        sesion.senal_ausente = False
+        mirar_hasta(carril, reloj, lambda e: e["instante_s"] >= 33.0)
+        sesion.senal_ausente = True
+        assert carril.cambiar_plan(
+            PlanDePasada(primer_compas=4, ultimo_compas=6)
+        )["compas_en_curso"] == 4
+        assert carril.estado()["compas_en_curso"] == 4
     finally:
         carril.detener()
         sesion.detener()
