@@ -1,0 +1,124 @@
+import pytest
+from music21 import articulations, note, stream, tempo
+
+from nucleo.piezas.desde_musicxml import pieza_desde_musicxml, pistas_de_musicxml
+
+
+def partitura(midis_y_duraciones, con_tablatura=False, bpm=100):
+    parte = stream.Part()
+    parte.partName = "Guitarra"
+    parte.append(tempo.MetronomeMark(number=bpm))
+    for midi, duracion in midis_y_duraciones:
+        n = note.Note(midi)
+        n.quarterLength = duracion
+        if con_tablatura:
+            indicacion = articulations.StringIndication()
+            indicacion.number = 6
+            traste = articulations.FretIndication()
+            traste.number = midi - 40
+            n.articulations.extend([indicacion, traste])
+        parte.append(n)
+    obra = stream.Score()
+    obra.append(parte)
+    return obra
+
+
+def escribir(obra, tmp_path, nombre="x.xml"):
+    ruta = tmp_path / nombre
+    obra.write("musicxml", fp=str(ruta))
+    return ruta
+
+
+def test_el_ritmo_y_las_alturas_salen_del_archivo(tmp_path):
+    ruta = escribir(partitura([(40, 1.0), (45, 2.0)]), tmp_path)
+    pieza = pieza_desde_musicxml(ruta, 1)
+    assert [n.midi for n in pieza.notas] == [40, 45]
+    assert [n.duracion_pulsos for n in pieza.notas] == [1.0, 2.0]
+
+
+def test_si_el_archivo_trae_tablatura_se_respeta(tmp_path):
+    """El que la escribio sabia mas que nuestro algoritmo."""
+    ruta = escribir(partitura([(45, 1.0)], con_tablatura=True), tmp_path)
+    nota = pieza_desde_musicxml(ruta, 1).notas[0]
+    assert nota.cuerda == 6 and nota.traste == 5
+
+
+def test_sin_tablatura_la_pone_el_algoritmo(tmp_path):
+    # Con una nota sola, 5/0 y 6/5 empatan; con contexto (45, 47, 48) gana la 5a.
+    ruta = escribir(partitura([(45, 1.0), (47, 1.0), (48, 1.0)]), tmp_path)
+    nota = pieza_desde_musicxml(ruta, 1).notas[0]
+    assert nota.cuerda == 5 and nota.traste == 0
+
+
+def test_el_tempo_sale_del_archivo(tmp_path):
+    ruta = escribir(partitura([(40, 1.0)], bpm=76), tmp_path)
+    assert pieza_desde_musicxml(ruta, 1).tempo == 76
+
+
+def test_un_cambio_de_tempo_se_marca(tmp_path):
+    """Review Focus 3."""
+    obra = partitura([(40, 1.0), (45, 1.0)], bpm=76)
+    obra.parts[0].insert(1.0, tempo.MetronomeMark(number=120))
+    ruta = escribir(obra, tmp_path)
+    pieza = pieza_desde_musicxml(ruta, 1)
+    assert pieza.tempo == 76
+    assert pieza.tempo_variable is True
+
+
+def test_una_nota_ligada_alarga_la_anterior(tmp_path):
+    """Review Focus 1, otra vez: una ligadura no es un ataque nuevo."""
+    from music21 import tie
+
+    obra = partitura([(40, 1.0), (40, 1.0)])
+    obra.parts[0].notes[0].tie = tie.Tie("start")
+    obra.parts[0].notes[1].tie = tie.Tie("stop")
+    ruta = escribir(obra, tmp_path)
+    pieza = pieza_desde_musicxml(ruta, 1)
+    assert len(pieza.notas) == 1
+    assert pieza.notas[0].duracion_pulsos == pytest.approx(2.0)
+
+
+def test_las_marcas_de_ensayo_se_importan_como_secciones(tmp_path):
+    from music21 import expressions
+
+    obra = partitura([(40, 1.0), (45, 1.0)])
+    obra.parts[0].insert(1.0, expressions.RehearsalMark("B"))
+    ruta = escribir(obra, tmp_path)
+    assert [s.nombre for s in pieza_desde_musicxml(ruta, 1).secciones] == ["B"]
+
+
+def test_un_archivo_ilegible_se_rechaza_con_mensaje(tmp_path):
+    ruta = tmp_path / "roto.xml"
+    ruta.write_text("<esto no es musicxml>")
+    with pytest.raises(ValueError):
+        pistas_de_musicxml(ruta)
+
+
+def test_una_parte_sin_notas_no_se_puede_usar(tmp_path):
+    ruta = escribir(partitura([]), tmp_path)
+    assert pistas_de_musicxml(ruta)[0].motivo_no_usable is not None
+
+
+def test_las_repeticiones_se_expanden(tmp_path):
+    from music21 import bar
+
+    obra = partitura([(40, 4.0), (45, 4.0)])
+    parte = obra.parts[0].makeMeasures()
+    medidas = list(parte.getElementsByClass("Measure"))
+    medidas[0].leftBarline = bar.Repeat(direction="start")
+    medidas[-1].rightBarline = bar.Repeat(direction="end")
+    nueva = type(obra)()
+    nueva.append(parte)
+    ruta = escribir(nueva, tmp_path)
+    pieza = pieza_desde_musicxml(ruta, 1)
+    assert [n.midi for n in pieza.notas] == [40, 45, 40, 45]
+
+
+def test_una_sola_indicacion_no_basta(tmp_path):
+    obra = partitura([(45, 1.0), (47, 1.0), (48, 1.0)])
+    indicacion = articulations.StringIndication()
+    indicacion.number = 6
+    obra.parts[0].notes[0].articulations.append(indicacion)
+    ruta = escribir(obra, tmp_path)
+    nota = pieza_desde_musicxml(ruta, 1).notas[0]
+    assert nota.cuerda == 5 and nota.traste == 0
