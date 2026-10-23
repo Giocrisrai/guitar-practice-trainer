@@ -783,9 +783,35 @@ def test_un_perfil_que_no_es_una_clave_lo_dice_sin_tripas_de_python(
     respuesta = cliente.post(ruta, json=cuerpo)
     assert respuesta.status_code == 400
     detalle = respuesta.json()["detail"]
-    assert "El perfil se pide con su clave en texto" in detalle
+    assert "El perfil se pide con su clave en texto, y me llegó" in detalle
     assert "['x']" in detalle
     assert "unhashable" not in detalle
+
+
+def test_el_perfil_tambien_llega_al_nucleo_por_la_puerta_del_carril(cliente):
+    """`/piezas/iniciar` podia tirar el `perfil` entero y nadie se enteraba.
+
+    La prueba del perfil bueno pasaba por `/importar`, asi que en
+    `_pieza_para_el_carril` se podia cambiar `importar(ruta, numero, perfil)` por
+    `importar(ruta, numero, None)` sin que fallara nada. Las dos puertas aceptan
+    `perfil` y las dos tienen que usarlo.
+
+    Se ejerce con la afinacion ACTIVA puesta en Drop D, porque el carril rechaza una
+    pieza escrita en otra afinacion que la activa (spec §5): si el perfil se
+    ignorara, la pieza saldria en `guitarra_estandar` -el que pone el lector de MIDI
+    cuando no se le dice ninguno- y el carril contestaria 400 en vez de arrancar.
+    Ese 400 es lo que hace que la prueba pueda fallar.
+    """
+    assert cliente.put("/api/config", json={"perfil": "guitarra_drop_d"}).status_code == 200
+    cliente.post("/api/canciones", files={"archivo": ("x.mid", _midi_de_una_nota())})
+
+    respuesta = cliente.post(
+        "/api/piezas/iniciar",
+        json={"cancion": "x.mid", "pista": 1, "perfil": "guitarra_drop_d"},
+    )
+    assert respuesta.status_code == 200
+    assert respuesta.json()["pieza"]["perfil"] == "guitarra_drop_d"
+    cliente.post("/api/piezas/detener")
 
 
 def test_un_perfil_en_texto_sigue_contando_donde_cuenta(cliente):

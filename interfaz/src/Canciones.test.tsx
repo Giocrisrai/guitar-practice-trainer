@@ -598,6 +598,61 @@ describe("Canciones", () => {
   });
 
   /**
+   * Y el FALLO de una lectura rancia tampoco se pinta, que es el otro camino del
+   * mismo contador: la lectura del montaje puede fallar después de que la de la
+   * subida haya ido bien, y entonces se veía «no pude leer la carpeta» encima de
+   * una lista que estaba delante y era correcta.
+   */
+  it("el fallo de una lectura rancia no tapa la lista que si llego", async () => {
+    const SUBIDA: FichaCancion = { ...CANCION, id: "nueva.gp5", nombre: "nueva" };
+    const pendientes: {
+      cumplir: (respuesta: Response) => void;
+      fallar: (motivo: unknown) => void;
+    }[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string, opciones?: RequestInit) => {
+        const direccion = String(url);
+        const metodo = opciones?.method ?? "GET";
+        if (direccion === "/api/canciones" && metodo === "GET") {
+          return new Promise<Response>((cumplir, fallar) =>
+            pendientes.push({ cumplir, fallar })
+          );
+        }
+        if (direccion === "/api/canciones" && metodo === "POST") return responder(SUBIDA);
+        if (direccion.endsWith("/pistas")) {
+          return responder({
+            ...SUBIDA,
+            pistas: [PISTA_GUITARRA],
+            afinacion: ESTANDAR,
+            perfil_activo: "guitarra_estandar",
+            coincide: true,
+          });
+        }
+        return Promise.reject(new Error(`fetch no simulado: ${direccion}`));
+      })
+    );
+    render(<Canciones irA={vi.fn()} tocar={vi.fn()} />);
+    await waitFor(() => expect(pendientes).toHaveLength(1));
+
+    fireEvent.change(await entradaDeSubida(), {
+      target: { files: [new File(["x"], "nueva.gp5")] },
+    });
+    await waitFor(() => expect(pendientes).toHaveLength(2));
+
+    // La de la subida va bien; la del montaje falla después, y ya no habla de nada.
+    await act(async () => {
+      pendientes[1].cumplir(cuerpo([CANCION, SUBIDA]));
+    });
+    await act(async () => {
+      pendientes[0].fallar(new Error("No pude abrir la carpeta"));
+    });
+
+    expect(screen.queryByText("No pude abrir la carpeta")).toBeNull();
+    expect(screen.getByRole("button", { name: /nueva/i })).toBeTruthy();
+  });
+
+  /**
    * Y elegir otra CANCIÓN deja rancia la pieza en vuelo, no solo el detalle: los
    * avisos de una pista de la canción anterior debajo del título de la nueva son
    * los avisos de otra canción.

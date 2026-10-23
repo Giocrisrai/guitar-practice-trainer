@@ -156,7 +156,7 @@ def _perfil_pedido(valor) -> str | None:
     if valor is None or isinstance(valor, str):
         return valor
     raise ValueError(
-        f"El perfil se pide con su clave en texto, y me llego {valor!r}."
+        f"El perfil se pide con su clave en texto, y me llegó {valor!r}."
     )
 
 
