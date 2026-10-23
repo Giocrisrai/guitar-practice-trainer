@@ -8,6 +8,27 @@ hace falta ver todas, incluidas las que no se pueden usar y por que.
 
 from dataclasses import dataclass
 
+# Las dieciseis familias del General MIDI, de ocho programas cada una. Sirven para
+# que el usuario reconozca la pista por su sonido y no por el numero 25.
+FAMILIAS_GM = (
+    "Piano",
+    "Percusion cromatica",
+    "Organo",
+    "Guitarra",
+    "Bajo",
+    "Cuerdas",
+    "Conjunto",
+    "Metales",
+    "Cañas",
+    "Flautas",
+    "Sintetizador solista",
+    "Sintetizador de acompañamiento",
+    "Sintetizador de efectos",
+    "Etnico",
+    "Percusivo",
+    "Efectos de sonido",
+)
+
 
 @dataclass(frozen=True)
 class PistaDisponible:

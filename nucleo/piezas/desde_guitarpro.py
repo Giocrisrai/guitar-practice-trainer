@@ -31,33 +31,12 @@ from nucleo.afinaciones import (
     perfil_desde_midis,
     registrar_perfil,
 )
-from nucleo.piezas.lectores import PistaDisponible
+from nucleo.piezas.lectores import FAMILIAS_GM, PistaDisponible
 from nucleo.piezas.modelo import NotaEnPieza, Pieza, Seccion
 
 TICKS_NEGRA = guitarpro.Duration.quarterTime
 
 TRASTES_POR_DEFECTO = 22
-
-# Las dieciseis familias del General MIDI, de ocho programas cada una. Sirven para
-# que el usuario reconozca la pista por su sonido y no por el numero 25.
-FAMILIAS_GM = (
-    "Piano",
-    "Percusion cromatica",
-    "Organo",
-    "Guitarra",
-    "Bajo",
-    "Cuerdas",
-    "Conjunto",
-    "Metales",
-    "Cañas",
-    "Flautas",
-    "Sintetizador solista",
-    "Sintetizador de acompañamiento",
-    "Sintetizador de efectos",
-    "Etnico",
-    "Percusivo",
-    "Efectos de sonido",
-)
 
 # Cota de seguridad al expandir repeticiones: un archivo con las barras mal puestas
 # no debe colgar el programa.
