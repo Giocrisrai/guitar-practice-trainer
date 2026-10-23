@@ -915,3 +915,15 @@ def test_cambiar_el_plan_despues_de_terminar_el_tramo_lo_reabre():
     assert sesion.estado.tramo_terminado is True
     sesion.cambiar_plan(PlanDePasada(primer_compas=2, ultimo_compas=12))
     assert sesion.estado.tramo_terminado is False
+
+
+def test_reiniciar_la_pasada_olvida_la_ultima_vuelta_de_la_anterior():
+    sesion = SesionDeEstudio(
+        pieza_de_doce_compases(),
+        PlanDePasada(primer_compas=1, ultimo_compas=1, en_bucle=True,
+                     compases_de_cuenta_atras=0),
+    )
+    sesion.colocar_en(4.0)
+    assert sesion.ultima_vuelta is not None
+    sesion.reiniciar_pasada()
+    assert sesion.ultima_vuelta is None

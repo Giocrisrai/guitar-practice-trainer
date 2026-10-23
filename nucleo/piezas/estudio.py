@@ -475,7 +475,9 @@ class SesionDeEstudio:
             self._cuenta_atras_restante_s = max(0.0, self._cuenta_atras_restante_s - paso)
             # Colocar el reloj del seguidor en el inicio en cada mirada es lo que
             # lo congela, y ademas descarta las pulsaciones en vuelo: durante la
-            # cuenta atras no se puede cobrar nada.
+            # cuenta atras no se puede cobrar nada. HOY es defensa: `_dar_la_vuelta`
+            # ya dejo el reloj en el inicio y nadie mas abre la cuenta atras. Se
+            # queda para que el reloj siga quieto si alguien la abre por otro lado.
             self._seguidor.avanzar_a(self._inicio_s())
             return self.estado
         self._seguidor.avanzar_a(self._seguidor.estado.instante_s + paso)
@@ -498,6 +500,7 @@ class SesionDeEstudio:
             return self.estado
         if self._cuenta_atras_restante_s > 0:
             self._cuenta_atras_restante_s = max(0.0, self._cuenta_atras_restante_s - delta)
+            # Defensa, igual que en `avanzar`: hoy el reloj ya esta en el inicio.
             self._seguidor.avanzar_a(self._inicio_s())
             return self.estado
         self._seguidor.procesar(resultado, instante_analisis)
@@ -537,6 +540,11 @@ class SesionDeEstudio:
         tramo, porque si saltas atras a algo que ya tocaste, volver a tocarlo
         tiene que contar. Cancela la cuenta atras, porque la cuenta atras es para
         empezar donde ya estabas.
+
+        El olvido efectivo ya lo hace `cerrar_repeticion` sobre la pieza entera;
+        la llamada propia a `olvidar_tramo` esta por CONTRATO (descobrir el tramo
+        de destino, y antes de colocar el reloj) y la fijan pruebas con espia. No
+        la borres por redundante ni la des por necesaria sin leer esto.
         """
         desde, _ = pulsos_del_compas(self.pieza, numero)
         destino = self._segundos(desde)
@@ -551,6 +559,9 @@ class SesionDeEstudio:
         """Vuelve al principio del tramo y olvida el informe. Empieza otra pasada."""
         self._acumulado = {}
         self._vueltas_cerradas = 0
+        # La ultima vuelta es de la pasada que se acaba: dejarla alli metaria una
+        # repeticion fantasma en el historial de la pasada nueva.
+        self._ultima_vuelta = None
         self._repeticion = 1
         self._tramo_terminado = False
         self._cuenta_atras_restante_s = 0.0
