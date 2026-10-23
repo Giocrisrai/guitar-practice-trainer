@@ -85,6 +85,13 @@ Hay que tenerlo claro antes de la Tarea 2 o nada encaja:
 - Lo que viaja para **situarse** (compás en curso, rejilla, informe) es `instante_pulsos`, que no depende del tempo. `segundos_a_pulsos` ya existe en `nucleo/piezas/modelo.py`.
 - `pulsos_a_segundos(pulsos, tempo)` **valida el tempo** y lo quiere entero. Nunca se le pasa un tempo multiplicado por el factor: el factor se aplica **dividiendo el resultado**.
 
+**La sesión de estudio tiene DOS puertas para el reloj, y la diferencia es la que hace que la pausa funcione:**
+
+- `colocar_en(instante_pasada_s)` — **absoluto**: «pon el cabezal aquí». Lo usan `saltar_al_compas`, `cambiar_plan` y las pruebas. Cancela la cuenta atrás, porque una colocación explícita es una orden sobre dónde está el cabezal ahora.
+- `avanzar(delta_s)` — **relativo**: «ha pasado tanto tiempo». Lo usa el servidor con su tramo ya acotado por `TECHO_TRAMO_S`. En pausa no avanza nada; durante la cuenta atrás descuenta la cuenta y deja el reloj quieto.
+
+Una sola puerta absoluta no basta, y esto es un defecto que el escaneo previo cazó antes de escribir código: si el servidor pasara instantes absolutos de su propia línea temporal, durante la pausa esa línea seguiría creciendo y al reanudar el cabezal saltaría el tamaño de la pausa. Con un delta, el tiempo que no se cuenta simplemente no se pasa.
+
 ---
 
 ### Task 1: `compases.py`, el único que sabe de compases
@@ -599,7 +606,8 @@ FIN
       def estado(self) -> EstadoEstudio
       @property
       def plan(self) -> PlanDePasada
-      def avanzar_a(self, instante_pasada_s: float) -> EstadoEstudio
+      def colocar_en(self, instante_pasada_s: float) -> EstadoEstudio
+      def avanzar(self, delta_s: float) -> EstadoEstudio
       def procesar(self, resultado, instante_analisis: float) -> EstadoEstudio
   ```
 
@@ -694,14 +702,14 @@ def test_la_pasada_arranca_al_principio_del_primer_compas_del_plan():
 
 def test_el_estado_dice_en_que_compas_va_el_cabezal():
     sesion = SesionDeEstudio(pieza_de_doce_compases())
-    sesion.avanzar_a(9.0)
+    sesion.colocar_en(9.0)
     assert sesion.estado.compas_en_curso == 3
     assert sesion.estado.instante_pulsos == pytest.approx(9.0)
 
 
 def test_al_cincuenta_por_ciento_el_mismo_compas_llega_al_doble_de_segundos():
     sesion = SesionDeEstudio(pieza_de_doce_compases(), PlanDePasada(factor_tempo=0.5))
-    sesion.avanzar_a(9.0)
+    sesion.colocar_en(9.0)
     # Nueve segundos de pasada son 4,5 pulsos de la pieza: todavia el compas 2.
     assert sesion.estado.compas_en_curso == 2
     assert sesion.estado.instante_pulsos == pytest.approx(4.5)
@@ -728,6 +736,26 @@ def test_el_dict_del_estado_lleva_lo_del_carril_al_mismo_nivel():
         assert clave in datos
     assert datos["compas_en_curso"] == 1
     assert datos["total_de_compases"] == 12
+
+
+def test_el_compas_en_curso_no_se_sale_del_tramo():
+    # Los pulsos de un compas son un intervalo medio abierto: parado en el final
+    # del compas 3 el reloj cae ya en el 4. Un bucle del 2 al 3 no puede decir
+    # que va por el 4.
+    sesion = SesionDeEstudio(
+        pieza_de_doce_compases(), PlanDePasada(primer_compas=2, ultimo_compas=3)
+    )
+    sesion.colocar_en(12.0)
+    assert sesion.estado.compas_en_curso == 3
+
+
+def test_avanzar_suma_y_colocar_coloca():
+    sesion = SesionDeEstudio(pieza_de_doce_compases())
+    sesion.colocar_en(5.0)
+    sesion.avanzar(2.0)
+    assert sesion.estado.carril.instante_s == pytest.approx(7.0)
+    sesion.colocar_en(2.0)
+    assert sesion.estado.carril.instante_s == pytest.approx(2.0)
 
 
 def test_una_pieza_sin_notas_no_rompe_la_sesion():
@@ -968,10 +996,17 @@ class SesionDeEstudio:
     def estado(self) -> EstadoEstudio:
         carril = self._seguidor.estado
         pulsos = self._pulsos(carril.instante_s)
+        # El compas se acota al ultimo del tramo, y no es cosmetica: los pulsos
+        # del compas son un intervalo MEDIO ABIERTO, asi que el reloj parado en
+        # el final del compas 3 cae ya en el 4. Sin acotar, al terminar un tramo
+        # la pantalla decia "compas 4" de un bucle que va del 2 al 3.
+        compas = compas_en(self.pieza, pulsos)
+        if self._plan.ultimo_compas:
+            compas = min(compas, self._plan.ultimo_compas)
         return EstadoEstudio(
             carril=carril,
             instante_pulsos=pulsos,
-            compas_en_curso=compas_en(self.pieza, pulsos),
+            compas_en_curso=compas,
             total_de_compases=total_de_compases(self.pieza),
             primer_compas=self._plan.primer_compas,
             ultimo_compas=self._plan.ultimo_compas or 0,
@@ -985,9 +1020,22 @@ class SesionDeEstudio:
             ritmo_aproximado=self.pieza.ritmo_aproximado,
         )
 
-    def avanzar_a(self, instante_pasada_s: float) -> EstadoEstudio:
-        """Mueve el reloj de la pasada. No consume audio."""
+    def colocar_en(self, instante_pasada_s: float) -> EstadoEstudio:
+        """Pone el cabezal en ese instante de la pasada. No consume audio.
+
+        Es la puerta ABSOLUTA del reloj. La relativa es `avanzar`, y la
+        diferencia importa: ver el contrato del tiempo.
+        """
         self._seguidor.avanzar_a(instante_pasada_s)
+        return self.estado
+
+    def avanzar(self, delta_s: float) -> EstadoEstudio:
+        """Ha pasado `delta_s` de tiempo. Puerta RELATIVA del reloj.
+
+        En la Tarea 3 solo suma; la pausa y la cuenta atras entran en la Tarea 5,
+        que es donde existen.
+        """
+        self._seguidor.avanzar_a(self._seguidor.estado.instante_s + max(0.0, delta_s))
         return self.estado
 
     def procesar(
@@ -1030,6 +1078,7 @@ FIN
 
 **Files:**
 - Modify: `nucleo/piezas/estudio.py`
+- Modify: `nucleo/piezas/seguimiento.py` (solo la propiedad `duracion_s`, al final de esta tarea)
 - Test: `tests/test_estudio.py` (se añade)
 
 **Interfaces:**
@@ -1096,7 +1145,7 @@ def tocar(sesion, nota, en):
     significaria nada.
     """
     instante = en - 0.1
-    sesion.avanzar_a(instante)
+    sesion.colocar_en(instante)
     while instante < en:
         sesion.procesar(SILENCIO, instante)
         instante += 0.021
@@ -1467,7 +1516,7 @@ Cambia `medibles < escritas` por `False` y corre: tienen que caer las dos de aco
 - [ ] **Step 6: Commit**
 
 ```bash
-git add nucleo/piezas/estudio.py tests/test_estudio.py
+git add nucleo/piezas/estudio.py nucleo/piezas/seguimiento.py tests/test_estudio.py
 git commit -m "$(cat <<'FIN'
 feat: el informe por compases, con los acordes fuera de la cuenta
 
@@ -1534,7 +1583,7 @@ def test_al_llegar_al_final_del_bucle_vuelve_al_principio_y_sube_la_repeticion()
     assert sesion.estado.compas_en_curso == 2
     assert sesion.estado.repeticion == 1
     # El compas 4 empieza en el pulso 12, es decir el segundo 12 a 60 ppm.
-    sesion.avanzar_a(12.0)
+    sesion.colocar_en(12.0)
     assert sesion.estado.compas_en_curso == 2
     assert sesion.estado.repeticion == 2
 
@@ -1543,7 +1592,7 @@ def test_sin_bucle_el_reloj_se_para_al_final_del_tramo():
     sesion = SesionDeEstudio(
         pieza_de_doce_compases(), PlanDePasada(primer_compas=2, ultimo_compas=3)
     )
-    sesion.avanzar_a(50.0)
+    sesion.colocar_en(50.0)
     assert sesion.estado.compas_en_curso == 3
     assert sesion.estado.tramo_terminado is True
     assert sesion.estado.a_dict()["completado"] is True
@@ -1554,13 +1603,13 @@ def test_la_cuenta_atras_dura_un_compas_al_tempo_de_la_pasada():
     normal = SesionDeEstudio(
         pieza, PlanDePasada(primer_compas=1, ultimo_compas=1, en_bucle=True)
     )
-    normal.avanzar_a(4.0)
+    normal.colocar_en(4.0)
     assert normal.estado.cuenta_atras_restante_s == pytest.approx(4.0)
     lenta = SesionDeEstudio(
         pieza,
         PlanDePasada(primer_compas=1, ultimo_compas=1, en_bucle=True, factor_tempo=0.5),
     )
-    lenta.avanzar_a(8.0)
+    lenta.colocar_en(8.0)
     assert lenta.estado.cuenta_atras_restante_s == pytest.approx(8.0)
 
 
@@ -1568,23 +1617,31 @@ def test_durante_la_cuenta_atras_el_reloj_no_avanza():
     sesion = SesionDeEstudio(
         pieza_de_doce_compases(), PlanDePasada(primer_compas=1, ultimo_compas=1, en_bucle=True)
     )
-    sesion.avanzar_a(4.0)
+    sesion.colocar_en(4.0)
     quieto = sesion.estado.carril.instante_s
-    sesion.avanzar_a(5.0)
+    sesion.avanzar(1.0)
     assert sesion.estado.carril.instante_s == pytest.approx(quieto)
     assert sesion.estado.cuenta_atras_restante_s == pytest.approx(3.0)
     # Y al agotarse, el reloj vuelve a correr desde el inicio del tramo.
-    sesion.avanzar_a(8.5)
+    sesion.avanzar(3.5)
     assert sesion.estado.cuenta_atras_restante_s == 0.0
     assert sesion.estado.carril.instante_s == pytest.approx(0.0)
 
 
 def test_durante_la_cuenta_atras_no_se_cobra_nada():
+    # Se alimenta con CUADROS y no colocando el reloj, porque `colocar_en`
+    # cancela la cuenta atras a proposito: una colocacion explicita es una orden
+    # sobre donde esta el cabezal. Lo que pasa de verdad durante la cuenta es
+    # que siguen llegando cuadros de audio, y es eso lo que hay que probar.
     sesion = SesionDeEstudio(
         pieza_de_doce_compases(), PlanDePasada(primer_compas=1, ultimo_compas=1, en_bucle=True)
     )
-    sesion.avanzar_a(4.0)
-    tocar(sesion, "E2", en=4.5)
+    sesion.colocar_en(4.0)
+    assert sesion.estado.cuenta_atras_restante_s > 0
+    instante = 100.0
+    for _ in range(20):
+        sesion.procesar(suena("E2"), instante)
+        instante += 0.021
     assert sesion.estado.carril.tocadas == ()
 
 
@@ -1596,7 +1653,7 @@ def test_tras_la_vuelta_del_bucle_las_notas_se_pueden_volver_a_cobrar():
     )
     tocar(sesion, "E2", en=0.0)
     assert len(sesion.estado.carril.tocadas) == 1
-    sesion.avanzar_a(4.0)          # da la vuelta
+    sesion.colocar_en(4.0)          # da la vuelta
     assert sesion.estado.carril.tocadas == ()
     tocar(sesion, "E2", en=0.0)
     assert len(sesion.estado.carril.tocadas) == 1
@@ -1613,7 +1670,7 @@ def test_un_bucle_sobre_un_compas_sin_notas_no_se_queda_clavado():
                      compases_de_cuenta_atras=0),
     )
     assert sesion.estado.compas_en_curso == 2
-    sesion.avanzar_a(8.0)
+    sesion.colocar_en(8.0)
     assert sesion.estado.repeticion == 2
     assert sesion.estado.compas_en_curso == 2
     assert sesion.informe.compases[0].notas_escritas == 0
@@ -1626,7 +1683,7 @@ def test_un_bucle_de_un_solo_compas_con_una_nota_sola_funciona():
                      compases_de_cuenta_atras=0),
     )
     tocar(sesion, "E2", en=0.0)
-    sesion.avanzar_a(4.0)
+    sesion.colocar_en(4.0)
     assert sesion.estado.repeticion == 2
     assert compas_numero(sesion.informe, 1).acertadas == 1
 
@@ -1634,7 +1691,7 @@ def test_un_bucle_de_un_solo_compas_con_una_nota_sola_funciona():
 def test_cambiar_el_tempo_a_mitad_conserva_el_compas_y_lo_ya_tocado():
     sesion = SesionDeEstudio(pieza_de_doce_compases())
     tocar(sesion, "E2", en=0.0)
-    sesion.avanzar_a(9.0)                      # compas 3
+    sesion.colocar_en(9.0)                      # compas 3
     sesion.cambiar_plan(PlanDePasada(factor_tempo=0.5))
     assert sesion.estado.compas_en_curso == 3
     assert sesion.estado.instante_pulsos == pytest.approx(9.0)
@@ -1647,7 +1704,7 @@ def test_cambiar_el_tempo_a_mitad_conserva_el_compas_y_lo_ya_tocado():
 
 def test_cambiar_a_un_rango_que_no_contiene_el_cabezal_lo_lleva_al_nuevo_inicio():
     sesion = SesionDeEstudio(pieza_de_doce_compases())
-    sesion.avanzar_a(1.0)
+    sesion.colocar_en(1.0)
     sesion.cambiar_plan(PlanDePasada(primer_compas=7, ultimo_compas=8, en_bucle=True))
     assert sesion.estado.compas_en_curso == 7
 
@@ -1669,7 +1726,7 @@ def test_saltar_a_un_compas_que_no_existe_se_rechaza():
 def test_reiniciar_la_pasada_vuelve_al_inicio_y_olvida_el_informe():
     sesion = SesionDeEstudio(pieza_de_doce_compases())
     tocar(sesion, "E2", en=0.0)
-    sesion.avanzar_a(9.0)
+    sesion.colocar_en(9.0)
     sesion.reiniciar_pasada()
     assert sesion.estado.compas_en_curso == 1
     assert sesion.estado.repeticion == 1
@@ -1678,13 +1735,16 @@ def test_reiniciar_la_pasada_vuelve_al_inicio_y_olvida_el_informe():
 
 def test_en_pausa_el_reloj_no_avanza_y_al_reanudar_sigue_donde_estaba():
     sesion = SesionDeEstudio(pieza_de_doce_compases())
-    sesion.avanzar_a(5.0)
+    sesion.colocar_en(5.0)
     sesion.pausar()
-    sesion.avanzar_a(20.0)
+    # Quince segundos de reloj de pared que NO son de la pieza. Con una puerta
+    # absoluta, al reanudar el cabezal se iria a los 20 s; con un delta, el
+    # tiempo que no se cuenta no se pasa.
+    sesion.avanzar(15.0)
     assert sesion.estado.carril.instante_s == pytest.approx(5.0)
     assert sesion.estado.en_pausa is True
     sesion.reanudar()
-    sesion.avanzar_a(21.0)
+    sesion.avanzar(1.0)
     assert sesion.estado.carril.instante_s == pytest.approx(6.0)
 ```
 
@@ -1695,17 +1755,16 @@ Expected: FAIL — `AttributeError: 'SesionDeEstudio' object has no attribute 'c
 
 - [ ] **Step 3: Implementa**
 
-**La pausa y la cuenta atrás necesitan deltas, no instantes absolutos.** Guarda el último instante que te pidieron y resta. En `__init__`:
+**La pausa y la cuenta atrás viven en la puerta relativa.** `avanzar(delta_s)` ya existe desde la Tarea 3 sumando sin más; esta tarea le añade las dos ramas. `procesar` necesita su propio delta, que saca del reloj del análisis. En `__init__`:
 
 ```python
         self._tramo_terminado = False
         # El informe de la ultima vuelta del bucle que se cerro, o None si
         # todavia no se cerro ninguna. Lo lee el servidor para el historial.
         self._ultima_vuelta: InformeDePasada | None = None
-        # El ultimo instante que nos pidieron, para sacar deltas: la pausa y la
-        # cuenta atras necesitan saber CUANTO paso, no en que momento estamos.
-        # Los dos que nos llaman (el servidor y las pruebas) son monotonos.
-        self._ultimo_pedido: float | None = None
+        # El ultimo instante del reloj del ANALISIS que vimos, solo para sacar
+        # el delta de la cuenta atras cuando el tiempo viene en cuadros.
+        self._ultimo_analisis: float | None = None
 ```
 
 Añade `tramo_terminado: bool` a `EstadoEstudio`, pásalo en `estado`, y en su `a_dict` **sobrescribe** `completado`:
@@ -1727,13 +1786,17 @@ Los métodos nuevos y el reparto del tiempo:
             pulsos_por_compas(self.pieza) * self._plan.compases_de_cuenta_atras
         )
 
-    def _delta(self, instante: float) -> float:
-        """Cuanto tiempo paso desde la ultima vez, nunca negativo."""
-        anterior = self._ultimo_pedido
-        self._ultimo_pedido = instante
+    def _delta_del_analisis(self, instante_analisis: float) -> float:
+        """Cuanto tiempo paso entre dos cuadros, nunca negativo.
+
+        Solo lo necesita la cuenta atras: el reloj de la pieza lo mueve
+        `procesar` del seguidor por su correspondencia, no esta resta.
+        """
+        anterior = self._ultimo_analisis
+        self._ultimo_analisis = instante_analisis
         if anterior is None:
             return 0.0
-        return max(0.0, instante - anterior)
+        return max(0.0, instante_analisis - anterior)
 
     def _dar_la_vuelta(self) -> None:
         """Los cuatro pasos del bucle, en este orden y no en otro.
@@ -1750,7 +1813,7 @@ Los métodos nuevos y el reparto del tiempo:
         self._repeticion += 1
         self._cuenta_atras_restante_s = self._segundos_de_cuenta_atras()
 
-    def _al_dia(self, instante: float) -> None:
+    def _al_dia(self) -> None:
         """Lo que hay que mirar tras mover el reloj: la cuenta atras y el final.
 
         La llaman los dos caminos -con audio y sin audio-, porque el bucle tiene
@@ -1766,27 +1829,38 @@ Los métodos nuevos y el reparto del tiempo:
             self._tramo_terminado = True
             self._seguidor.avanzar_a(self._fin_s())
 
-    def avanzar_a(self, instante_pasada_s: float) -> EstadoEstudio:
-        """Camino SIN audio: coloca el reloj a mano.
+    def colocar_en(self, instante_pasada_s: float) -> EstadoEstudio:
+        """Puerta ABSOLUTA: pon el cabezal aqui. CANCELA la cuenta atras.
 
-        El instante que llega es absoluto, pero la pausa y la cuenta atras se
-        miden con el delta: mientras una de las dos esta activa, el reloj de la
-        pieza se queda donde esta y lo unico que corre es la cuenta.
+        Cancelarla es deliberado: colocar el cabezal es una orden sobre donde
+        esta ahora, y hacerla esperar a una cuenta atras que ya no viene al caso
+        seria desobedecerla a medias. Quien quiere que el tiempo pase respetando
+        la pausa y la cuenta usa `avanzar`.
         """
-        delta = self._delta(instante_pasada_s)
+        self._cuenta_atras_restante_s = 0.0
+        self._seguidor.avanzar_a(instante_pasada_s)
+        self._al_dia()
+        return self.estado
+
+    def avanzar(self, delta_s: float) -> EstadoEstudio:
+        """Puerta RELATIVA: ha pasado `delta_s`. Respeta la pausa y la cuenta atras.
+
+        Es la que usa el servidor, con su tramo ya acotado por `TECHO_TRAMO_S`.
+        En pausa no pasa nada de nada: el tiempo que no se cuenta no se suma, y
+        por eso reanudar no mueve el cabezal ni un milimetro.
+        """
+        paso = max(0.0, delta_s)
         if self._en_pausa:
             return self.estado
         if self._cuenta_atras_restante_s > 0:
-            self._cuenta_atras_restante_s = max(
-                0.0, self._cuenta_atras_restante_s - delta
-            )
-            # Colocar el reloj en el inicio en cada mirada es lo que lo congela, y
-            # ademas descarta las pulsaciones en vuelo: durante la cuenta atras no
-            # se puede cobrar nada.
+            self._cuenta_atras_restante_s = max(0.0, self._cuenta_atras_restante_s - paso)
+            # Colocar el reloj del seguidor en el inicio en cada mirada es lo que
+            # lo congela, y ademas descarta las pulsaciones en vuelo: durante la
+            # cuenta atras no se puede cobrar nada.
             self._seguidor.avanzar_a(self._inicio_s())
             return self.estado
-        self._seguidor.avanzar_a(instante_pasada_s)
-        self._al_dia(instante_pasada_s)
+        self._seguidor.avanzar_a(self._seguidor.estado.instante_s + paso)
+        self._al_dia()
         return self.estado
 
     def procesar(self, resultado: ResultadoAnalisis, instante_analisis: float) -> EstadoEstudio:
@@ -1797,18 +1871,16 @@ Los métodos nuevos y el reparto del tiempo:
         `_adjudicar` descarta los onsets anteriores al primer cuadro posterior a
         un salto, asi que ningun ataque se anotaria nunca.
         """
-        delta = self._delta(instante_analisis)
+        delta = self._delta_del_analisis(instante_analisis)
         if self._en_pausa:
             self._seguidor.avanzar_a(self._seguidor.estado.instante_s)
             return self.estado
         if self._cuenta_atras_restante_s > 0:
-            self._cuenta_atras_restante_s = max(
-                0.0, self._cuenta_atras_restante_s - delta
-            )
+            self._cuenta_atras_restante_s = max(0.0, self._cuenta_atras_restante_s - delta)
             self._seguidor.avanzar_a(self._inicio_s())
             return self.estado
         self._seguidor.procesar(resultado, instante_analisis)
-        self._al_dia(instante_analisis)
+        self._al_dia()
         return self.estado
 
     def cambiar_plan(self, plan: PlanDePasada) -> EstadoEstudio:
@@ -1835,8 +1907,7 @@ Los métodos nuevos y el reparto del tiempo:
             nuevo.primer_compas <= compas_en(self.pieza, pulsos) <= (nuevo.ultimo_compas or 0)
         )
         destino = self._segundos(pulsos) if dentro else self._inicio_s()
-        self._seguidor.avanzar_a(destino)
-        return self.estado
+        return self.colocar_en(destino)
 
     def saltar_al_compas(self, numero: int) -> EstadoEstudio:
         """Coloca el cabezal al principio del compas `numero`.
@@ -1846,10 +1917,8 @@ Los métodos nuevos y el reparto del tiempo:
         """
         desde, _ = pulsos_del_compas(self.pieza, numero)
         self.cerrar_repeticion()
-        self._cuenta_atras_restante_s = 0.0
         self._tramo_terminado = False
-        self._seguidor.avanzar_a(self._segundos(desde))
-        return self.estado
+        return self.colocar_en(self._segundos(desde))
 
     def reiniciar_pasada(self) -> EstadoEstudio:
         """Vuelve al principio del tramo y olvida el informe. Empieza otra pasada."""
@@ -1858,8 +1927,8 @@ Los métodos nuevos y el reparto del tiempo:
         self._tramo_terminado = False
         self._cuenta_atras_restante_s = 0.0
         self._seguidor = self._nuevo_seguidor()
-        self._seguidor.avanzar_a(self._inicio_s())
-        return self.estado
+        self._ultimo_analisis = None
+        return self.colocar_en(self._inicio_s())
 
     def pausar(self) -> None:
         """Pausa a voluntad del usuario. No es lo mismo que perder la señal."""
@@ -2179,7 +2248,8 @@ FIN
 **Files:**
 - Modify: `servidor/piezas.py` (`SesionCarril`)
 - Modify: `servidor/app.py` (`iniciar_pieza` y cinco endpoints)
-- Test: `tests/test_app_estudio.py` (nuevo)
+- Modify: `nucleo/piezas/estudio.py` (solo la propiedad `ultima_vuelta`)
+- Test: `tests/test_app_estudio.py` (nuevo), `tests/test_estudio.py` (una prueba)
 
 **Interfaces:**
 - Consumes: `PlanDePasada`, `SesionDeEstudio`, `HistorialDeEstudio`, `validar_plan` (Tareas 3-6).
@@ -2203,7 +2273,7 @@ FIN
 
 **Tres reglas que esta tarea tiene que respetar, y que ya están razonadas en el código que vas a tocar:**
 
-1. **`self._seguidor` pasa a ser `self._estudio`**, y todas sus llamadas (`avanzar_a`, `procesar`, `estado`) van ahora a la `SesionDeEstudio`, que tiene los mismos nombres a propósito. Lo que **no** cambia: el candado, el observador, `ESPERA_SIN_CUADROS_S`, `TECHO_TRAMO_S` y la pausa por falta de señal. Todo eso costó tres rondas de arreglos en la etapa 3a; no se toca.
+1. **`self._seguidor` pasa a ser `self._estudio`**, y sus llamadas van ahora a la `SesionDeEstudio`. Ojo con el reloj: donde el seguidor tenía un solo `avanzar_a(instante)`, la sesión de estudio tiene **dos puertas** — `colocar_en(instante)` para colocar y `avanzar(delta)` para que pase el tiempo —, y el servidor usa cada una en un sitio distinto (ver abajo). Lo que **no** cambia: el candado, el observador, `ESPERA_SIN_CUADROS_S`, `TECHO_TRAMO_S` y la pausa por falta de señal. Todo eso costó tres rondas de arreglos en la etapa 3a; no se toca.
 2. **El reloj de la sesión de estudio es la verdad.** Después de cada llamada, `self._instante = estado.carril.instante_s`. Sin esto, durante la cuenta atrás el reloj del servidor seguiría creciendo y al acabar la cuenta el cabezal daría un salto hacia delante del tamaño de la cuenta.
 3. **Hay dos pausas y son distintas.** `self._pausado` es «no llega señal del cable» y la decide el servidor mirando el audio; `estudio.en_pausa` la decide el usuario. Ni se mezclan ni se sobreescriben: el estado publica las dos (`pausado` y `en_pausa`), y la interfaz dice cosas distintas.
 
@@ -2397,19 +2467,41 @@ from nucleo.piezas.estudio import HistorialDeEstudio, PlanDePasada, SesionDeEstu
   ```
   y el `self._instante = 0.0` de hoy pasa a `self._instante = self._estudio.estado.carril.instante_s`, porque con un plan que empieza en el compás 5 el cabezal **no** arranca en cero. `SesionDeEstudio` lanza `ValueError` con un plan imposible, y `iniciar_pieza` ya traduce `ValueError` a 400.
 
-- En `_mirar`, `_observar` y `_instantanea`, cambia `seguidor` por `estudio` y **adopta el reloj** tras cada llamada. En `_instantanea`:
+- **`_mirar` pasa a mover el reloj con un delta, y `_instantanea` solo lee.** Hoy `_mirar` acumula `self._instante` y `_instantanea` lo coloca en el seguidor; ahora `self._instante` deja de ser la cuenta y pasa a ser el **espejo** de lo que diga la sesión de estudio. El tramo acotado por `TECHO_TRAMO_S` —que es el invariante que costó tres rondas en la etapa 3a y no se toca— se le pasa como delta:
 
 ```python
-        sin_cuadros = self._sin_cuadros(ahora)
-        estado = estudio.avanzar_a(self._instante) if sin_cuadros else estudio.estado
-        # El reloj de la sesion de estudio es la verdad: ella congela durante la
-        # cuenta atras y da la vuelta al bucle, asi que esta clase adopta lo que
-        # ella diga en vez de llevar su propia cuenta. Sin esto, el cabezal
-        # saltaba hacia delante al acabar cada cuenta atras.
-        self._instante = estado.carril.instante_s
+        transcurrido = ahora - self._ultima_mirada
+        self._ultima_mirada = ahora
+        if not ausente:
+            self._pausado = False
+            # El tramo se le pasa a la sesion de estudio, que decide que hacer con
+            # el: en pausa del usuario no suma nada, durante la cuenta atras
+            # descuenta la cuenta, y al final del bucle da la vuelta. Solo cuando
+            # NO llegan cuadros, porque con audio el reloj lo mueve `procesar`
+            # (ver ESPERA_SIN_CUADROS_S: colocarlo con audio entrando cuesta las
+            # pulsaciones en vuelo).
+            if self._sin_cuadros(ahora):
+                estudio.avanzar(min(transcurrido, TECHO_TRAMO_S))
+        elif not self._pausado:
+            self._pausado = True
+            estudio.colocar_en(self._instante)
+        # El reloj de la sesion de estudio es la verdad, y esta clase lo adopta en
+        # vez de llevar su propia cuenta: ella congela durante la cuenta atras y
+        # da la vuelta al bucle. Sin esta linea el cabezal saltaba hacia delante
+        # al acabar cada cuenta atras.
+        self._instante = estudio.estado.carril.instante_s
+```
+
+y `_instantanea` deja de colocar nada:
+
+```python
+        estado = estudio.estado
         self._cerrar_lo_que_termino(estado)
+        self._ajustar_click(estado)   # la Tarea 8 lo añade
         return {**estado.a_dict(), "pausado": self._pausado, "arranque": self._arranque}
 ```
+
+  `_observar` sigue igual en su forma: llama a `_mirar` bajo candado, comprueba la pausa y el hueco, y da de comer con `estudio.procesar(...)` fuera del candado. Donde hoy dice `seguidor.avanzar_a(self._instante)` tras un hueco largo, ahora dice `estudio.colocar_en(self._instante)`: es una colocación, no un avance.
 
 - El detector de final, que es quien alimenta el historial y el tempo automático:
 
@@ -2464,7 +2556,7 @@ def test_la_ultima_vuelta_guarda_el_informe_de_la_repeticion_que_acabo():
     )
     assert sesion.ultima_vuelta is None
     tocar(sesion, "E2", en=0.0)
-    sesion.avanzar_a(4.0)
+    sesion.colocar_en(4.0)
     assert compas_numero(sesion.ultima_vuelta, 1).acertadas == 1
 ```
 
@@ -2628,7 +2720,7 @@ Expected: PASS. `tests/test_app_carril.py` y `tests/test_piezas_sesion.py` tiene
 
 - [ ] **Step 5: Rompe el código y cuenta**
 
-Quita la línea `self._instante = estado.carril.instante_s` de `_instantanea` y corre la suite entera: si no cae nada, **falta una prueba**, y es esta — escríbela:
+Quita la línea `self._instante = estudio.estado.carril.instante_s` de `_mirar` y corre la suite entera: si no cae nada, **falta una prueba**, y es esta — escríbela:
 
 ```python
 def test_tras_la_cuenta_atras_el_cabezal_no_salta_hacia_delante(cliente):
