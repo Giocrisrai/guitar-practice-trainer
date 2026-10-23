@@ -175,8 +175,20 @@ def _separar_cuerdas_de_acordes(
     la distancia en trastes a lo que `digitar` habia elegido para ella: se cambia lo
     minimo.
 
-    Limitacion: el reparto es local al acorde. No vuelve a optimizar la pieza
-    entera, asi que con acordes el resultado ya no es el minimo global.
+    LO QUE ASEGURA: cuerdas distintas para las notas de un mismo instante. LO QUE NO
+    ASEGURA: que el acorde se pueda tocar con una mano. El coste solo mira cuanto
+    cambia cada nota respecto a lo que eligio `digitar`, no cuanto se abren los
+    trastes DENTRO del acorde. Medido: un Mi menor (52, 55, 59, 64) sale como 4/2,
+    5/10, 2/0 y 3/9, un tramo de 10 trastes (en la muestra hubo aperturas de hasta
+    12), que ninguna mano alcanza. Los acordes se importan pero no se siguen; la voz
+    del acorde queda para una etapa posterior.
+
+    Otras limitaciones declaradas:
+    - Solo se agrupan notas con el MISMO inicio exacto. Una nota sostenida que se
+      solapa con otra de inicio distinto puede seguir compartiendo cuerda con ella:
+      es el mismo defecto por otra puerta, y no se cubre.
+    - El reparto es local al acorde: no vuelve a optimizar la pieza entera, asi que
+      con acordes el resultado ya no es el minimo global.
 
     Lanza `ValueError` si el acorde no se puede tocar (mas notas que cuerdas, o
     notas que no admiten cuerdas distintas).

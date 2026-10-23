@@ -3,10 +3,9 @@ import numpy as np
 import pytest
 
 from nucleo.afinaciones import PERFILES
+from nucleo.piezas.desde_midi import pieza_desde_midi, pistas_de_midi
 from nucleo.musica import Posicion, posiciones_en_mastil
 from nucleo.piezas.digitacion import coste_total, digitar
-
-from nucleo.piezas.desde_midi import pieza_desde_midi, pistas_de_midi
 
 TICKS = 480
 
@@ -228,7 +227,12 @@ def test_cada_pista_usa_su_propio_reloj(tmp_path):
 
 
 def test_un_acorde_no_pone_dos_notas_en_la_misma_cuerda(tmp_path):
-    """Un acorde tocable: sin la correccion, digitar lo trata como secuencia."""
+    """Un acorde tocable: sin la correccion, digitar lo trata como secuencia.
+
+    Comprueba SOLO que las cuerdas son distintas y que cada posicion da su nota. NO
+    comprueba que el acorde se pueda tocar con una mano: la apertura de trastes
+    dentro del acorde no se mide ni se limita (un Mi menor salio con 10 trastes).
+    """
     ruta = tmp_path / "x.mid"
     midi_de([(40, 0, TICKS), (45, 0, TICKS), (52, 0, TICKS)]).save(str(ruta))
     notas = pieza_desde_midi(ruta, 1).notas
