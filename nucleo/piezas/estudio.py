@@ -132,6 +132,84 @@ def validar_plan(pieza: Pieza, plan: PlanDePasada) -> PlanDePasada:
 
 
 @dataclass(frozen=True)
+class CompasDelInforme:
+    """Lo que paso en un compas de una pasada.
+
+    `notas_medibles` son menos que `notas_escritas` cuando hay acordes: las notas
+    de un acorde comparten instante, el detector de tono es MONOFONICO y lee una
+    sola altura, asi que de un acorde de cuatro notas solo una se puede medir. Las
+    otras tres no se cuentan como falladas porque no son un fallo del alumno, son
+    un limite del programa.
+
+    `desfase_medio_s` lleva SIGNO, y es el dato que de verdad diagnostica:
+    "el 19 lo tocas entero 40 ms tarde" es accionable, "fallas el 19" no. Negativo
+    es adelantarse, con la misma convencion que `NotaTocada.desfase_s`. Vale None
+    cuando no se midio ni un desfase en ese compas.
+    """
+
+    numero: int
+    notas_escritas: int
+    notas_medibles: int
+    acertadas: int
+    a_tiempo: int
+    pronto: int
+    tarde: int
+    desfase_medio_s: float | None
+    tiene_acordes: bool
+
+    def a_dict(self) -> dict:
+        return {
+            "numero": self.numero,
+            "notas_escritas": self.notas_escritas,
+            "notas_medibles": self.notas_medibles,
+            "acertadas": self.acertadas,
+            "a_tiempo": self.a_tiempo,
+            "pronto": self.pronto,
+            "tarde": self.tarde,
+            "desfase_medio_s": (
+                None if self.desfase_medio_s is None else round(self.desfase_medio_s, 3)
+            ),
+            "tiene_acordes": self.tiene_acordes,
+        }
+
+
+@dataclass(frozen=True)
+class InformeDePasada:
+    """El informe del tramo que se esta estudiando, compas a compas."""
+
+    compases: tuple[CompasDelInforme, ...]
+    ritmo_aproximado: bool
+    compas_variable: bool
+    factor_tempo: float
+
+    def a_dict(self) -> dict:
+        return {
+            "compases": [c.a_dict() for c in self.compases],
+            "ritmo_aproximado": self.ritmo_aproximado,
+            "compas_variable": self.compas_variable,
+            "factor_tempo": self.factor_tempo,
+        }
+
+
+def proporcion_limpia(informe: InformeDePasada) -> float | None:
+    """Que fraccion de las notas medibles se acerto Y a tiempo, 0 a 1.
+
+    Los compases con acordes quedan FUERA, y es la decision que hace que la regla
+    del tempo sirva: contandolos, cualquier cancion de Guitar Pro bajaria el tempo
+    para siempre. Devuelve None cuando no hay ni una nota medible sin acordes -una
+    pieza entera de acordes-, y quien lea esto tiene que distinguir None de 0,0:
+    uno es "no se puede medir" y el otro es "lo fallaste todo".
+    """
+    medibles = sum(c.notas_medibles for c in informe.compases if not c.tiene_acordes)
+    if medibles == 0:
+        return None
+    buenas = sum(
+        min(c.acertadas, c.a_tiempo) for c in informe.compases if not c.tiene_acordes
+    )
+    return buenas / medibles
+
+
+@dataclass(frozen=True)
 class EstadoEstudio:
     """Lo que la interfaz necesita: el estado del carril mas el de la pasada.
 
@@ -190,6 +268,11 @@ class SesionDeEstudio:
         self._repeticion = 1
         self._en_pausa = False
         self._cuenta_atras_restante_s = 0.0
+        # Contadores por compas de ESTA pasada, con lo de las repeticiones ya
+        # cerradas. Lo que todavia esta en el seguidor se suma al leer el informe
+        # y se vuelca aqui en `cerrar_repeticion`: asi nada se cuenta dos veces y
+        # el informe esta siempre al dia.
+        self._acumulado: dict[int, dict] = {}
         self._seguidor = self._nuevo_seguidor()
         self._seguidor.avanzar_a(self._inicio_s())
 
@@ -291,3 +374,116 @@ class SesionDeEstudio:
         """Consume un cuadro de analisis."""
         self._seguidor.procesar(resultado, instante_analisis)
         return self.estado
+
+    # -- el informe --------------------------------------------------------
+
+    def _compases_del_tramo(self) -> tuple[int, ...]:
+        # Tras `validar_plan`, `ultimo_compas` es siempre un entero y vale 0 solo
+        # en la pieza sin compases, que no tiene nada que informar.
+        if total_de_compases(self.pieza) == 0:
+            return ()
+        return tuple(range(self._plan.primer_compas, self._plan.ultimo_compas + 1))
+
+    def _indices_por_compas(self) -> dict[int, list[int]]:
+        """Que notas de la pieza caen en cada compas, por indice."""
+        reparto: dict[int, list[int]] = {}
+        for indice, nota in enumerate(self.pieza.notas):
+            reparto.setdefault(compas_en(self.pieza, nota.inicio_pulsos), []).append(indice)
+        return reparto
+
+    @staticmethod
+    def _contadores() -> dict:
+        return {"acertadas": 0, "a_tiempo": 0, "pronto": 0, "tarde": 0,
+                "suma_desfase": 0.0, "con_desfase": 0}
+
+    def _contar(self, tocadas, reparto: dict[int, list[int]]) -> dict[int, dict]:
+        """Reparte por compas una lista de `NotaTocada`."""
+        de_cada_indice = {
+            indice: numero for numero, indices in reparto.items() for indice in indices
+        }
+        cuenta: dict[int, dict] = {}
+        for tocada in tocadas:
+            numero = de_cada_indice.get(tocada.indice)
+            if numero is None:
+                continue
+            fila = cuenta.setdefault(numero, self._contadores())
+            if tocada.acertada:
+                fila["acertadas"] += 1
+            if tocada.clasificacion is not None:
+                fila[tocada.clasificacion] += 1
+            if tocada.desfase_s is not None:
+                fila["suma_desfase"] += tocada.desfase_s
+                fila["con_desfase"] += 1
+        return cuenta
+
+    def _armar_informe(
+        self, reparto: dict[int, list[int]], cuenta: dict[int, dict], acumulado: dict[int, dict]
+    ) -> InformeDePasada:
+        """Monta un informe sumando dos cuentas por compas. Sin efectos."""
+        filas = []
+        for numero in self._compases_del_tramo():
+            indices = reparto.get(numero, [])
+            escritas = len(indices)
+            medibles = len({self.pieza.notas[i].inicio_pulsos for i in indices})
+            suma = acumulado.get(numero, self._contadores())
+            ahora = cuenta.get(numero, self._contadores())
+            con_desfase = suma["con_desfase"] + ahora["con_desfase"]
+            total_desfase = suma["suma_desfase"] + ahora["suma_desfase"]
+            filas.append(
+                CompasDelInforme(
+                    numero=numero,
+                    notas_escritas=escritas,
+                    notas_medibles=medibles,
+                    acertadas=suma["acertadas"] + ahora["acertadas"],
+                    a_tiempo=suma["a_tiempo"] + ahora["a_tiempo"],
+                    pronto=suma["pronto"] + ahora["pronto"],
+                    tarde=suma["tarde"] + ahora["tarde"],
+                    desfase_medio_s=(
+                        None if con_desfase == 0 else total_desfase / con_desfase
+                    ),
+                    tiene_acordes=medibles < escritas,
+                )
+            )
+        return InformeDePasada(
+            compases=tuple(filas),
+            ritmo_aproximado=self.pieza.ritmo_aproximado,
+            compas_variable=self.pieza.compas_variable,
+            factor_tempo=self._plan.factor_tempo,
+        )
+
+    @property
+    def informe(self) -> InformeDePasada:
+        """El informe de la PASADA al dia: lo acumulado mas lo que el seguidor lleva.
+
+        Acumula todas las repeticiones del bucle: es lo que la interfaz muestra
+        como "esta pasada". Lo de UNA repeticion lo devuelve `cerrar_repeticion`.
+        """
+        reparto = self._indices_por_compas()
+        en_vuelo = self._contar(self._seguidor.estado.tocadas, reparto)
+        return self._armar_informe(reparto, en_vuelo, self._acumulado)
+
+    def cerrar_repeticion(self) -> InformeDePasada:
+        """Vuelca lo que el seguidor lleva anotado al acumulador y lo deja limpio.
+
+        **Devuelve el informe de SOLO esa repeticion**, sin lo acumulado, y eso es
+        lo que la Tarea 7 anota en el historial: estudiando un bucle, la pregunta
+        "ya te sale?" es sobre la vuelta que acaba de pasar, no sobre la suma de
+        las ocho anteriores. El informe acumulado sigue disponible en `informe`.
+
+        Se llama al dar la vuelta el bucle y antes de reconstruir el seguidor por
+        un cambio de tempo: en los dos casos las `NotaTocada` del seguidor estan a
+        punto de desaparecer, y sin este volcado el informe perderia la
+        repeticion entera.
+
+        Vaciar el seguidor despues es lo que impide contar dos veces: el informe
+        suma lo acumulado MAS lo que el seguidor tenga.
+        """
+        reparto = self._indices_por_compas()
+        cuenta = self._contar(self._seguidor.estado.tocadas, reparto)
+        solo_esta_vuelta = self._armar_informe(reparto, cuenta, {})
+        for numero, fila in cuenta.items():
+            destino = self._acumulado.setdefault(numero, self._contadores())
+            for clave, valor in fila.items():
+                destino[clave] += valor
+        self._seguidor.olvidar_tramo(0.0, self._seguidor.duracion_s + 1.0)
+        return solo_esta_vuelta

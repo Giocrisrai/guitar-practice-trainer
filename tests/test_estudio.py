@@ -11,8 +11,11 @@ from nucleo.piezas.estudio import (
     FACTOR_MAXIMO,
     FACTOR_MINIMO,
     PASO_DEL_FACTOR,
+    CompasDelInforme,
+    InformeDePasada,
     PlanDePasada,
     SesionDeEstudio,
+    proporcion_limpia,
     validar_plan,
 )
 from nucleo.piezas.modelo import NotaEnPieza, Pieza
@@ -249,3 +252,206 @@ def test_procesar_mueve_el_carril_con_un_cuadro_de_analisis():
         instante += 0.021
     assert len(sesion.estado.carril.tocadas) == 1
     assert sesion.estado.carril.tocadas[0].acertada is True
+
+
+# -- el informe por compases ------------------------------------------------
+
+
+def suena(nota, cents=0.0):
+    return ResultadoAnalisis(
+        estado="nota", frecuencia=82.41, confianza=0.9, nivel_db=-25.0,
+        nota=nota, cents=cents, posiciones=(),
+    )
+
+
+SILENCIO = ResultadoAnalisis(
+    estado="silencio", frecuencia=None, confianza=0.0, nivel_db=-90.0,
+    nota=None, cents=None, posiciones=(),
+)
+
+
+def tocar(sesion, nota, en):
+    """Toca `nota` alrededor del instante `en` del reloj de la PASADA.
+
+    Mismo patron que `tests/test_seguimiento_pieza.py`: el reloj se coloca a mano
+    antes del primer cuadro, porque si no el seguidor fijaria la
+    correspondencia entre sus dos relojes en el primer cuadro de audio y `en` no
+    significaria nada.
+    """
+    instante = en - 0.1
+    sesion.colocar_en(instante)
+    while instante < en:
+        sesion.procesar(SILENCIO, instante)
+        instante += 0.021
+    for _ in range(12):
+        sesion.procesar(suena(nota), instante)
+        instante += 0.021
+
+
+def compas_numero(informe, numero):
+    return next(c for c in informe.compases if c.numero == numero)
+
+
+def test_el_informe_cubre_el_tramo_del_plan_y_no_la_pieza_entera():
+    sesion = SesionDeEstudio(
+        pieza_de_doce_compases(), PlanDePasada(primer_compas=3, ultimo_compas=5)
+    )
+    assert [c.numero for c in sesion.informe.compases] == [3, 4, 5]
+
+
+def test_un_compas_tocado_a_tiempo_sale_acertado_y_a_tiempo():
+    sesion = SesionDeEstudio(pieza_de_doce_compases())
+    tocar(sesion, "E2", en=0.0)
+    primero = compas_numero(sesion.informe, 1)
+    assert primero.notas_escritas == 1
+    assert primero.notas_medibles == 1
+    assert primero.acertadas == 1
+    assert primero.a_tiempo == 1
+    assert primero.tarde == 0
+
+
+def test_el_desfase_medio_lleva_signo_y_adelantarse_es_negativo():
+    sesion = SesionDeEstudio(pieza_de_doce_compases())
+    tocar(sesion, "E2", en=-0.3)
+    assert compas_numero(sesion.informe, 1).desfase_medio_s < 0
+
+
+def test_un_compas_que_nadie_toco_tiene_desfase_medio_none():
+    sesion = SesionDeEstudio(pieza_de_doce_compases())
+    assert compas_numero(sesion.informe, 4).desfase_medio_s is None
+
+
+def test_de_un_acorde_solo_una_nota_es_medible_y_el_compas_queda_marcado():
+    # Tres notas en el mismo instante: el detector es monofonico y lee una sola
+    # altura, asi que las otras dos no se pueden medir por bien que se toquen.
+    notas = tuple(
+        NotaEnPieza(midi=m, cuerda=c, traste=0, inicio_pulsos=0.0, duracion_pulsos=1.0)
+        for m, c in ((40, 6), (47, 5), (52, 4))
+    )
+    pieza = Pieza(
+        nombre="acorde", perfil="guitarra_estandar", tempo=60, compas=(4, 4), notas=notas
+    )
+    primero = compas_numero(SesionDeEstudio(pieza).informe, 1)
+    assert primero.notas_escritas == 3
+    assert primero.notas_medibles == 1
+    assert primero.tiene_acordes is True
+
+
+def test_un_compas_con_acordes_no_entra_en_la_proporcion_limpia():
+    # La proporcion es la que alimenta la regla del tempo: si los compases con
+    # acordes contaran, la regla bajaria el tempo para siempre en cualquier
+    # cancion de Guitar Pro.
+    acorde = tuple(
+        NotaEnPieza(midi=m, cuerda=c, traste=0, inicio_pulsos=0.0, duracion_pulsos=1.0)
+        for m, c in ((40, 6), (47, 5))
+    )
+    sola = (NotaEnPieza(midi=40, cuerda=6, traste=0, inicio_pulsos=4.0, duracion_pulsos=1.0),)
+    pieza = Pieza(
+        nombre="mixta", perfil="guitarra_estandar", tempo=60, compas=(4, 4),
+        notas=acorde + sola,
+    )
+    sesion = SesionDeEstudio(pieza)
+    tocar(sesion, "E2", en=4.0)
+    # Solo cuenta el compas 2, que es el unico sin acordes: una de una.
+    assert proporcion_limpia(sesion.informe) == pytest.approx(1.0)
+
+
+def test_una_pieza_entera_de_acordes_no_da_proporcion_y_no_miente():
+    acorde = tuple(
+        NotaEnPieza(midi=m, cuerda=c, traste=0, inicio_pulsos=0.0, duracion_pulsos=1.0)
+        for m, c in ((40, 6), (47, 5))
+    )
+    pieza = Pieza(
+        nombre="solo acordes", perfil="guitarra_estandar", tempo=60, compas=(4, 4),
+        notas=acorde,
+    )
+    assert proporcion_limpia(SesionDeEstudio(pieza).informe) is None
+
+
+def test_el_informe_arrastra_el_aviso_del_ritmo_inventado():
+    # En una tablatura de foro el ritmo lo infirio el lector de la etapa 3b:
+    # presentar un desfase contra un ritmo inventado como diagnostico seria
+    # mentira, asi que el aviso viaja con el informe.
+    pieza = pieza_de([0.0], ritmo_aproximado=True)
+    informe = SesionDeEstudio(pieza).informe
+    assert informe.ritmo_aproximado is True
+    assert informe.a_dict()["ritmo_aproximado"] is True
+
+
+def test_el_ultimo_compas_incompleto_cuenta_sus_notas():
+    # Nueve pulsos en 4/4: el compas 3 tiene una nota sola y es un compas de
+    # verdad. Es como acaba casi cualquier cancion.
+    sesion = SesionDeEstudio(pieza_de([0.0, 4.0, 8.0]))
+    tercero = compas_numero(sesion.informe, 3)
+    assert tercero.notas_escritas == 1
+    assert tercero.notas_medibles == 1
+
+
+def test_cerrar_la_repeticion_acumula_y_no_cuenta_dos_veces():
+    sesion = SesionDeEstudio(pieza_de_doce_compases())
+    tocar(sesion, "E2", en=0.0)
+    sesion.cerrar_repeticion()
+    assert compas_numero(sesion.informe, 1).acertadas == 1
+    # Cerrar otra vez sin tocar nada no puede sumar nada.
+    sesion.cerrar_repeticion()
+    assert compas_numero(sesion.informe, 1).acertadas == 1
+
+
+def test_el_informe_de_una_pieza_sin_notas_esta_vacio_y_no_rompe():
+    informe = SesionDeEstudio(pieza_de([])).informe
+    assert informe.compases == ()
+    assert proporcion_limpia(informe) is None
+
+
+def test_cerrar_la_repeticion_devuelve_solo_esa_vuelta():
+    sesion = SesionDeEstudio(pieza_de_doce_compases())
+    tocar(sesion, "E2", en=0.0)
+    primera = sesion.cerrar_repeticion()
+    assert compas_numero(primera, 1).acertadas == 1
+    segunda = sesion.cerrar_repeticion()
+    assert compas_numero(segunda, 1).acertadas == 0      # esta vuelta: nada
+    assert compas_numero(sesion.informe, 1).acertadas == 1  # la pasada: uno
+
+
+def test_una_nota_acertada_pero_tarde_no_cuenta_en_la_proporcion_limpia():
+    # Acertar la altura 0,4 s tarde es acertada y NO a tiempo: la proporcion
+    # pide las dos cosas a la vez. Sin esta prueba, contar solo `acertadas`
+    # pasaria desapercibido.
+    sesion = SesionDeEstudio(pieza_de([0.0]))
+    tocar(sesion, "E2", en=0.4)
+    compas = compas_numero(sesion.informe, 1)
+    assert compas.acertadas == 1
+    assert compas.tarde == 1
+    assert compas.a_tiempo == 0
+    assert proporcion_limpia(sesion.informe) == pytest.approx(0.0)
+
+
+def test_el_informe_de_una_pieza_sin_compases_es_vacio_aunque_el_plan_diga_cero():
+    # Tras validar_plan, ultimo_compas vale 0 en la pieza vacia: el tramo no
+    # puede salir como range(1, 1) disfrazado de algo, ni romper.
+    sesion = SesionDeEstudio(pieza_de([]))
+    assert sesion.plan.ultimo_compas == 0
+    assert sesion.informe.compases == ()
+    assert sesion.cerrar_repeticion().compases == ()
+
+
+def test_el_informe_se_serializa_con_el_desfase_redondeado_y_none_intacto():
+    sesion = SesionDeEstudio(pieza_de_doce_compases())
+    tocar(sesion, "E2", en=-0.3)
+    datos = sesion.informe.a_dict()
+    assert datos["factor_tempo"] == 1.0
+    assert datos["compases"][0]["desfase_medio_s"] < 0
+    assert datos["compases"][3]["desfase_medio_s"] is None
+    assert isinstance(sesion.informe, InformeDePasada)
+    assert isinstance(sesion.informe.compases[0], CompasDelInforme)
+
+
+def test_una_nota_a_tiempo_pero_con_otra_altura_no_cuenta_en_la_proporcion_limpia():
+    # La otra mitad del `min`: a tiempo y NO acertada. Contar solo `a_tiempo`
+    # premiaria tocar cualquier cosa con buen pulso.
+    sesion = SesionDeEstudio(pieza_de([0.0]))
+    tocar(sesion, "A2", en=0.0)
+    compas = compas_numero(sesion.informe, 1)
+    assert compas.a_tiempo == 1
+    assert compas.acertadas == 0
+    assert proporcion_limpia(sesion.informe) == pytest.approx(0.0)
