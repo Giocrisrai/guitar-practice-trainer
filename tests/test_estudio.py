@@ -516,7 +516,7 @@ def test_al_llegar_al_final_del_bucle_vuelve_al_principio_y_sube_la_repeticion()
     assert sesion.estado.compas_en_curso == 2
     assert sesion.estado.repeticion == 1
     # El compas 4 empieza en el pulso 12, es decir el segundo 12 a 60 ppm.
-    sesion.colocar_en(12.0)
+    sesion.avanzar(8.0)
     assert sesion.estado.compas_en_curso == 2
     assert sesion.estado.repeticion == 2
 
@@ -536,13 +536,13 @@ def test_la_cuenta_atras_dura_un_compas_al_tempo_de_la_pasada():
     normal = SesionDeEstudio(
         pieza, PlanDePasada(primer_compas=1, ultimo_compas=1, en_bucle=True)
     )
-    normal.colocar_en(4.0)
+    normal.avanzar(4.0)
     assert normal.estado.cuenta_atras_restante_s == pytest.approx(4.0)
     lenta = SesionDeEstudio(
         pieza,
         PlanDePasada(primer_compas=1, ultimo_compas=1, en_bucle=True, factor_tempo=0.5),
     )
-    lenta.colocar_en(8.0)
+    lenta.avanzar(8.0)
     assert lenta.estado.cuenta_atras_restante_s == pytest.approx(8.0)
 
 
@@ -550,7 +550,7 @@ def test_durante_la_cuenta_atras_el_reloj_no_avanza():
     sesion = SesionDeEstudio(
         pieza_de_doce_compases(), PlanDePasada(primer_compas=1, ultimo_compas=1, en_bucle=True)
     )
-    sesion.colocar_en(4.0)
+    sesion.avanzar(4.0)
     quieto = sesion.estado.carril.instante_s
     sesion.avanzar(1.0)
     assert sesion.estado.carril.instante_s == pytest.approx(quieto)
@@ -569,7 +569,7 @@ def test_durante_la_cuenta_atras_no_se_cobra_nada():
     sesion = SesionDeEstudio(
         pieza_de_doce_compases(), PlanDePasada(primer_compas=1, ultimo_compas=1, en_bucle=True)
     )
-    sesion.colocar_en(4.0)
+    sesion.avanzar(4.0)
     assert sesion.estado.cuenta_atras_restante_s > 0
     instante = 100.0
     for _ in range(20):
@@ -586,7 +586,7 @@ def test_tras_la_vuelta_del_bucle_las_notas_se_pueden_volver_a_cobrar():
     )
     tocar(sesion, "E2", en=0.0)
     assert len(sesion.estado.carril.tocadas) == 1
-    sesion.colocar_en(4.0)          # da la vuelta
+    sesion.avanzar(4.0)             # da la vuelta
     assert sesion.estado.carril.tocadas == ()
     tocar(sesion, "E2", en=0.0)
     assert len(sesion.estado.carril.tocadas) == 1
@@ -603,7 +603,7 @@ def test_un_bucle_sobre_un_compas_sin_notas_no_se_queda_clavado():
                      compases_de_cuenta_atras=0),
     )
     assert sesion.estado.compas_en_curso == 2
-    sesion.colocar_en(8.0)
+    sesion.avanzar(4.0)
     assert sesion.estado.repeticion == 2
     assert sesion.estado.compas_en_curso == 2
     assert sesion.informe.compases[0].notas_escritas == 0
@@ -616,7 +616,7 @@ def test_un_bucle_de_un_solo_compas_con_una_nota_sola_funciona():
                      compases_de_cuenta_atras=0),
     )
     tocar(sesion, "E2", en=0.0)
-    sesion.colocar_en(4.0)
+    sesion.avanzar(4.0)
     assert sesion.estado.repeticion == 2
     assert compas_numero(sesion.informe, 1).acertadas == 1
 
@@ -700,7 +700,7 @@ def test_cambiar_el_tempo_a_mitad_no_sube_las_repeticiones_pero_dar_la_vuelta_si
     assert compas_numero(informe, 1).limpias == 1
     assert proporcion_limpia(informe) == pytest.approx(1.0)
     # Dar la vuelta al bucle (4 pulsos al 50 % son 8 s) si es una repeticion.
-    sesion.colocar_en(8.0)
+    sesion.avanzar(8.0)
     assert sesion.informe.repeticiones == 2
 
 
@@ -730,8 +730,8 @@ def test_reiniciar_la_pasada_vuelve_a_dejar_las_repeticiones_en_uno():
         PlanDePasada(primer_compas=1, ultimo_compas=1, en_bucle=True,
                      compases_de_cuenta_atras=0),
     )
-    sesion.colocar_en(4.0)
-    sesion.colocar_en(4.0)
+    sesion.avanzar(4.0)
+    sesion.avanzar(4.0)
     assert sesion.informe.repeticiones == 3
     sesion.reiniciar_pasada()
     assert sesion.informe.repeticiones == 1
@@ -816,6 +816,9 @@ class EspiaDelSeguidor:
 
 
 def espiar(sesion):
+    # Alcanza `sesion._seguidor`, que es privado. El acoplamiento se acepta SOLO
+    # porque el orden que fija no tiene comportamiento observable en un solo
+    # hilo; que nadie lo copie como patron en pruebas donde si haya algo que medir.
     llamadas = []
     sesion._seguidor = EspiaDelSeguidor(sesion._seguidor, llamadas)
     return llamadas
@@ -831,7 +834,7 @@ def test_la_vuelta_del_bucle_olvida_el_tramo_antes_de_colocar_el_reloj():
                      compases_de_cuenta_atras=0),
     )
     llamadas = espiar(sesion)
-    sesion.colocar_en(12.0)
+    sesion.avanzar(8.0)
     # Tras la colocacion del llamador y el volcado del informe, vienen estas dos.
     assert llamadas[-2:] == [("olvidar_tramo", 4.0, 12.0), ("avanzar_a", 4.0)]
 
@@ -848,7 +851,7 @@ def test_la_cuenta_atras_se_agota_con_cuadros_de_audio_y_despues_la_pasada_corre
     sesion = SesionDeEstudio(
         pieza_de_doce_compases(), PlanDePasada(primer_compas=1, ultimo_compas=1, en_bucle=True)
     )
-    sesion.colocar_en(4.0)
+    sesion.avanzar(4.0)
     assert sesion.estado.cuenta_atras_restante_s == pytest.approx(4.0)
     instante = 100.0
     for _ in range(100):
@@ -869,19 +872,19 @@ def test_un_cuadro_con_el_reloj_hacia_atras_no_alarga_la_cuenta_atras():
     sesion = SesionDeEstudio(
         pieza_de_doce_compases(), PlanDePasada(primer_compas=1, ultimo_compas=1, en_bucle=True)
     )
-    sesion.colocar_en(4.0)
+    sesion.avanzar(4.0)
     sesion.procesar(SILENCIO, 10.0)
     sesion.procesar(SILENCIO, 11.0)
     restante = sesion.estado.cuenta_atras_restante_s
     sesion.procesar(SILENCIO, 9.0)
-    assert sesion.estado.cuenta_atras_restante_s <= restante
+    assert sesion.estado.cuenta_atras_restante_s == restante
 
 
 def test_colocar_el_cabezal_en_plena_cuenta_atras_la_cancela():
     sesion = SesionDeEstudio(
         pieza_de_doce_compases(), PlanDePasada(primer_compas=1, ultimo_compas=2, en_bucle=True)
     )
-    sesion.colocar_en(8.0)
+    sesion.avanzar(8.0)
     assert sesion.estado.cuenta_atras_restante_s > 0
     sesion.colocar_en(1.0)
     assert sesion.estado.cuenta_atras_restante_s == 0.0
@@ -923,7 +926,60 @@ def test_reiniciar_la_pasada_olvida_la_ultima_vuelta_de_la_anterior():
         PlanDePasada(primer_compas=1, ultimo_compas=1, en_bucle=True,
                      compases_de_cuenta_atras=0),
     )
-    sesion.colocar_en(4.0)
+    sesion.avanzar(4.0)
     assert sesion.ultima_vuelta is not None
     sesion.reiniciar_pasada()
+    assert sesion.ultima_vuelta is None
+
+
+def test_con_audio_reanudar_no_mueve_el_cabezal_el_tamano_de_la_pausa():
+    sesion = SesionDeEstudio(pieza_de_doce_compases())
+    instante = 10.0
+    for _ in range(5):
+        sesion.procesar(SILENCIO, instante)
+        instante += 0.021
+    antes = sesion.estado.carril.instante_s
+    sesion.pausar()
+    for _ in range(500):            # 10,5 s de reloj de pared en pausa
+        sesion.procesar(SILENCIO, instante)
+        instante += 0.021
+    assert sesion.estado.carril.instante_s == pytest.approx(antes)
+    sesion.reanudar()
+    sesion.procesar(SILENCIO, instante)
+    instante += 0.021
+    sesion.procesar(SILENCIO, instante)
+    assert sesion.estado.carril.instante_s == pytest.approx(antes + 0.021, abs=0.01)
+
+
+def plan_2_a_3_en_bucle():
+    return PlanDePasada(primer_compas=2, ultimo_compas=3, en_bucle=True,
+                        compases_de_cuenta_atras=0)
+
+
+def test_saltar_dentro_del_tramo_no_sube_las_repeticiones_ni_mueve_la_proporcion():
+    sesion = SesionDeEstudio(pieza_de_doce_compases(), plan_2_a_3_en_bucle())
+    tocar(sesion, "E2", en=4.0)
+    # Una de las dos notas medibles del tramo (compases 2 y 3) esta limpia.
+    assert proporcion_limpia(sesion.informe) == pytest.approx(0.5)
+    for _ in range(3):
+        sesion.saltar_al_compas(3)
+        assert sesion.estado.compas_en_curso == 3
+    assert sesion.estado.repeticion == 1
+    assert sesion.informe.repeticiones == 1
+    assert proporcion_limpia(sesion.informe) == pytest.approx(0.5)
+
+
+def test_saltar_fuera_del_tramo_se_rechaza_nombrando_el_compas_y_los_dos_extremos():
+    sesion = SesionDeEstudio(pieza_de_doce_compases(), plan_2_a_3_en_bucle())
+    for fuera in (9, 1):
+        with pytest.raises(ValueError, match=rf"{fuera}.*2.*3"):
+            sesion.saltar_al_compas(fuera)
+    assert sesion.estado.compas_en_curso == 2
+
+
+def test_colocar_el_cabezal_mas_alla_del_final_no_da_la_vuelta_ni_cuenta_repeticion():
+    sesion = SesionDeEstudio(pieza_de_doce_compases(), plan_2_a_3_en_bucle())
+    sesion.colocar_en(30.0)
+    assert sesion.estado.repeticion == 1
+    assert sesion.informe.repeticiones == 1
     assert sesion.ultima_vuelta is None

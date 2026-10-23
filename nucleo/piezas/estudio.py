@@ -422,11 +422,17 @@ class SesionDeEstudio:
         self._repeticion += 1
         self._cuenta_atras_restante_s = self._segundos_de_cuenta_atras()
 
-    def _al_dia(self) -> None:
+    def _al_dia(self, avanzando: bool) -> None:
         """Lo que hay que mirar tras mover el reloj: la cuenta atras y el final.
 
         La llaman los dos caminos -con audio y sin audio-, porque el bucle tiene
         que dar la vuelta igual cuando el cable esta desenchufado.
+
+        El bucle solo da la vuelta si el reloj CRUZO el final AVANZANDO
+        (`avanzando=True`: `avanzar` y `procesar`). Si el llamador lo COLOCO mas
+        alla (`colocar_en`), no hay vuelta ni repeticion: colocar el cabezal es
+        una orden sobre donde esta, y convertirla en una vuelta del bucle es
+        inventarse una repeticion que el alumno no toco.
         """
         # Una pieza sin compases no tiene tramo que acabar ni que repetir.
         if total_de_compases(self.pieza) == 0:
@@ -436,7 +442,8 @@ class SesionDeEstudio:
         if self._seguidor.estado.instante_s < self._fin_s():
             return
         if self._plan.en_bucle:
-            self._dar_la_vuelta()
+            if avanzando:
+                self._dar_la_vuelta()
         else:
             self._tramo_terminado = True
             self._seguidor.avanzar_a(self._fin_s())
@@ -454,7 +461,7 @@ class SesionDeEstudio:
         """
         self._cuenta_atras_restante_s = 0.0
         self._seguidor.avanzar_a(instante_pasada_s)
-        self._al_dia()
+        self._al_dia(avanzando=False)
         return self.estado
 
     def avanzar(self, delta_s: float) -> EstadoEstudio:
@@ -481,7 +488,7 @@ class SesionDeEstudio:
             self._seguidor.avanzar_a(self._inicio_s())
             return self.estado
         self._seguidor.avanzar_a(self._seguidor.estado.instante_s + paso)
-        self._al_dia()
+        self._al_dia(avanzando=True)
         return self.estado
 
     def procesar(
@@ -504,7 +511,7 @@ class SesionDeEstudio:
             self._seguidor.avanzar_a(self._inicio_s())
             return self.estado
         self._seguidor.procesar(resultado, instante_analisis)
-        self._al_dia()
+        self._al_dia(avanzando=True)
         return self.estado
 
     def cambiar_plan(self, plan: PlanDePasada) -> EstadoEstudio:
@@ -533,7 +540,10 @@ class SesionDeEstudio:
         return self.colocar_en(destino)
 
     def saltar_al_compas(self, numero: int) -> EstadoEstudio:
-        """Coloca el cabezal al principio del compas `numero`.
+        """Coloca el cabezal al principio del compas `numero` del TRAMO.
+
+        Un compas fuera del tramo se rechaza: el tramo es lo que el usuario
+        eligio, y saltar fuera de el es cambiar el plan (`cambiar_plan`), no saltar.
 
         No borra el informe: lo que ya tocaste sigue contando, pero no como una
         vuelta nueva. Descobra las notas del compas de destino hasta el final del
@@ -547,6 +557,12 @@ class SesionDeEstudio:
         la borres por redundante ni la des por necesaria sin leer esto.
         """
         desde, _ = pulsos_del_compas(self.pieza, numero)
+        if not self._plan.primer_compas <= numero <= self._plan.ultimo_compas:
+            raise ValueError(
+                f"El compas {numero} esta fuera del tramo que se estudia, que va "
+                f"del {self._plan.primer_compas} al {self._plan.ultimo_compas}: "
+                "cambia el plan antes de saltar"
+            )
         destino = self._segundos(desde)
         self.cerrar_repeticion(cuenta_como_vuelta=False)
         self._tramo_terminado = False
