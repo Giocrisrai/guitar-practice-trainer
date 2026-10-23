@@ -636,3 +636,78 @@ def test_una_desviacion_que_no_se_supo_no_es_ni_afinada_ni_desafinada():
     assert tocada.cents is None
     assert tocada.afinada is None
     assert tocada.a_dict()["afinada"] is None
+
+
+def test_el_factor_estira_los_instantes_de_la_pieza():
+    # Al 50 %, una pieza de tres notas a 60 ppm dura el doble: la nota 2 ya no
+    # empieza en el segundo 1 sino en el 2.
+    seguidor = SeguidorPieza(pieza_de([40, 45, 50]), factor_tempo=0.5)
+    seguidor.avanzar_a(1.5)
+    assert seguidor.estado.indice_actual == 0
+    seguidor.avanzar_a(2.5)
+    assert seguidor.estado.indice_actual == 1
+
+
+def test_el_factor_estira_las_tres_ventanas():
+    seguidor = SeguidorPieza(pieza_de([40]), factor_tempo=0.5)
+    assert seguidor.ventana_a_tiempo_s == pytest.approx(VENTANA_A_TIEMPO_S * 2)
+    assert seguidor.ventana_reclamo_minima_s == pytest.approx(VENTANA_RECLAMO_MINIMA_S * 2)
+    assert seguidor.ventana_altura_s == pytest.approx(VENTANA_ALTURA_S * 2)
+
+
+def test_al_cincuenta_por_ciento_un_desfase_de_ciento_veinte_milisegundos_es_a_tiempo():
+    # La decision del usuario: la ventana escala con el tempo, asi que lo que se
+    # juzga es la colocacion DENTRO del compas. A tempo escrito, 120 ms es tarde;
+    # a la mitad, los +-80 ms se vuelven +-160 y el mismo retraso es a tiempo.
+    rapido = SeguidorPieza(pieza_de([40]))
+    assert tocar(rapido, "E2", en=0.120).clasificacion == "tarde"
+    lento = SeguidorPieza(pieza_de([40]), factor_tempo=0.5)
+    assert tocar(lento, "E2", en=0.120).clasificacion == "a_tiempo"
+
+
+def test_un_factor_que_no_es_positivo_se_rechaza():
+    with pytest.raises(ValueError, match="factor"):
+        SeguidorPieza(pieza_de([40]), factor_tempo=0.0)
+
+
+def test_olvidar_un_tramo_deja_volver_a_cobrar_sus_notas():
+    seguidor = SeguidorPieza(pieza_de([40, 45]))
+    tocar(seguidor, "E2", en=0.0)
+    assert len(seguidor.estado.tocadas) == 1
+    seguidor.olvidar_tramo(0.0, 0.5)
+    assert seguidor.estado.tocadas == ()
+    # Y se puede volver a cobrar: es lo que hace falta para repetir el bucle.
+    seguidor.avanzar_a(0.0)
+    tocar(seguidor, "E2", en=0.0)
+    assert len(seguidor.estado.tocadas) == 1
+
+
+def test_olvidar_un_tramo_no_toca_lo_de_fuera():
+    seguidor = SeguidorPieza(pieza_de([40, 45]))
+    tocar(seguidor, "E2", en=0.0)
+    tocar(seguidor, "A2", en=1.0)
+    seguidor.olvidar_tramo(0.9, 1.5)
+    assert [t.indice for t in seguidor.estado.tocadas] == [0]
+
+
+def test_olvidar_un_tramo_vacio_no_hace_nada():
+    seguidor = SeguidorPieza(pieza_de([40, 45]))
+    tocar(seguidor, "E2", en=0.0)
+    seguidor.olvidar_tramo(5.0, 9.0)
+    assert len(seguidor.estado.tocadas) == 1
+
+
+def test_al_cincuenta_por_ciento_la_pieza_dura_el_doble():
+    normal = SeguidorPieza(pieza_de([40, 45, 50]))
+    lento = SeguidorPieza(pieza_de([40, 45, 50]), factor_tempo=0.5)
+    assert lento.duracion_s == pytest.approx(2 * normal.duracion_s)
+
+
+def test_olvidar_un_tramo_no_incluye_su_extremo_final():
+    # El tramo es [desde, hasta): la nota que empieza justo en `hasta` es la
+    # primera del tramo siguiente y no se olvida.
+    seguidor = SeguidorPieza(pieza_de([40, 45]))
+    tocar(seguidor, "E2", en=0.0)
+    tocar(seguidor, "A2", en=1.0)
+    seguidor.olvidar_tramo(0.0, 1.0)
+    assert [t.indice for t in seguidor.estado.tocadas] == [1]

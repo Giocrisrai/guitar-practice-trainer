@@ -237,16 +237,36 @@ class SeguidorPieza:
         ventana_a_tiempo_s: float = VENTANA_A_TIEMPO_S,
         ventana_reclamo_minima_s: float = VENTANA_RECLAMO_MINIMA_S,
         ventana_altura_s: float = VENTANA_ALTURA_S,
+        factor_tempo: float = 1.0,
     ) -> None:
+        if factor_tempo <= 0:
+            raise ValueError(
+                f"El factor de tempo es {factor_tempo}: tiene que ser mayor que cero"
+            )
         self.pieza = pieza
         self._detector = detector or DetectorPulsaciones()
-        self.ventana_a_tiempo_s = ventana_a_tiempo_s
-        self.ventana_reclamo_minima_s = ventana_reclamo_minima_s
-        self.ventana_altura_s = ventana_altura_s
+        self.factor_tempo = float(factor_tempo)
+        # Las tres ventanas se ESTIRAN con el factor, y es una decision de la
+        # etapa 3c, no un efecto secundario: practicando al 50 % lo que se juzga
+        # es la colocacion dentro del compas, con la misma indulgencia a
+        # cualquier velocidad, y al subir el tempo la ventana se cierra sola. Las
+        # constantes siguen siendo la referencia AL TEMPO ESCRITO.
+        self.ventana_a_tiempo_s = ventana_a_tiempo_s / self.factor_tempo
+        self.ventana_reclamo_minima_s = ventana_reclamo_minima_s / self.factor_tempo
+        self.ventana_altura_s = ventana_altura_s / self.factor_tempo
+
+        def segundos(pulsos: float) -> float:
+            """Pulsos a segundos DE LA PASADA: el factor estira el reloj entero.
+
+            El factor divide el resultado y NO multiplica el tempo: `tempo` es un
+            entero validado por `pulsos_a_segundos`, y 0,7 x 100 no es un tempo.
+            """
+            return pulsos_a_segundos(pulsos, pieza.tempo) / self.factor_tempo
+
         # Los instantes escritos, ya en segundos: se consultan en cada cuadro
         # (buscar la nota en curso y la mas cercana) y no cambian nunca.
         self._inicios_s = np.array(
-            [pulsos_a_segundos(nota.inicio_pulsos, pieza.tempo) for nota in pieza.notas],
+            [segundos(nota.inicio_pulsos) for nota in pieza.notas],
             dtype=float,
         )
         # Hasta donde puede estirarse una pulsacion para reclamar cada nota
@@ -271,12 +291,12 @@ class SeguidorPieza:
         self._ventanas_reclamo_s = np.maximum(
             np.array(
                 [
-                    pulsos_a_segundos(nota.duracion_pulsos, pieza.tempo) + ventana_a_tiempo_s
+                    segundos(nota.duracion_pulsos) + self.ventana_a_tiempo_s
                     for nota in pieza.notas
                 ],
                 dtype=float,
             ),
-            ventana_reclamo_minima_s,
+            self.ventana_reclamo_minima_s,
         )
         # Lo mas PRONTO que se puede reclamar una nota. No se deriva de la
         # duracion escrita, y por eso no es un vector sino un solo numero.
@@ -296,10 +316,10 @@ class SeguidorPieza:
         # cero: lo acota la ventana de "a tiempo" con el mismo piso que el otro
         # lado, es decir lo que se tolera de error humano, no lo que dure la
         # figura.
-        self._ventana_reclamo_pronto_s = max(ventana_a_tiempo_s, ventana_reclamo_minima_s)
+        self._ventana_reclamo_pronto_s = max(self.ventana_a_tiempo_s, self.ventana_reclamo_minima_s)
         # Las alturas escritas, para adjudicar por nombre y no solo por cercania.
         self._midis = np.array([nota.midi for nota in pieza.notas], dtype=int)
-        self._duracion_s = pieza.duracion_s
+        self._duracion_s = pieza.duracion_s / self.factor_tempo
         self._candado = threading.RLock()
         self.reiniciar()
 
@@ -317,6 +337,31 @@ class SeguidorPieza:
             self._analisis_desde: float | None = None
             self._tocadas: list[NotaTocada] = []
             self._cobradas = np.zeros(len(self._inicios_s), dtype=bool)
+
+    def olvidar_tramo(self, desde_s: float, hasta_s: float) -> None:
+        """Deja sin cobrar las notas de [desde_s, hasta_s) y borra sus anotaciones.
+
+        Es lo que permite REPETIR: al volver al principio del bucle, las notas de
+        ese tramo tienen que poder cobrarse otra vez o la segunda pasada saldria
+        entera en blanco.
+
+        Los instantes son del reloj de la PASADA, los mismos que `avanzar_a`.
+
+        No toca el reloj ni el detector: quien repite llama ademas a `avanzar_a`,
+        que es lo que invalida la correspondencia con el reloj del analisis y
+        descarta las pulsaciones en vuelo del tramo que se abandona. Las dos
+        cosas van juntas y en ese orden.
+        """
+        with self._candado:
+            dentro = (self._inicios_s >= desde_s) & (self._inicios_s < hasta_s)
+            self._cobradas[dentro] = False
+            indices = set(np.flatnonzero(dentro).tolist())
+            self._tocadas = [t for t in self._tocadas if t.indice not in indices]
+
+    @property
+    def duracion_s(self) -> float:
+        """Duracion de la pieza en segundos DE LA PASADA, con el factor ya aplicado."""
+        return self._duracion_s
 
     @property
     def estado(self) -> EstadoCarril:
