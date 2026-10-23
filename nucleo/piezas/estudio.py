@@ -68,7 +68,13 @@ class PlanDePasada:
             raise ValueError(
                 f"El primer compas es el 1, y pediste {self.primer_compas}"
             )
-        if self.ultimo_compas is not None and self.ultimo_compas < self.primer_compas:
+        # El 0 significa "pieza sin compases" y SOLO lo produce `validar_plan`:
+        # un llamador que pide 0 en una pieza con compases es rechazado alli.
+        if (
+            self.ultimo_compas is not None
+            and self.ultimo_compas != 0
+            and self.ultimo_compas < self.primer_compas
+        ):
             raise ValueError(
                 f"El ultimo compas ({self.ultimo_compas}) no puede ir antes del "
                 f"primero ({self.primer_compas})"
@@ -94,6 +100,10 @@ class PlanDePasada:
 def validar_plan(pieza: Pieza, plan: PlanDePasada) -> PlanDePasada:
     """Comprueba el plan CONTRA la pieza y devuelve `ultimo_compas` resuelto.
 
+    Tras esta funcion `ultimo_compas` es SIEMPRE un entero. Si la pieza no tiene
+    compases vale 0; ese 0 solo es legitimo en la pieza vacia, y en una pieza
+    con compases pedirlo es un error.
+
     `PlanDePasada` valida lo que puede sin ver la pieza (el factor, el orden de
     los compases); lo que solo se sabe con la pieza delante -si el compas 20
     existe- se valida aqui. El mensaje nombra el compas pedido y el ultimo que
@@ -101,14 +111,16 @@ def validar_plan(pieza: Pieza, plan: PlanDePasada) -> PlanDePasada:
     """
     total = total_de_compases(pieza)
     if total == 0:
-        # Sin notas no hay compas que resolver. Y no se puede poner un 0 con
-        # `replace`: el plan lo rechazaria por ir antes del primero. Se deja
-        # el plan tal cual; `EstadoEstudio` publica el ultimo compas como 0.
-        return plan
+        return replace(plan, ultimo_compas=0)
     if plan.primer_compas > total:
         raise ValueError(
             f"La pieza '{pieza.nombre}' tiene {total} compases y pediste empezar "
             f"en el {plan.primer_compas}"
+        )
+    if plan.ultimo_compas == 0:
+        raise ValueError(
+            f"La pieza '{pieza.nombre}' tiene {total} compases y pediste acabar "
+            "en el 0: el 0 solo vale para una pieza sin compases"
         )
     ultimo = total if plan.ultimo_compas is None else plan.ultimo_compas
     if ultimo > total:
@@ -226,15 +238,17 @@ class SesionDeEstudio:
         # el final del compas 3 cae ya en el 4. Sin acotar, al terminar un tramo
         # la pantalla decia "compas 4" de un bucle que va del 2 al 3.
         compas = compas_en(self.pieza, pulsos)
-        if self._plan.ultimo_compas:
-            compas = min(compas, self._plan.ultimo_compas)
+        if self._plan.ultimo_compas is not None:
+            # El suelo en 1: en la pieza vacia el ultimo compas es 0 y el cabezal
+            # sigue estando en el compas 1, el unico que no miente.
+            compas = max(1, min(compas, self._plan.ultimo_compas))
         return EstadoEstudio(
             carril=carril,
             instante_pulsos=pulsos,
             compas_en_curso=compas,
             total_de_compases=total_de_compases(self.pieza),
             primer_compas=self._plan.primer_compas,
-            ultimo_compas=self._plan.ultimo_compas or 0,
+            ultimo_compas=self._plan.ultimo_compas,
             repeticion=self._repeticion,
             cuenta_atras_restante_s=self._cuenta_atras_restante_s,
             factor_tempo=self._plan.factor_tempo,
@@ -252,6 +266,9 @@ class SesionDeEstudio:
         diferencia importa: con una sola puerta absoluta, el llamador sigue
         contando tiempo durante la pausa y al reanudar el cabezal saltaria el
         tamano de la pausa.
+
+        Mueve el reloj y NADA MAS: no descobra las notas del tramo abandonado
+        (`olvidar_tramo`), y si se retrocede eso le toca a quien llama.
         """
         self._seguidor.avanzar_a(instante_pasada_s)
         return self.estado
@@ -262,6 +279,9 @@ class SesionDeEstudio:
         Por ahora solo suma; la pausa y la cuenta atras entran despues, que es
         donde existen.
         """
+        # Un delta negativo se acota a 0 en vez de lanzar: el llamador es el
+        # servidor con un reloj monotono, asi que un negativo es un hueco raro
+        # y no una orden de retroceder (para eso esta `colocar_en`).
         self._seguidor.avanzar_a(self._seguidor.estado.instante_s + max(0.0, delta_s))
         return self.estado
 

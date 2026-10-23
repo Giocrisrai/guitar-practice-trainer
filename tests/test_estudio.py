@@ -6,7 +6,11 @@ Ni una espera real: el reloj se mueve a mano con `avanzar_a`, igual que en
 
 import pytest
 
+from nucleo.analisis.pipeline import ResultadoAnalisis
 from nucleo.piezas.estudio import (
+    FACTOR_MAXIMO,
+    FACTOR_MINIMO,
+    PASO_DEL_FACTOR,
     PlanDePasada,
     SesionDeEstudio,
     validar_plan,
@@ -168,3 +172,80 @@ def test_el_seguidor_de_la_sesion_recibe_el_factor_y_estira_la_duracion():
     lenta = SesionDeEstudio(pieza_de_doce_compases(), PlanDePasada(factor_tempo=0.5))
     lenta.colocar_en(60.0)
     assert lenta.estado.carril.completado is False
+
+
+def test_validar_plan_en_una_pieza_sin_notas_da_un_ultimo_compas_entero():
+    resuelto = validar_plan(pieza_de([]), PlanDePasada())
+    assert resuelto.ultimo_compas == 0
+    assert isinstance(resuelto.ultimo_compas, int)
+
+
+def test_un_ultimo_compas_cero_en_una_pieza_con_compases_se_rechaza():
+    with pytest.raises(ValueError, match="12 compases.*0"):
+        validar_plan(pieza_de_doce_compases(), PlanDePasada(ultimo_compas=0))
+
+
+def test_el_dict_del_plan_lleva_sus_siete_claves():
+    plan = PlanDePasada(primer_compas=2, ultimo_compas=5, factor_tempo=0.75,
+                        en_bucle=True, compases_de_cuenta_atras=2,
+                        con_click=True, tempo_automatico=True)
+    assert plan.a_dict() == {
+        "primer_compas": 2,
+        "ultimo_compas": 5,
+        "factor_tempo": 0.75,
+        "en_bucle": True,
+        "compases_de_cuenta_atras": 2,
+        "con_click": True,
+        "tempo_automatico": True,
+    }
+
+
+def test_el_plan_y_el_estado_dicen_lo_mismo_del_ultimo_compas_de_una_pieza_vacia():
+    sesion = SesionDeEstudio(pieza_de([]))
+    assert sesion.plan.a_dict()["ultimo_compas"] == 0
+    assert sesion.estado.a_dict()["ultimo_compas"] == 0
+
+
+def test_un_primer_compas_menor_que_uno_se_rechaza():
+    with pytest.raises(ValueError, match="primer compas"):
+        PlanDePasada(primer_compas=0)
+
+
+def test_unos_compases_de_cuenta_atras_negativos_se_rechazan():
+    with pytest.raises(ValueError, match="cuenta atras"):
+        PlanDePasada(compases_de_cuenta_atras=-1)
+
+
+def test_un_delta_negativo_no_mueve_el_cabezal():
+    sesion = SesionDeEstudio(pieza_de_doce_compases())
+    sesion.colocar_en(5.0)
+    sesion.avanzar(-3.0)
+    assert sesion.estado.carril.instante_s == pytest.approx(5.0)
+
+
+def test_las_constantes_del_contrato_tienen_nombre_y_valor_fijos():
+    assert FACTOR_MINIMO == 0.40
+    assert FACTOR_MAXIMO == 1.00
+    assert PASO_DEL_FACTOR == 0.05
+
+
+def test_procesar_mueve_el_carril_con_un_cuadro_de_analisis():
+    sesion = SesionDeEstudio(pieza_de([0.0, 1.0]))
+    sesion.colocar_en(0.0)
+    silencio = ResultadoAnalisis(
+        estado="silencio", frecuencia=None, confianza=0.0, nivel_db=-90.0,
+        nota=None, cents=None, posiciones=(),
+    )
+    suena = ResultadoAnalisis(
+        estado="nota", frecuencia=82.41, confianza=0.9, nivel_db=-25.0,
+        nota="E2", cents=0.0, posiciones=(),
+    )
+    instante = 0.0
+    for _ in range(3):
+        sesion.procesar(silencio, instante)
+        instante += 0.021
+    for _ in range(12):
+        sesion.procesar(suena, instante)
+        instante += 0.021
+    assert len(sesion.estado.carril.tocadas) == 1
+    assert sesion.estado.carril.tocadas[0].acertada is True
