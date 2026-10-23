@@ -11,6 +11,7 @@ import os
 import mido
 import numpy as np
 import pytest
+from fastapi import WebSocketDisconnect
 from fastapi.testclient import TestClient
 
 from nucleo.captura import NOMBRE_ROCKSMITH, DispositivoAudio
@@ -29,6 +30,17 @@ from servidor.sesion import Sesion
 # "testserver" que pone TestClient de serie: probar contra un anfitrion que el
 # servidor de verdad rechazaria seria probar otro servidor.
 BASE_LOCAL = "http://127.0.0.1:8420"
+
+# Y los WebSocket se piden con la URL ENTERA: `websocket_connect` de Starlette no
+# mira el `base_url` del cliente, resuelve las rutas relativas contra
+# "ws://testserver" y manda ese `Host`, que el guardia rechaza con razon (lo
+# rechazaria tambien el servidor de verdad).
+WS_LOCAL = "ws://127.0.0.1:8420"
+
+# Los tres WebSocket del servidor. El guardia es el mismo para todos, asi que se
+# prueban los tres con la misma prueba: si manana uno se olvida de llamarlo, hay una
+# prueba que lo dice y no una que prueba el que si se acordo.
+RUTAS_WEBSOCKET = ["/ws/notas", "/ws/ejercicios", "/ws/piezas"]
 
 CABLE = DispositivoAudio(3, NOMBRE_ROCKSMITH, 1, 48000.0)
 FS = 48000
@@ -659,3 +671,154 @@ def test_el_servidor_de_desarrollo_de_la_interfaz_puede_subir(cliente):
         headers={"origin": "http://localhost:5173"},
     )
     assert respuesta.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# El guardia y los origenes que no nombran ninguna maquina
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("origen", ["null", "file://", "https:", ""])
+def test_un_origen_que_no_nombra_ninguna_maquina_no_puede_subir_nada(
+    cliente, tmp_path, origen
+):
+    """`Origin: null` es una web ajena, no esta maquina, y podia ESCRIBIR.
+
+    Lo manda un `<iframe sandbox="allow-scripts">` o un documento `data:`, y un
+    `POST` con `FormData` es peticion CORS simple -`multipart/form-data` esta en la
+    lista segura-, asi que no hay preflight que lo pare. Los cuatro valores daban 200
+    porque el `Origin` se comparaba contra el mismo conjunto que el `Host`, y ese
+    conjunto tiene la cadena vacia dentro para admitir el `Host` ausente.
+
+    Esta prueba falla si se vuelve a meter `""` en la lista de origenes.
+    """
+    respuesta = cliente.post(
+        "/api/canciones",
+        files={"archivo": ("x.txt", TABLATURA)},
+        headers={"origin": origen},
+    )
+    assert respuesta.status_code == 403
+    assert _vacia(tmp_path / "canciones")
+
+
+@pytest.mark.parametrize("origen", ["null", "file://", "https:", ""])
+def test_un_origen_opaco_tampoco_puede_cambiar_la_afinacion(cliente, origen):
+    """Lo mismo sobre el otro metodo que cambia estado, que no sube archivos."""
+    respuesta = cliente.put(
+        "/api/config", json={"perfil": "guitarra_drop_d"}, headers={"origin": origen}
+    )
+    assert respuesta.status_code == 403
+
+
+@pytest.mark.parametrize(
+    "origen",
+    [
+        "http://localhost:5173",
+        "http://LOCALHOST:8420",
+        "HTTP://127.0.0.1:8420",
+        "http://[::1]:8420",
+    ],
+)
+def test_los_origenes_de_esta_maquina_siguen_pasando(cliente, origen):
+    """El proxy de Vite, las mayusculas y la IPv6 con corchetes: todos somos nosotros.
+
+    `hostname` normaliza las mayusculas y quita los corchetes, asi que `[::1]:8420`
+    da `::1`, que es como esta escrito en la lista.
+    """
+    respuesta = cliente.post(
+        "/api/canciones",
+        files={"archivo": ("x.txt", TABLATURA)},
+        headers={"origin": origen},
+    )
+    assert respuesta.status_code == 200
+
+
+@pytest.mark.parametrize(
+    "origen",
+    [
+        "http://127.0.0.1.atacante.example",
+        "http://localhost.atacante.example",
+        "http://localhost@atacante.example",
+        "http://atacante.example/localhost",
+        "http://127.1",
+        "http://2130706433",
+        "http://localhost.",
+    ],
+)
+def test_los_nombres_que_solo_se_parecen_a_localhost_no_pasan(cliente, tmp_path, origen):
+    """Un nombre que CONTIENE 'localhost' no es localhost.
+
+    `localhost@atacante.example` es el caso que mas engaña: la parte de antes del
+    `@` es un usuario, no un anfitrion, y el anfitrion de verdad es `atacante.example`.
+    """
+    respuesta = cliente.post(
+        "/api/canciones",
+        files={"archivo": ("x.txt", TABLATURA)},
+        headers={"origin": origen},
+    )
+    assert respuesta.status_code == 403
+    assert _vacia(tmp_path / "canciones")
+
+
+def test_sin_cabecera_host_se_atiende_igual(cliente):
+    """Decision escrita, no efecto colateral: HTTP/1.0 y la terminal no la mandan.
+
+    Se admite porque lo que delata el rebinding de DNS es un `Host` con el nombre del
+    atacante, y un navegador no puede omitir esa cabecera. Antes esto salia de tener
+    un `""` en el conjunto que compartian `Host` y `Origin`; ahora sale de la lista
+    del `Host`, que es la unica donde ese `""` significa algo.
+    """
+    respuesta = cliente.post(
+        "/api/canciones",
+        files={"archivo": ("x.txt", TABLATURA)},
+        headers={"host": ""},
+    )
+    assert respuesta.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# El guardia de los WebSocket
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("ruta", RUTAS_WEBSOCKET)
+def test_un_websocket_con_host_ajeno_se_cierra_sin_emitir(cliente, ruta):
+    """Rebinding de DNS por la otra puerta: los WebSocket no pasan por el middleware.
+
+    `/ws/notas` manda la telemetria del microfono -que nota suena, cuando se toca y
+    con cuanto nivel- a 30 Hz, legible por cualquier pestaña abierta. Se cierra con
+    1008 (violacion de politica) ANTES de aceptar, asi que el cliente ve el cierre al
+    conectar y no recibe ni un mensaje.
+    """
+    with pytest.raises(WebSocketDisconnect) as fallo:
+        with cliente.websocket_connect(
+            WS_LOCAL + ruta, headers={"host": "ajeno.example"}
+        ) as ws:
+            ws.receive_json()
+    assert fallo.value.code == 1008
+
+
+@pytest.mark.parametrize("ruta", RUTAS_WEBSOCKET)
+@pytest.mark.parametrize("origen", ["https://sitio.ajeno.example", "null", "file://"])
+def test_un_websocket_con_origen_ajeno_se_cierra_sin_emitir(cliente, ruta, origen):
+    """Un WebSocket de navegador manda `Origin` SIEMPRE, asi que aqui si delata."""
+    with pytest.raises(WebSocketDisconnect) as fallo:
+        with cliente.websocket_connect(WS_LOCAL + ruta, headers={"origin": origen}) as ws:
+            ws.receive_json()
+    assert fallo.value.code == 1008
+
+
+@pytest.mark.parametrize("ruta", RUTAS_WEBSOCKET)
+def test_un_websocket_normal_sigue_conectando_y_emitiendo(cliente, ruta):
+    """El guardia no puede cerrar la puerta por la que entra la interfaz."""
+    with cliente.websocket_connect(WS_LOCAL + ruta) as ws:
+        assert ws.receive_json()
+
+
+@pytest.mark.parametrize("ruta", RUTAS_WEBSOCKET)
+def test_un_websocket_sin_origen_sigue_conectando(cliente, ruta):
+    """Los clientes de terminal no mandan `Origin` y siguen siendo validos."""
+    with cliente.websocket_connect(
+        WS_LOCAL + ruta, headers={"host": "localhost:8420"}
+    ) as ws:
+        assert ws.receive_json()

@@ -20,6 +20,12 @@ from servidor.sesion import Sesion
 # servidor de verdad rechazaria seria probar otro servidor.
 BASE_LOCAL = "http://127.0.0.1:8420"
 
+# Y los WebSocket se piden con la URL ENTERA: `websocket_connect` de Starlette no
+# mira el `base_url` del cliente, resuelve las rutas relativas contra
+# "ws://testserver" y manda ese `Host`, que el guardia rechaza con razon (lo
+# rechazaria tambien el servidor de verdad).
+WS_LOCAL = "ws://127.0.0.1:8420"
+
 CABLE = DispositivoAudio(3, NOMBRE_ROCKSMITH, 1, 48000.0)
 FS = 48000
 
@@ -118,7 +124,7 @@ def test_el_websocket_emite_estado_sin_la_pieza(cliente):
         "/api/piezas/iniciar",
         json={"familia": "lectura", "parametros": {"repeticiones": 2}},
     )
-    with cliente.websocket_connect("/ws/piezas") as ws:
+    with cliente.websocket_connect(WS_LOCAL + "/ws/piezas") as ws:
         mensaje = ws.receive_json()
     assert "pieza" not in mensaje
     assert "instante_s" in mensaje
@@ -137,7 +143,7 @@ def test_el_websocket_etiqueta_los_paquetes_con_el_arranque_de_la_pieza(cliente)
         "/api/piezas/iniciar",
         json={"familia": "lectura", "parametros": {"repeticiones": 2}},
     ).json()["arranque"]
-    with cliente.websocket_connect("/ws/piezas") as ws:
+    with cliente.websocket_connect(WS_LOCAL + "/ws/piezas") as ws:
         mensaje = ws.receive_json()
     assert mensaje["arranque"] == arranque
     assert cliente.get("/api/piezas/estado").json()["arranque"] == arranque

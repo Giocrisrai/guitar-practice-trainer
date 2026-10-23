@@ -59,12 +59,21 @@ ANFITRIONES_LOCALES = frozenset(
 # Los métodos que CAMBIAN algo y por tanto necesitan que el origen sea el nuestro.
 METODOS_QUE_CAMBIAN = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
+# Un `Origin` opaco: lo que manda un navegador cuando la página no tiene origen al
+# que atribuirle nada (un `<iframe sandbox="allow-scripts">`, un documento `data:`).
+# Se nombra aquí y se rechaza a propósito, no por accidente de parseo: `null` NO es
+# «esta máquina», es «no te digo quién soy», y eso es precisamente el ataque.
+ORIGENES_OPACOS = frozenset({"null"})
+
 
 def _solo_nombre(autoridad: str) -> str:
     """El nombre de una autoridad `host:puerto`, en minúsculas y sin el puerto.
 
     Los corchetes de una IPv6 se conservan (`[::1]:8420` -> `[::1]`) y una IPv6 sin
     corchetes ni puerto se devuelve entera: cortar por el último `:` la partiría.
+
+    Esto es solo para la cabecera `Host`, que no es una URL. Un `Origin` SÍ es una
+    URL y se parsea con `_nombre_de_origen`.
     """
     autoridad = autoridad.strip().lower()
     if autoridad.startswith("["):
@@ -72,6 +81,41 @@ def _solo_nombre(autoridad: str) -> str:
     if autoridad.count(":") > 1:
         return autoridad
     return autoridad.rsplit(":", 1)[0] if ":" in autoridad else autoridad
+
+
+def _nombre_de_origen(origen: str) -> str:
+    """El nombre del anfitrión de un `Origin`, o `""` si no tiene ninguno.
+
+    Devolver `""` es decir «este origen no nombra ninguna máquina», y quien llama lo
+    rechaza, porque `""` nunca está en el conjunto de orígenes admitidos. Caen aquí
+    `null`, `file://`, `https:` y la cadena vacía: todos ellos llegaban a valer como
+    «esta máquina» cuando el `Origin` se cortaba con `_solo_nombre(netloc)` y el
+    conjunto compartido con el `Host` tenía un `""` dentro.
+
+    Se usa `hostname` y no `netloc` porque `hostname` ya normaliza a minúsculas,
+    quita el `usuario@` -que es lo que hace que `http://localhost@atacante.example`
+    sea en realidad `atacante.example`- y quita los corchetes de una IPv6, así que
+    `http://[::1]:8420` da `::1`.
+    """
+    if origen.strip().lower() in ORIGENES_OPACOS:
+        return ""
+    try:
+        nombre = urlsplit(origen.strip()).hostname
+    except ValueError:
+        # Una IPv6 mal cerrada (`http://[::1`) hace que `urlsplit` se queje. Un
+        # origen que no se puede parsear no es el nuestro.
+        return ""
+    return nombre or ""
+
+
+def _origenes_desde(anfitriones) -> frozenset[str]:
+    """Los nombres de `anfitriones` que pueden ser el anfitrión de un `Origin`.
+
+    Se quita la cadena vacía -un `Origin` sin nombre no se admite nunca- y los
+    corchetes de las IPv6, porque `_nombre_de_origen` devuelve `::1` y no `[::1]`.
+    """
+    nombres = {nombre.strip().lower().strip("[]") for nombre in anfitriones}
+    return frozenset(nombre for nombre in nombres if nombre)
 
 
 def _numero_de_pista(valor) -> int:
@@ -124,6 +168,8 @@ def crear_app(
 
     `anfitriones` son los nombres por los que se admite que llamen al servidor
     (`ANFITRIONES_LOCALES` si no se dice otra cosa); ver `guardia_de_peticiones`.
+    De ahí salen DOS conjuntos y no uno: el del `Host`, tal cual se da, y el de los
+    `Origin` admitidos (`_origenes_desde`), que es el mismo sin la cadena vacía.
     """
     app = FastAPI(title="proyecto_musica")
     app.state.sesion = sesion
@@ -134,6 +180,33 @@ def crear_app(
         Biblioteca(carpeta_canciones) if carpeta_canciones is not None else Biblioteca()
     )
     app.state.anfitriones = set(anfitriones or ANFITRIONES_LOCALES)
+    app.state.origenes = _origenes_desde(app.state.anfitriones)
+
+    def _anfitrion_ajeno(cabeceras) -> str | None:
+        """El nombre del `Host` si NO es uno de los nuestros; `None` si vale.
+
+        Un `Host` ausente se ADMITE, y es una decisión escrita: HTTP/1.0 no lleva esa
+        cabecera y las herramientas de terminal tampoco siempre, y la terminal es el
+        modo normal de usar este servidor. Lo que delata el rebinding de DNS es un
+        `Host` con el nombre del atacante, no uno vacío: un navegador no puede omitir
+        esa cabecera. Antes esto pasaba igual, pero por el efecto colateral de tener
+        un `""` en el conjunto que compartían `Host` y `Origin`, donde sí abría un
+        agujero.
+        """
+        anfitrion = _solo_nombre(cabeceras.get("host", ""))
+        return None if anfitrion in app.state.anfitriones else anfitrion
+
+    def _origen_ajeno(cabeceras) -> str | None:
+        """El `Origin` si está presente y NO es el nuestro; `None` si vale o falta.
+
+        Un `Origin` ausente se admite (`curl`); un `Origin` presente que no nombre
+        esta máquina se rechaza, y eso incluye todos los que no nombran ninguna:
+        `null`, `file://`, `https:` y la cadena vacía (ver `_nombre_de_origen`).
+        """
+        origen = cabeceras.get("origin")
+        if origen is None:
+            return None
+        return None if _nombre_de_origen(origen) in app.state.origenes else origen
 
     @app.middleware("http")
     async def guardia_de_peticiones(peticion: Request, siguiente):
@@ -147,15 +220,24 @@ def crear_app(
         1. **`Host` tiene que ser localhost.** Es lo único que delata el rebinding
            de DNS (ver `ANFITRIONES_LOCALES`). Vale para TODOS los métodos, también
            los `GET`: con el rebinding, un `GET` ya se lleva la lista de canciones.
+           Un `Host` ausente se admite, por decisión escrita en `_anfitrion_ajeno`.
         2. **Si viene `Origin`, tiene que ser el nuestro.** El navegador la pone
            siempre en las peticiones que cambian estado y NO deja que la página la
            falsee, así que un `Origin: https://cualquier.sitio` es exactamente el
-           ataque y se rechaza con 403.
+           ataque y se rechaza con 403. Y un `Origin` que no nombra ninguna máquina
+           -`null`, `file://`, `https:`, la cadena vacía- se rechaza igual: `null`
+           es lo que manda un `<iframe sandbox="allow-scripts">` o un documento
+           `data:` de una web ajena, y un `POST` con `FormData` es petición CORS
+           simple, así que no hay preflight que lo pare. Cuando el `Origin` se
+           comparaba contra el mismo conjunto que el `Host` -con su `""` dentro para
+           admitir el `Host` ausente- esos cuatro valían como «esta máquina» y la
+           página de un atacante podía subir un archivo a la biblioteca.
         3. **Si no viene `Origin`, se deja pasar.** No es un descuido: `curl`, los
            scripts y las herramientas de línea de comandos no la mandan, y son el
            modo normal de usar este servidor desde la terminal. Un navegador no
            puede omitirla en una petición que cambia estado, así que dejarla pasar
-           no abre la puerta que acabamos de cerrar.
+           no abre la puerta que acabamos de cerrar. Ausente no es lo mismo que
+           opaca: la regla 2 cubre la diferencia.
 
         Se compara el NOMBRE y no el puerto, a propósito: el servidor de desarrollo
         de la interfaz vive en `localhost:5173` y hace de proxy hacia el 8420, así
@@ -163,16 +245,16 @@ def crear_app(
         Y distinguir puertos no defendería de nada: cualquier proceso de esta máquina
         puede hablar con el servidor sin pasar por un navegador.
 
-        Lo que esto NO cubre: los WebSocket, que no pasan por el middleware `http`
-        y además no están sujetos a la política de orígenes del navegador. Solo
-        emiten estado, pero esa puerta sigue abierta y hay que cerrarla aparte.
+        Los WebSocket no pasan por este middleware -ASGI no los enruta por aquí-,
+        así que montan las mismas comprobaciones por su cuenta antes de aceptar la
+        conexión: ver `_vigilar_websocket`.
 
         De paso, la puerta de `Content-Length`: una subida que ya se declara más
         grande que el techo se rechaza aquí, antes de que el parseador de multipart
         reciba el cuerpo y lo vuelque a un archivo temporal.
         """
-        anfitrion = _solo_nombre(peticion.headers.get("host", ""))
-        if anfitrion not in app.state.anfitriones:
+        anfitrion = _anfitrion_ajeno(peticion.headers)
+        if anfitrion is not None:
             return JSONResponse(
                 status_code=400,
                 content={
@@ -182,20 +264,18 @@ def crear_app(
                     )
                 },
             )
-        origen = peticion.headers.get("origin")
-        if (
-            peticion.method in METODOS_QUE_CAMBIAN
-            and origen is not None
-            and _solo_nombre(urlsplit(origen).netloc) not in app.state.anfitriones
-        ):
-            return JSONResponse(
-                status_code=403,
-                content={
-                    "detail": (
-                        f"'{origen}' no es esta máquina y no puede cambiar nada aquí."
-                    )
-                },
-            )
+        if peticion.method in METODOS_QUE_CAMBIAN:
+            origen = _origen_ajeno(peticion.headers)
+            if origen is not None:
+                return JSONResponse(
+                    status_code=403,
+                    content={
+                        "detail": (
+                            f"'{origen}' no es esta máquina y no puede cambiar nada "
+                            f"aquí."
+                        )
+                    },
+                )
         declarado = peticion.headers.get("content-length")
         if declarado is not None and declarado.isdigit():
             if int(declarado) > TAMANO_MAXIMO_BYTES + MARGEN_MULTIPART_BYTES:
@@ -204,6 +284,33 @@ def crear_app(
                     content={"detail": _mensaje_peticion_enorme(int(declarado))},
                 )
         return await siguiente(peticion)
+
+    async def _vigilar_websocket(websocket: WebSocket) -> bool:
+        """`True` si se puede atender este WebSocket; si no, lo cierra con 1008.
+
+        Las mismas comprobaciones de `guardia_de_peticiones`, hechas ANTES de
+        `accept()`, porque los WebSocket no pasan por el middleware `http` y sin esto
+        una pestaña cualquiera conectaba a `/ws/notas` y se llevaba la telemetría del
+        micrófono -qué nota suena, cuándo se toca y con cuánto nivel- a 30 Hz. Y un
+        `Host` ajeno pasaba, que es sortear también la defensa de rebinding.
+
+        El `Origin` se exige igual que en http CON UNA DIFERENCIA: aquí la regla 3
+        del middleware -«si no viene `Origin`, se deja pasar»- se apoya en que un
+        navegador no puede omitirlo, y en los WebSocket eso es aún más cierto (el
+        navegador lo manda SIEMPRE, también en el handshake). Así que un `Origin`
+        ausente sigue admitiéndose, porque hay clientes de terminal, y un `Origin`
+        presente que no sea el nuestro se rechaza.
+
+        Se cierra con 1008 (violación de política) y no con 1000: el cliente tiene
+        que poder distinguir «no te quiero» de «ya hemos terminado».
+        """
+        if (
+            _anfitrion_ajeno(websocket.headers) is not None
+            or _origen_ajeno(websocket.headers) is not None
+        ):
+            await websocket.close(code=1008)
+            return False
+        return True
 
     @app.get("/api/modulos")
     def leer_modulos() -> list[dict]:
@@ -311,6 +418,8 @@ def crear_app(
 
         Siempre el presente, aunque se repita. Nunca una cola de resultados viejos.
         """
+        if not await _vigilar_websocket(websocket):
+            return
         await websocket.accept()
         intervalo = 1.0 / FRECUENCIA_EMISION
         try:
@@ -431,6 +540,8 @@ def crear_app(
     @app.websocket("/ws/ejercicios")
     async def emitir_ejercicio(websocket: WebSocket) -> None:
         """Emite el estado del ejercicio a 30 Hz, igual que el del afinador."""
+        if not await _vigilar_websocket(websocket):
+            return
         await websocket.accept()
         intervalo = 1.0 / FRECUENCIA_EMISION
         try:
@@ -486,6 +597,8 @@ def crear_app(
         manda aqui tiene que bastar para mover el cabezal sin que la interfaz
         recalcule nada que el nucleo ya decidio.
         """
+        if not await _vigilar_websocket(websocket):
+            return
         await websocket.accept()
         intervalo = 1.0 / FRECUENCIA_EMISION
         try:

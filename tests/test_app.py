@@ -16,6 +16,12 @@ from servidor.sesion import Sesion
 # servidor de verdad rechazaria seria probar otro servidor.
 BASE_LOCAL = "http://127.0.0.1:8420"
 
+# Y los WebSocket se piden con la URL ENTERA: `websocket_connect` de Starlette no
+# mira el `base_url` del cliente, resuelve las rutas relativas contra
+# "ws://testserver" y manda ese `Host`, que el guardia rechaza con razon (lo
+# rechazaria tambien el servidor de verdad).
+WS_LOCAL = "ws://127.0.0.1:8420"
+
 CABLE = DispositivoAudio(3, NOMBRE_ROCKSMITH, 1, 48000.0)
 FS = 48000
 
@@ -133,7 +139,7 @@ def test_la_calibracion_devuelve_un_umbral_sugerido(cliente):
 
 
 def test_el_websocket_emite_el_resultado_del_analisis(cliente):
-    with cliente.websocket_connect("/ws/notas") as socket:
+    with cliente.websocket_connect(WS_LOCAL + "/ws/notas") as socket:
         for _ in range(20):
             mensaje = socket.receive_json()
             if mensaje["estado"] == "nota":
@@ -166,7 +172,7 @@ def test_el_mensaje_de_silencio_tiene_la_misma_forma_que_el_del_analisis(tmp_pat
     ).a_dict()
 
     with TestClient(app, base_url=BASE_LOCAL) as cliente:
-        with cliente.websocket_connect("/ws/notas") as socket:
+        with cliente.websocket_connect(WS_LOCAL + "/ws/notas") as socket:
             mensaje = socket.receive_json()
 
     assert mensaje["estado"] == "silencio"

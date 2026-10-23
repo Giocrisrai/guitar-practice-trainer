@@ -15,6 +15,12 @@ from servidor.sesion import Sesion
 # servidor de verdad rechazaria seria probar otro servidor.
 BASE_LOCAL = "http://127.0.0.1:8420"
 
+# Y los WebSocket se piden con la URL ENTERA: `websocket_connect` de Starlette no
+# mira el `base_url` del cliente, resuelve las rutas relativas contra
+# "ws://testserver" y manda ese `Host`, que el guardia rechaza con razon (lo
+# rechazaria tambien el servidor de verdad).
+WS_LOCAL = "ws://127.0.0.1:8420"
+
 CABLE = DispositivoAudio(3, NOMBRE_ROCKSMITH, 1, 48000.0)
 FS = 48000
 
@@ -183,14 +189,14 @@ def test_el_websocket_emite_el_estado_del_ejercicio(cliente):
         "/api/ejercicios/iniciar",
         json={"familia": "lectura", "parametros": {"repeticiones": 3, "semilla": 1}},
     )
-    with cliente.websocket_connect("/ws/ejercicios") as socket:
+    with cliente.websocket_connect(WS_LOCAL + "/ws/ejercicios") as socket:
         mensaje = socket.receive_json()
         assert set(mensaje) >= {"ejercicio", "evaluacion", "informe", "metronomo"}
         assert mensaje["evaluacion"]["total"] == 3
 
 
 def test_el_websocket_emite_aunque_no_haya_ejercicio(cliente):
-    with cliente.websocket_connect("/ws/ejercicios") as socket:
+    with cliente.websocket_connect(WS_LOCAL + "/ws/ejercicios") as socket:
         mensaje = socket.receive_json()
         assert mensaje["ejercicio"] is None
 
