@@ -1218,10 +1218,13 @@ def test_entre_dos_compases_con_los_mismos_fallos_va_primero_el_de_peor_proporci
     assert historial.peores_compases(2) == ((2, 1, 1), (1, 1, 2))
 
 
-def test_los_compases_sin_notas_medibles_no_cuentan_ni_como_contados():
+def test_un_compas_sin_notas_medibles_no_aparece_entre_los_peores():
     historial = HistorialDeEstudio()
     historial.anotar(informe_de([(1, 0, 0, 0, 0, False), (2, 4, 4, 2, 2, False)]))
     assert historial.peores_compases() == ((2, 1, 1),)
+    solo_vacio = HistorialDeEstudio()
+    solo_vacio.anotar(informe_de([(1, 0, 0, 0, 0, False)]))
+    assert solo_vacio.peores_compases() == ()
 
 
 def test_un_compas_nunca_fallado_no_aparece_entre_los_peores():

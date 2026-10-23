@@ -762,14 +762,15 @@ class HistorialDeEstudio:
 
         Un compas esta "fallado" en una pasada si no todas sus notas medibles
         salieron limpias (acertadas Y a tiempo): un compas bien tocado pero tarde
-        tambien merece machacarse. Los compases con acordes NO entran: ahi solo se puede medir una
-        nota de cada acorde, asi que saldrian fallados siempre y el boton de
-        machacar mandaria al usuario justo a los compases que nunca podra pasar.
+        tambien merece machacarse. Los compases con acordes NO entran: ahi solo
+        se puede medir una nota de cada acorde, asi que saldrian fallados siempre
+        y el boton de machacar mandaria al usuario justo a los compases que nunca
+        podra pasar.
         """
         fallos: dict[int, list[int]] = {}
         for informe in self._pasadas:
             for compas in informe.compases:
-                if compas.tiene_acordes or compas.notas_medibles == 0:
+                if compas.tiene_acordes:
                     continue
                 marca = fallos.setdefault(compas.numero, [0, 0])
                 marca[1] += 1
