@@ -238,11 +238,14 @@ cuánto se parece lo que ves a lo que el autor escribió:
 | MIDI | `.mid` `.midi` | Las **alturas y el ritmo exactos**, y **nada de dónde se toca**: no hay cuerda ni traste. Toda la digitación la pone el algoritmo. No declara la afinación. |
 | Tablatura de texto | `.txt` `.tab` | Cuerda y traste —y la afinación, si la primera columna trae las letras de las cuerdas—. **No trae ritmo**: las duraciones se deducen del espaciado, la pieza sale marcada como aproximada y la pantalla lo avisa antes de empezar. |
 
-**`.gpx` y `.gp` se admiten por la extensión y el lector los rechaza.** Son los
-formatos de Guitar Pro 6 y 7, y la librería que usamos (PyGuitarPro 0.11) solo
-sabe leer gp3, gp4 y gp5: subir uno funciona, y al pedirle las pistas contesta
-«No se pudo leer … como un archivo de Guitar Pro (gp3, gp4 o gp5)». No es menos
-cobertura, es ninguna. Exporta a `.gp5` desde Guitar Pro o TuxGuitar.
+**`.gpx` y `.gp` no se pueden leer, y se rechazan al subir.** Son los formatos de
+Guitar Pro 6 y 7, y la librería que usamos (PyGuitarPro 0.11) solo trae lectores de
+gp3, gp4 y gp5: no es menos cobertura, es ninguna. Así que no entran en la
+biblioteca —antes se subían y reventaban después, al pedir las pistas, hablando de
+versiones en otra pantalla— y el rechazo dice qué hacer: ábrelo en Guitar Pro o en
+TuxGuitar y expórtalo como `.gp5`. La regla de la tabla de arriba es esa: **si una
+extensión está en la lista, se puede abrir**, y hay una prueba que abre un archivo
+de verdad de cada una de las diez para que siga siendo cierto.
 
 **La digitación por coste mínimo.** Donde el archivo no dice dónde se toca cada
 nota —MIDI siempre, MusicXML sin tablatura—, la pone `nucleo/piezas/digitacion.py`
@@ -251,27 +254,23 @@ estado es la pareja (posición, traste donde está la mano) y el resultado es el
 mínimo exacto, no una aproximación. Mil notas se digitan en unos **35 ms**
 (mediana de siete pasadas en un MacBook Pro M1 Pro; entre 32 y 37 ms).
 
-Lo que está comprobado y lo que no, por separado:
+Qué mejora, con lo que mide cada número:
 
-- **Comprobado**: el camino que elige nunca cuesta más que el de la heurística de
-  cercanía de la etapa 3a, medido con la misma función de coste para las dos
-  (`tests/test_digitacion.py`). En cincuenta secuencias aleatorias no hay ni una
-  en que salga peor.
-- **Comprobado**: sobre material aleatorio, el recorrido de la mano baja alrededor
-  de un **37 %** respecto a la heurística (200 secuencias de 20 notas), y en una
-  escala de do mayor de 120 notas baja mucho más. Pero el número no es uno: depende
-  entero del material. Y **si en vez del recorrido de la mano se mide el salto
-  crudo de traste a traste entre notas pisadas, sale un 10 % PEOR**, porque el
-  coste mínimo prefiere las cuerdas al aire —que no cuestan nada— y eso separa los
-  trastes de las notas pisadas sin mover la mano. Las dos cosas son verdad; la que
-  importa es la primera, pero la segunda explica por qué no se publica una cifra
-  única.
-- **Los pesos del coste están razonados y NO medidos tocando.** Son datos
-  (`CosteDigitacion`: mover la mano un traste cuesta 1,0, cruzar una cuerda 0,3,
-  una cuerda al aire 0, y los dedos abarcan 5 trastes), y están elegidos con el
-  argumento de que mover la mano cuesta mucho más que cruzar una cuerda con los
-  dedos. Nadie se ha sentado con la guitarra a ver si la digitación que sale es
-  la cómoda. Si sale incómoda se cambia un número, no el algoritmo.
+- **Nunca cuesta más** que la heurística de cercanía de la etapa 3a, con la misma
+  función de coste para las dos (`tests/test_digitacion.py`).
+- **El recorrido de la mano baja un 37 %** sobre material aleatorio (200 secuencias
+  de 20 notas) y un 98 % en una escala de do mayor de 120 notas. No hay una cifra
+  única: depende entero del material.
+- **El salto crudo de traste a traste entre notas pisadas sale un 10 % PEOR**, y
+  peor en 123 de esas 200 secuencias. No es una contradicción, es qué optimiza: el
+  coste mínimo prefiere las cuerdas al aire, que son gratis, y eso separa los
+  trastes de las notas pisadas sin mover la mano. Quien lea solo «37 % menos
+  movimiento» se lleva una idea falsa del algoritmo.
+- **Los pesos están razonados y NO medidos tocando**: mover la mano un traste
+  cuesta 1,0, cruzar una cuerda 0,3, una cuerda al aire 0, y los dedos abarcan 5
+  trastes (`CosteDigitacion`). Si la digitación sale cómoda o no **lo juzga el
+  usuario con la guitarra en las manos**, y eso está sin hacer. Si sale incómoda se
+  cambia un número, no el algoritmo.
 
 **Si la canción está en otra afinación, te dice a cuál afinarte y te lleva al
 afinador.** Al elegir una canción, el servidor compara la afinación que pide el
@@ -292,17 +291,20 @@ corta. Dibujar los trastes de una afinación con la guitarra en otra es peor que
 dibujar nada. Previsualizar sí se puede: importar una canción y ver sus notas no
 pasa por el carril, que es justo lo que hace falta para saber a qué afinarte.
 
-Dos avisos sobre el aviso, porque la honestidad está en los bordes:
+**El aviso funciona también con una afinación que no es de fábrica**, y a la
+primera. De fábrica son estándar, Drop D y los dos bajos; una canción en Drop C no
+está en esa lista, y es precisamente la que necesita que le digan a qué afinarse.
+El perfil de una afinación rara se da de alta al **listar** las pistas, no solo al
+importarlas, y la clave que propone el listado es exactamente la que va a traer la
+pieza: afinarte a lo que te dicen basta para que el carril te acepte. El selector
+del afinador no se llena por mirar canciones —publica las de fábrica más la activa—,
+así que la afinación rara aparece en él cuando te afinas a ella, que es cuando hace
+falta para dibujar bien el mástil.
 
-- **Solo Guitar Pro y la tablatura de texto declaran su afinación.** MIDI y
-  MusicXML no, así que con ellos `coincide` es siempre `null` y la pieza se lee en
-  tu perfil activo, cuadre o no con lo que el autor tocaba.
-- Con una afinación **que no es de fábrica** (de fábrica son estándar, Drop D y los
-  dos bajos), la primera vez que miras las pistas no hay ningún perfil al que
-  afinarte: el perfil se da de alta al **importar** la canción, no al listarla, y
-  hasta entonces la pantalla dice que no tiene a qué afinarte en vez de ofrecer un
-  botón que no lleva a ninguna parte. Vuelve a elegir la canción después de
-  importar una pista y el botón aparece. Es torpe y está sin arreglar.
+Un borde que queda, porque la honestidad está en los bordes: **solo Guitar Pro y la
+tablatura de texto declaran su afinación.** MIDI y MusicXML no, así que con ellos
+`coincide` es siempre `null` y la pieza se lee en tu perfil activo, cuadre o no con
+lo que el autor tocaba.
 
 **Poner una canción en el carril** es `POST /api/piezas/iniciar` con
 `{cancion, pista, perfil}` —el nombre del archivo, el número de pista en base 1 y,
@@ -342,11 +344,13 @@ partitura de una canción entera ocupa decenas de kilobytes: diez megas son dos
   Guitar Pro, las marcas de ensayo de MusicXML y los marcadores de texto de MIDI
   entran en la pieza porque reconstruirlos después sería imposible, pero ninguna
   pantalla los muestra: son para la etapa 3c.
-- **Un cambio de tempo o de compás se detecta, se guarda y no te lo dice nadie.**
-  La pieza queda marcada, pero el único aviso que llega a la pantalla es el del
-  ritmo aproximado de la tablatura de texto. Y la vista escrita trocea la pieza con
-  **un** compás constante, así que con un 3/4 en medio las barras caen en el sitio
-  equivocado desde ahí hasta el final.
+- **Una canción que cambia de tempo o de compás se toca entera con el primero.**
+  `Pieza` guarda uno solo. Eso **sí se avisa** antes de empezar, con el número que
+  se va a usar («la canción CAMBIA DE TEMPO y aquí se toca entera a 76 ppm»), pero
+  avisar no es tocarlo bien. Y en el caso del compás hay un daño extra: la vista
+  escrita trocea la pieza con **un** compás constante, así que con un 3/4 en medio
+  las barras caen en el sitio equivocado desde ahí hasta el final —el aviso lo dice
+  también—.
 - El ritmo que se deduce de una tablatura de texto es una heurística declarada:
   la distancia más corta de toda la tablatura se toma como una negra. Funciona en
   tablaturas bien alineadas y falla sin avisar en las que no.
