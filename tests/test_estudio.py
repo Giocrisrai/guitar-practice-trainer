@@ -10,8 +10,12 @@ from nucleo.analisis.pipeline import ResultadoAnalisis
 from nucleo.piezas.estudio import (
     FACTOR_MAXIMO,
     FACTOR_MINIMO,
+    PASADAS_BUENAS_PARA_SUBIR,
     PASO_DEL_FACTOR,
+    UMBRAL_PARA_BAJAR,
+    UMBRAL_PARA_SUBIR,
     CompasDelInforme,
+    HistorialDeEstudio,
     InformeDePasada,
     PlanDePasada,
     SesionDeEstudio,
@@ -983,3 +987,288 @@ def test_colocar_el_cabezal_mas_alla_del_final_no_da_la_vuelta_ni_cuenta_repetic
     assert sesion.estado.repeticion == 1
     assert sesion.informe.repeticiones == 1
     assert sesion.ultima_vuelta is None
+
+
+def informe_de(filas, ritmo_aproximado=False):
+    """Un informe a mano: (numero, escritas, medibles, acertadas, a_tiempo, acordes).
+
+    Las notas limpias valen lo mismo que las acertadas.
+    """
+    compases = tuple(
+        CompasDelInforme(
+            numero=n, notas_escritas=e, notas_medibles=m, acertadas=a, a_tiempo=t,
+            pronto=0, tarde=0, limpias=a, desfase_medio_s=None, tiene_acordes=acordes,
+        )
+        for n, e, m, a, t, acordes in filas
+    )
+    return InformeDePasada(
+        compases=compases, ritmo_aproximado=ritmo_aproximado,
+        compas_variable=False, factor_tempo=1.0, repeticiones=1,
+    )
+
+
+def pasada_limpia():
+    return informe_de([(1, 10, 10, 10, 10, False)])
+
+
+def pasada_mala():
+    return informe_de([(1, 10, 10, 6, 6, False)])
+
+
+def test_dos_pasadas_buenas_seguidas_suben_el_tempo_un_cinco_por_ciento():
+    historial = HistorialDeEstudio()
+    historial.anotar(pasada_limpia())
+    assert historial.factor_sugerido(0.60) == pytest.approx(0.60)
+    historial.anotar(pasada_limpia())
+    assert historial.factor_sugerido(0.60) == pytest.approx(0.65)
+
+
+def test_tras_subir_la_racha_se_consume_y_no_vuelve_a_subir_sola():
+    historial = HistorialDeEstudio()
+    historial.anotar(pasada_limpia())
+    historial.anotar(pasada_limpia())
+    assert historial.factor_sugerido(0.60) == pytest.approx(0.65)
+    assert historial.factor_sugerido(0.65) == pytest.approx(0.65)
+
+
+def test_una_pasada_mala_baja_el_tempo_sin_esperar_a_la_segunda():
+    historial = HistorialDeEstudio()
+    historial.anotar(pasada_mala())
+    assert historial.factor_sugerido(0.60) == pytest.approx(0.55)
+
+
+def test_el_tempo_no_pasa_del_escrito_ni_baja_del_suelo():
+    arriba = HistorialDeEstudio()
+    arriba.anotar(pasada_limpia())
+    arriba.anotar(pasada_limpia())
+    assert arriba.factor_sugerido(FACTOR_MAXIMO) == pytest.approx(FACTOR_MAXIMO)
+    abajo = HistorialDeEstudio()
+    abajo.anotar(pasada_mala())
+    assert abajo.factor_sugerido(FACTOR_MINIMO) == pytest.approx(FACTOR_MINIMO)
+
+
+def test_una_pieza_entera_de_acordes_nunca_mueve_el_tempo():
+    # Sin notas medibles no hay proporcion, y sin proporcion no hay juicio: el
+    # tempo se queda donde el usuario lo puso.
+    historial = HistorialDeEstudio()
+    historial.anotar(informe_de([(1, 3, 1, 0, 0, True)]))
+    historial.anotar(informe_de([(1, 3, 1, 0, 0, True)]))
+    assert historial.factor_sugerido(0.60) == pytest.approx(0.60)
+
+
+def test_los_peores_compases_salen_ordenados_con_sus_cifras():
+    historial = HistorialDeEstudio()
+    for _ in range(5):
+        # El 19 siempre fallado, el 4 fallado una vez, el 7 nunca.
+        historial.anotar(informe_de([
+            (4, 4, 4, 4, 4, False),
+            (7, 4, 4, 4, 4, False),
+            (19, 4, 4, 1, 1, False),
+        ]))
+    historial.anotar(informe_de([
+        (4, 4, 4, 2, 2, False),
+        (7, 4, 4, 4, 4, False),
+        (19, 4, 4, 0, 0, False),
+    ]))
+    peores = historial.peores_compases(2)
+    assert peores[0] == (19, 6, 6)
+    assert peores[1] == (4, 1, 6)
+
+
+def test_los_compases_con_acordes_no_aparecen_entre_los_peores():
+    # Esta es la prueba que impide que el boton de machacar mande al usuario a un
+    # compas que nunca podra pasar.
+    historial = HistorialDeEstudio()
+    historial.anotar(informe_de([(1, 4, 1, 0, 0, True), (2, 4, 4, 1, 1, False)]))
+    assert [c for c, _, _ in historial.peores_compases()] == [2]
+
+
+def test_un_historial_sin_pasadas_no_tiene_peores_ni_mueve_el_tempo():
+    historial = HistorialDeEstudio()
+    assert historial.pasadas == 0
+    assert historial.peores_compases() == ()
+    assert historial.factor_sugerido(0.60) == pytest.approx(0.60)
+
+
+def pasada_con_proporcion(buenas, de=100):
+    return informe_de([(1, de, de, buenas, buenas, False)])
+
+
+def test_las_constantes_de_la_regla_del_tempo_tienen_nombre_y_valor_fijos():
+    assert UMBRAL_PARA_SUBIR == 0.90
+    assert UMBRAL_PARA_BAJAR == 0.70
+    assert PASADAS_BUENAS_PARA_SUBIR == 2
+
+
+def test_justo_en_el_umbral_de_subir_sube_y_un_punto_por_debajo_no():
+    for buenas, esperado in ((90, 0.65), (89, 0.60)):
+        historial = HistorialDeEstudio()
+        historial.anotar(pasada_con_proporcion(buenas))
+        historial.anotar(pasada_con_proporcion(buenas))
+        assert historial.factor_sugerido(0.60) == pytest.approx(esperado)
+
+
+def test_justo_en_el_umbral_de_bajar_no_baja_y_un_punto_por_debajo_si():
+    for buenas, esperado in ((70, 0.60), (69, 0.55)):
+        historial = HistorialDeEstudio()
+        historial.anotar(pasada_con_proporcion(buenas))
+        assert historial.factor_sugerido(0.60) == pytest.approx(esperado)
+
+
+def test_una_sola_pasada_buena_no_sube_el_tempo():
+    historial = HistorialDeEstudio()
+    historial.anotar(pasada_limpia())
+    assert historial.factor_sugerido(0.60) == pytest.approx(0.60)
+
+
+def test_las_dos_pasadas_buenas_tienen_que_ser_las_dos_ultimas():
+    historial = HistorialDeEstudio()
+    historial.anotar(pasada_limpia())
+    historial.anotar(pasada_con_proporcion(80))
+    historial.anotar(pasada_limpia())
+    assert historial.factor_sugerido(0.60) == pytest.approx(0.60)
+
+
+def test_una_pasada_regular_entre_dos_buenas_corta_la_racha_aunque_no_baje():
+    historial = HistorialDeEstudio()
+    historial.anotar(pasada_limpia())
+    historial.anotar(pasada_con_proporcion(80))
+    assert historial.factor_sugerido(0.60) == pytest.approx(0.60)
+    historial.anotar(pasada_limpia())
+    assert historial.factor_sugerido(0.60) == pytest.approx(0.60)
+    historial.anotar(pasada_limpia())
+    assert historial.factor_sugerido(0.60) == pytest.approx(0.65)
+
+
+def test_una_pasada_mala_antes_de_dos_buenas_no_impide_subir():
+    historial = HistorialDeEstudio()
+    historial.anotar(pasada_mala())
+    historial.anotar(pasada_limpia())
+    historial.anotar(pasada_limpia())
+    assert historial.factor_sugerido(0.60) == pytest.approx(0.65)
+
+
+def test_una_pasada_mala_tras_dos_buenas_baja_en_vez_de_subir():
+    historial = HistorialDeEstudio()
+    historial.anotar(pasada_limpia())
+    historial.anotar(pasada_limpia())
+    historial.anotar(pasada_mala())
+    assert historial.factor_sugerido(0.60) == pytest.approx(0.55)
+
+
+def test_tras_bajar_la_racha_se_consume_y_no_vuelve_a_bajar_sola():
+    historial = HistorialDeEstudio()
+    historial.anotar(pasada_mala())
+    assert historial.factor_sugerido(0.60) == pytest.approx(0.55)
+    assert historial.factor_sugerido(0.55) == pytest.approx(0.55)
+
+
+def test_una_pasada_de_solo_acordes_en_medio_no_corta_la_racha():
+    historial = HistorialDeEstudio()
+    historial.anotar(pasada_limpia())
+    historial.anotar(informe_de([(1, 3, 1, 0, 0, True)]))
+    historial.anotar(pasada_limpia())
+    assert historial.factor_sugerido(0.60) == pytest.approx(0.65)
+
+
+def test_el_paso_es_el_del_deslizador_y_no_acumula_error_de_coma_flotante():
+    historial = HistorialDeEstudio()
+    factor = 0.45
+    for _ in range(3):
+        historial.anotar(pasada_limpia())
+        historial.anotar(pasada_limpia())
+        factor = historial.factor_sugerido(factor)
+    assert factor == 0.60
+    assert PASO_DEL_FACTOR == pytest.approx(0.05)
+
+
+def test_un_compas_acertado_pero_tarde_cuenta_como_fallado_en_los_peores():
+    # Tocado bien pero tarde: acertadas = medibles, limpias = 0.
+    compas = CompasDelInforme(
+        numero=5, notas_escritas=4, notas_medibles=4, acertadas=4, a_tiempo=0,
+        pronto=0, tarde=4, limpias=0, desfase_medio_s=0.1, tiene_acordes=False,
+    )
+    historial = HistorialDeEstudio()
+    historial.anotar(InformeDePasada(
+        compases=(compas,), ritmo_aproximado=False, compas_variable=False,
+        factor_tempo=1.0,
+    ))
+    assert historial.peores_compases() == ((5, 1, 1),)
+
+
+def test_los_peores_compases_respetan_el_limite_y_el_orden_de_desempate():
+    historial = HistorialDeEstudio()
+    # Los compases 8, 3 y 6 fallan una vez de una pasada; el 2 falla una de dos.
+    historial.anotar(informe_de([
+        (8, 4, 4, 0, 0, False), (3, 4, 4, 0, 0, False),
+        (6, 4, 4, 0, 0, False), (2, 4, 4, 0, 0, False), (9, 4, 4, 4, 4, False),
+    ]))
+    historial.anotar(informe_de([(2, 4, 4, 4, 4, False)]))
+    assert historial.peores_compases(10) == (
+        (3, 1, 1), (6, 1, 1), (8, 1, 1), (2, 1, 2),
+    )
+    assert historial.peores_compases(2) == ((3, 1, 1), (6, 1, 1))
+    assert len(historial.peores_compases()) == 3
+
+
+def test_entre_dos_compases_con_los_mismos_fallos_va_primero_el_de_peor_proporcion():
+    historial = HistorialDeEstudio()
+    historial.anotar(informe_de([(1, 4, 4, 0, 0, False), (2, 4, 4, 0, 0, False)]))
+    historial.anotar(informe_de([(1, 4, 4, 4, 4, False)]))
+    assert historial.peores_compases(2) == ((2, 1, 1), (1, 1, 2))
+
+
+def test_los_compases_sin_notas_medibles_no_cuentan_ni_como_contados():
+    historial = HistorialDeEstudio()
+    historial.anotar(informe_de([(1, 0, 0, 0, 0, False), (2, 4, 4, 2, 2, False)]))
+    assert historial.peores_compases() == ((2, 1, 1),)
+
+
+def test_un_compas_nunca_fallado_no_aparece_entre_los_peores():
+    historial = HistorialDeEstudio()
+    historial.anotar(informe_de([(1, 4, 4, 4, 4, False)]))
+    assert historial.peores_compases() == ()
+
+
+def test_el_dict_del_historial_lleva_las_pasadas_y_los_peores_compases():
+    historial = HistorialDeEstudio()
+    historial.anotar(informe_de([(7, 4, 4, 1, 1, False)]))
+    assert historial.pasadas == 1
+    assert historial.a_dict() == {
+        "pasadas": 1,
+        "peores_compases": [{"compas": 7, "falladas": 1, "contadas": 1}],
+    }
+
+
+def test_anotar_cuenta_las_pasadas_una_a_una():
+    historial = HistorialDeEstudio()
+    for esperado in (1, 2, 3):
+        historial.anotar(pasada_limpia())
+        assert historial.pasadas == esperado
+
+
+def test_el_dict_distingue_las_falladas_de_las_contadas():
+    historial = HistorialDeEstudio()
+    historial.anotar(informe_de([(7, 4, 4, 1, 1, False)]))
+    historial.anotar(informe_de([(7, 4, 4, 4, 4, False)]))
+    historial.anotar(informe_de([(7, 4, 4, 4, 4, False)]))
+    assert historial.a_dict()["peores_compases"] == [
+        {"compas": 7, "falladas": 1, "contadas": 3}
+    ]
+
+
+def test_bajar_el_tempo_no_deja_basura_de_coma_flotante():
+    historial = HistorialDeEstudio()
+    historial.anotar(pasada_mala())
+    assert historial.factor_sugerido(0.60) == 0.55
+
+
+def test_primero_las_pasadas_falladas_y_luego_la_proporcion():
+    # El 1 falla una vez de una (100 %); el 2 falla dos veces de cuatro (50 %).
+    # Gana el que mas veces se ha fallado, no el de peor proporcion.
+    historial = HistorialDeEstudio()
+    historial.anotar(informe_de([(1, 4, 4, 0, 0, False), (2, 4, 4, 0, 0, False)]))
+    historial.anotar(informe_de([(2, 4, 4, 0, 0, False)]))
+    historial.anotar(informe_de([(2, 4, 4, 4, 4, False)]))
+    historial.anotar(informe_de([(2, 4, 4, 4, 4, False)]))
+    assert historial.peores_compases(2) == ((2, 2, 4), (1, 1, 1))

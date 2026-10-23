@@ -721,3 +721,94 @@ class SesionDeEstudio:
                 destino[clave] += valor
         self._seguidor.olvidar_tramo(0.0, self._seguidor.duracion_s + 1.0)
         return solo_esta_vuelta
+
+
+# La frontera para subir y la para bajar, separadas a proposito: con una sola,
+# una pasada al 89 % bajaria el tempo que la del 90 % acababa de subir, y el
+# tempo oscilaria sin que el alumno mejorara ni empeorara.
+UMBRAL_PARA_SUBIR = 0.90
+UMBRAL_PARA_BAJAR = 0.70
+PASADAS_BUENAS_PARA_SUBIR = 2
+
+
+class HistorialDeEstudio:
+    """Las pasadas de esta sesion. En memoria: al apagar el servidor se olvida.
+
+    Es la decision del usuario, y el precio esta medido: no hay formato de
+    archivo que versionar, ni escritura atomica, ni una sola prueba que toque el
+    disco. El dia que se quiera recordar entre dias, esta clase es el unico sitio
+    que cambia.
+    """
+
+    def __init__(self) -> None:
+        self._pasadas: list[InformeDePasada] = []
+        # Proporciones desde la ultima vez que se decidio mover el tempo. Se
+        # vacia al decidir, y por eso `factor_sugerido` no sube dos veces con la
+        # misma racha.
+        self._racha: list[float] = []
+
+    def anotar(self, informe: InformeDePasada) -> None:
+        self._pasadas.append(informe)
+        proporcion = proporcion_limpia(informe)
+        if proporcion is not None:
+            self._racha.append(proporcion)
+
+    @property
+    def pasadas(self) -> int:
+        return len(self._pasadas)
+
+    def peores_compases(self, cuantos: int = 3) -> tuple[tuple[int, int, int], ...]:
+        """(compas, pasadas falladas, pasadas contadas), el peor primero.
+
+        Un compas esta "fallado" en una pasada si no todas sus notas medibles
+        salieron limpias (acertadas Y a tiempo): un compas bien tocado pero tarde
+        tambien merece machacarse. Los compases con acordes NO entran: ahi solo se puede medir una
+        nota de cada acorde, asi que saldrian fallados siempre y el boton de
+        machacar mandaria al usuario justo a los compases que nunca podra pasar.
+        """
+        fallos: dict[int, list[int]] = {}
+        for informe in self._pasadas:
+            for compas in informe.compases:
+                if compas.tiene_acordes or compas.notas_medibles == 0:
+                    continue
+                marca = fallos.setdefault(compas.numero, [0, 0])
+                marca[1] += 1
+                if compas.limpias < compas.notas_medibles:
+                    marca[0] += 1
+        ordenados = sorted(
+            ((numero, fallo, contadas) for numero, (fallo, contadas) in fallos.items()),
+            key=lambda fila: (-fila[1], -fila[1] / fila[2], fila[0]),
+        )
+        return tuple(fila for fila in ordenados[:cuantos] if fila[1] > 0)
+
+    def factor_sugerido(self, factor_actual: float) -> float:
+        """Que factor deberia tener la proxima pasada. CONSUME la racha al decidir.
+
+        Dos pasadas seguidas por encima de `UMBRAL_PARA_SUBIR` suben un paso; una
+        sola por debajo de `UMBRAL_PARA_BAJAR` baja un paso, sin esperar a la
+        segunda, porque quien falla mucho no necesita confirmacion. Las pasadas
+        sin proporcion medible -una pieza entera de acordes- no cuentan para
+        ninguna de las dos cosas.
+        """
+        if not self._racha:
+            return factor_actual
+        if self._racha[-1] < UMBRAL_PARA_BAJAR:
+            self._racha = []
+            return max(FACTOR_MINIMO, round(factor_actual - PASO_DEL_FACTOR, 2))
+        ultimas = self._racha[-PASADAS_BUENAS_PARA_SUBIR:]
+        if (
+            len(ultimas) == PASADAS_BUENAS_PARA_SUBIR
+            and all(p >= UMBRAL_PARA_SUBIR for p in ultimas)
+        ):
+            self._racha = []
+            return min(FACTOR_MAXIMO, round(factor_actual + PASO_DEL_FACTOR, 2))
+        return factor_actual
+
+    def a_dict(self) -> dict:
+        return {
+            "pasadas": self.pasadas,
+            "peores_compases": [
+                {"compas": c, "falladas": f, "contadas": t}
+                for c, f, t in self.peores_compases()
+            ],
+        }
