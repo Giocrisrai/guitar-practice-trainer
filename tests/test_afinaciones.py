@@ -97,7 +97,8 @@ def test_un_perfil_a_medida_se_da_de_alta_para_que_una_pieza_pueda_nombrarlo():
     """`Pieza.perfil` es una clave de `PERFILES`, no un perfil."""
     perfil = perfil_desde_midis("Drop C", [36, 43, 48, 53, 57, 62], trastes=24)
     clave = registrar_perfil(perfil)
-    assert PERFILES[clave] is perfil
+    assert PERFILES[clave].cuerdas == perfil.cuerdas
+    assert PERFILES[clave].trastes == 24
     assert clave not in PERFILES_DE_FABRICA
 
 
@@ -108,6 +109,14 @@ def test_dar_de_alta_el_mismo_perfil_dos_veces_no_lo_duplica():
     segunda = registrar_perfil(perfil_desde_midis("Drop C otra vez", midis))
     assert primera == segunda
     assert len(PERFILES) == cuantos
+
+
+def test_el_nombre_de_un_perfil_dado_de_alta_sale_de_sus_cuerdas():
+    """La clave la comparten varias canciones, asi que el nombre no puede ser el
+    que trajera la primera."""
+    midis = [36, 43, 48, 53, 57, 62]
+    clave = registrar_perfil(perfil_desde_midis("lo que diga el archivo", midis))
+    assert PERFILES[clave].nombre == "Afinación C2 G2 C3 F3 A3 D4 (22 trastes)"
 
 
 def test_dar_de_alta_un_perfil_no_lo_vuelve_una_afinacion_conocida():

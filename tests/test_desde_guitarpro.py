@@ -136,11 +136,25 @@ def con_cambio_de_tempo(primero, segundo):
     return song
 
 
-def con_repeticion(veces=2):
+def _cierre_en_memoria(veces, extension):
+    """El `repeatClose` que hay que poner para que el DISCO diga `veces`.
+
+    El byte del archivo cuenta las veces que se toca el trozo: es el "x2" que
+    muestra Guitar Pro. PyGuitarPro lo normaliza a pasadas de mas al leer un gp5
+    (`gp5.py:328`) y le suma 1 al escribirlo (`gp5.py:1059`), pero en gp3 y gp4 no
+    lo toca (`gp3.py:225`). Asi que el mismo archivo se fabrica con un valor
+    distinto en memoria segun el formato, y eso es justo lo que hace que una ida y
+    vuelta por la libreria NO pueda servir de oraculo: sale estable con cualquier
+    convencion. Lo mide `test_el_byte_del_disco_de_un_cierre_cuenta_las_veces`.
+    """
+    return veces - 1 if extension == "gp5" else veces
+
+
+def con_repeticion(veces=2, extension="gp5"):
     """Dos compases entre barras de repeticion, tocados `veces` veces."""
     song = con_notas([(0, 6, 3), (4, 6, 5)])
     song.measureHeaders[0].isRepeatOpen = True
-    song.measureHeaders[1].repeatClose = veces
+    song.measureHeaders[1].repeatClose = _cierre_en_memoria(veces, extension)
     return song
 
 
@@ -173,7 +187,19 @@ def test_una_pista_sin_cuerdas_no_se_puede_usar(tmp_path):
     song = cancion()
     song.tracks[0].strings = []
     ruta = escribir(song, tmp_path)
-    assert pistas_de(ruta)[0].motivo_no_usable is not None
+    motivo = pistas_de(ruta)[0].motivo_no_usable
+    assert motivo is not None
+    # Que diga que NO HAY CUERDAS, no que no haya notas: sin cuerdas no se sabe
+    # como esta afinada, y eso es lo que impide importarla.
+    assert "cuerda" in motivo.lower()
+
+
+def test_importar_una_pista_sin_cuerdas_se_rechaza(tmp_path):
+    song = cancion()
+    song.tracks[0].strings = []
+    ruta = escribir(song, tmp_path)
+    with pytest.raises(ValueError, match="cuerda"):
+        pieza_desde_guitarpro(ruta, 1)
 
 
 def test_el_tempo_y_la_afinacion_salen_del_archivo(tmp_path):
@@ -295,8 +321,60 @@ def test_una_ligadura_sin_nota_antes_se_ignora_en_vez_de_reventar(tmp_path):
     assert pieza_desde_guitarpro(ruta, 1).notas == ()
 
 
-def test_las_repeticiones_se_expanden(tmp_path):
+def test_el_byte_del_disco_de_un_cierre_cuenta_las_veces(tmp_path):
+    """El oraculo de las repeticiones, medido en el ARCHIVO y no en la memoria.
+
+    Dos archivos que solo se diferencian en el cierre difieren en un unico byte.
+    En gp5 ese byte vale `repeatClose + 1` y en gp3/gp4 vale `repeatClose`: la
+    memoria cuenta pasadas de mas en gp5 y veces en los otros dos. Y el byte del
+    disco son veces, con minimo 2 -el "x2" de Guitar Pro-, porque si la memoria de
+    gp5 contara veces, `RepeatGroup` no veria nunca un cierre: solo lo cuenta si
+    `repeatClose > 0` (`models.py:119`) y un "x2" llegaria como 1... que es
+    exactamente lo que llega. Dicho al reves: un "x1" no es una repeticion.
+    """
+    for extension, esperados in (("gp5", (2, 3)), ("gp4", (1, 2)), ("gp3", (1, 2))):
+        archivos = []
+        for cierre in (1, 2):
+            song = con_notas([(0, 6, 3), (4, 6, 5)])
+            song.measureHeaders[0].isRepeatOpen = True
+            song.measureHeaders[1].repeatClose = cierre
+            ruta = escribir(song, tmp_path, f"cierre{cierre}.{extension}")
+            archivos.append(ruta.read_bytes())
+        distintos = [i for i, (a, b) in enumerate(zip(*archivos)) if a != b]
+        assert len(distintos) == 1, extension
+        byte = distintos[0]
+        assert (archivos[0][byte], archivos[1][byte]) == esperados, extension
+
+
+def test_un_cierre_de_repeticion_normal_hace_que_el_trozo_suene_dos_veces(tmp_path):
+    """El caso que trae cualquier archivo de verdad: un "x2" corriente.
+
+    En memoria llega como `repeatClose == 1`, que es el valor con el que el lector
+    tenia la cuenta al reves y se importaba sin repetir: la pieza duraba la mitad
+    de lo que suena.
+    """
     ruta = escribir(con_repeticion(veces=2), tmp_path)
+    assert guitarpro.parse(str(ruta)).measureHeaders[1].repeatClose == 1
+    pieza = pieza_desde_guitarpro(ruta, 1)
+    assert [n.inicio_pulsos for n in pieza.notas] == [0.0, 4.0, 8.0, 12.0]
+
+
+def test_un_cierre_de_tres_veces_se_toca_tres_veces(tmp_path):
+    ruta = escribir(con_repeticion(veces=3), tmp_path)
+    pieza = pieza_desde_guitarpro(ruta, 1)
+    assert [n.inicio_pulsos for n in pieza.notas] == [0.0, 4.0, 8.0, 12.0, 16.0, 20.0]
+
+
+def test_sin_barras_de_repeticion_no_se_repite_nada(tmp_path):
+    ruta = escribir(con_notas([(0, 6, 3), (4, 6, 5)]), tmp_path)
+    pieza = pieza_desde_guitarpro(ruta, 1)
+    assert [n.inicio_pulsos for n in pieza.notas] == [0.0, 4.0]
+
+
+def test_en_gp4_el_cierre_llega_sin_normalizar_y_tambien_se_expande(tmp_path):
+    """Mismo archivo, misma musica, otra convencion en memoria."""
+    ruta = escribir(con_repeticion(veces=2, extension="gp4"), tmp_path, "dos.gp4")
+    assert guitarpro.parse(str(ruta)).measureHeaders[1].repeatClose == 2
     pieza = pieza_desde_guitarpro(ruta, 1)
     assert [n.inicio_pulsos for n in pieza.notas] == [0.0, 4.0, 8.0, 12.0]
 
@@ -356,4 +434,37 @@ def test_el_compas_sale_del_archivo(tmp_path):
     song = cancion()
     song.measureHeaders[0].timeSignature.numerator = 3
     ruta = escribir(song, tmp_path)
-    assert pieza_desde_guitarpro(ruta, 1).compas == (3, 4)
+    pieza = pieza_desde_guitarpro(ruta, 1)
+    assert pieza.compas == (3, 4)
+    assert pieza.compas_variable is False
+
+
+def test_un_cambio_de_compas_a_mitad_se_marca(tmp_path):
+    """`Pieza.compas` es uno solo y quien dibuja la partitura trocea con el.
+
+    Sin la bandera, un 3/4 en medio pone las barras en el sitio equivocado desde
+    ahi hasta el final de la cancion y nada avisa.
+    """
+    song = con_notas([(0, 6, 3), (4, 6, 5)])
+    song.measureHeaders[1].timeSignature.numerator = 3
+    ruta = escribir(song, tmp_path)
+    pieza = pieza_desde_guitarpro(ruta, 1)
+    assert pieza.compas == (4, 4)
+    assert pieza.compas_variable is True
+    # Las notas no se descolocan: cada compas se mide con su propia longitud.
+    assert [n.inicio_pulsos for n in pieza.notas] == [0.0, 4.0]
+
+
+def test_el_nombre_de_la_afinacion_no_depende_de_la_cancion_que_llego_primero(tmp_path):
+    """La clave la comparten todas las canciones con la misma afinacion.
+
+    Si el nombre se derivara de la pista, el selector del afinador mostraria
+    "Afinacion de 'Guitarra ritmica'" en una afinacion que llego con otra cancion.
+    """
+    claves = []
+    for archivo, nombre_pista in (("a.gp5", "Guitarra ritmica"), ("b.gp5", "Solista")):
+        song = cancion(cuerdas_midi=(62, 57, 53, 48, 43, 36))
+        song.tracks[0].name = nombre_pista
+        claves.append(pieza_desde_guitarpro(escribir(song, tmp_path, archivo), 1).perfil)
+    assert claves[0] == claves[1]
+    assert PERFILES[claves[0]].nombre == "Afinación C2 G2 C3 F3 A3 D4 (24 trastes)"

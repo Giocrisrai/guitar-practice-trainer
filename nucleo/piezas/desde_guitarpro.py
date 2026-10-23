@@ -162,12 +162,35 @@ def _describir(cancion: guitarpro.Song) -> tuple[PistaDisponible, ...]:
     return tuple(pistas)
 
 
-def _orden_de_compases(compases: list) -> tuple[int, ...]:
+def _veces_que_se_toca(cabecera, normalizado: bool) -> int:
+    """Cuantas veces se toca el trozo que cierra en este compas; 1 si no cierra.
+
+    El byte del disco es el NUMERO DE VECES que se toca, con minimo 2: es el "x2"
+    que muestra Guitar Pro. PyGuitarPro no lo deja igual en los tres formatos, y
+    esto se puede comprobar sin tener un archivo real (lo hace
+    `test_el_byte_del_disco_de_un_cierre_cuenta_las_veces_que_se_toca`):
+
+    - gp5 lo normaliza a PASADAS DE MAS: resta 1 al leer (`gp5.py:328`) y suma 1
+      al escribir (`gp5.py:1059`), asi que un "x2" llega a memoria como 1.
+    - gp3 y gp4 no lo tocan (`gp3.py:225`): un "x2" llega a memoria como 2.
+
+    Que en gp5 la memoria cuente pasadas de mas lo confirma la propia libreria:
+    `RepeatGroup` solo considera que hay cierre si `repeatClose > 0`
+    (`models.py:119`), asi que si la memoria contara veces, un "x1" -que no es una
+    repeticion- seria indistinguible de no tener cierre.
+
+    Sin cierre, `repeatClose` vale -1 y aqui se devuelve 1: se toca una vez.
+    """
+    veces = cabecera.repeatClose + 1 if normalizado else cabecera.repeatClose
+    return max(veces, 1)
+
+
+def _orden_de_compases(compases: list, normalizado: bool) -> tuple[int, ...]:
     """Los indices de los compases EN EL ORDEN EN QUE SE TOCAN.
 
     Una barra de repeticion no es un adorno: si no se expande, la pieza dura la
-    mitad de lo que suena. `isRepeatOpen` abre y `repeatClose` dice cuantas veces
-    se toca el trozo en total, asi que se vuelve `repeatClose - 1` veces.
+    mitad de lo que suena. `isRepeatOpen` abre y el cierre dice cuantas veces se
+    toca el trozo en total, asi que se vuelve a el `veces - 1` veces.
     """
     orden: list[int] = []
     abierto = 0
@@ -178,8 +201,8 @@ def _orden_de_compases(compases: list) -> tuple[int, ...]:
         if cabecera.isRepeatOpen:
             abierto = indice
         orden.append(indice)
-        total = cabecera.repeatClose
-        if total > 1 and vueltas.get(indice, 0) < total - 1:
+        veces = _veces_que_se_toca(cabecera, normalizado)
+        if veces > 1 and vueltas.get(indice, 0) < veces - 1:
             vueltas[indice] = vueltas.get(indice, 0) + 1
             indice = abierto
             continue
@@ -241,8 +264,6 @@ def _convertir(
             for beat in voz.beats:
                 inicio = desplazamiento + (beat.start - compas.start) / TICKS_NEGRA
                 duracion = beat.duration.time / TICKS_NEGRA
-                if duracion <= 0:
-                    continue
                 for nota in beat.notes:
                     if nota.type is guitarpro.NoteType.tie:
                         # No es un ataque: alarga la nota de la misma cuerda y
@@ -286,6 +307,14 @@ def _convertir(
         for nota in en_obra
     )
     return notas, tuple(secciones)
+
+
+def _compas(cabecera) -> tuple[int, int]:
+    """El compas de una cabecera: (4, 4), (3, 4), (6, 8)."""
+    return (
+        cabecera.timeSignature.numerator,
+        cabecera.timeSignature.denominator.value,
+    )
 
 
 def _trastes_declarados(pista: guitarpro.Track) -> int:
@@ -336,20 +365,30 @@ def pieza_desde_guitarpro(ruta: Path | str, numero_pista: int) -> Pieza:
             f"{descripcion.motivo_no_usable}"
         )
 
-    notas, secciones = _convertir(pista, _orden_de_compases(pista.measures))
+    # Solo gp5 normaliza el cierre de repeticion al leerlo; ver `_veces_que_se_toca`.
+    normalizado = cancion.versionTuple[0] >= 5
+    notas, secciones = _convertir(
+        pista, _orden_de_compases(pista.measures, normalizado)
+    )
     traste_maximo = max((nota.traste for nota in notas), default=0)
+    # El nombre que se le da al perfil es provisional: `registrar_perfil` guarda uno
+    # derivado de las cuerdas, porque la clave la comparten todas las canciones con
+    # la misma afinacion y el nombre no puede depender de cual se importo primero.
     perfil = perfil_desde_midis(
-        f"Afinacion de '{descripcion.nombre}'",
+        f"Afinación de '{descripcion.nombre}'",
         _cuerdas_de_grave_a_aguda(pista),
         trastes=max(_trastes_declarados(pista), traste_maximo),
     )
-    cabecera = cancion.measureHeaders[0]
+    compas = _compas(cancion.measureHeaders[0])
     return Pieza(
         nombre=cancion.title.strip() or ruta.stem,
         perfil=_clave_de_la_afinacion(perfil, traste_maximo),
         tempo=cancion.tempo,
-        compas=(cabecera.timeSignature.numerator, cabecera.timeSignature.denominator.value),
+        compas=compas,
         notas=notas,
         secciones=secciones,
         tempo_variable=_tempo_variable(cancion),
+        compas_variable=any(
+            _compas(cabecera) != compas for cabecera in cancion.measureHeaders
+        ),
     )

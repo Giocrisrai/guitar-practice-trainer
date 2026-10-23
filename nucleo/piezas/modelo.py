@@ -103,6 +103,11 @@ class Pieza:
     ritmo_aproximado: bool = False
     # La cancion cambiaba de tempo y se tomo el primero.
     tempo_variable: bool = False
+    # La cancion cambiaba de compas y se tomo el del primero. Importa porque quien
+    # dibuja la partitura trocea la pieza con UN compas constante
+    # (`interfaz/src/vistaEscrita.ts`): con un 3/4 en medio, las barras caen en el
+    # sitio equivocado desde ahi hasta el final y nada avisa.
+    compas_variable: bool = False
 
     def __post_init__(self) -> None:
         if self.perfil not in PERFILES:
@@ -176,4 +181,5 @@ class Pieza:
             "secciones": [seccion.a_dict() for seccion in self.secciones],
             "ritmo_aproximado": self.ritmo_aproximado,
             "tempo_variable": self.tempo_variable,
+            "compas_variable": self.compas_variable,
         }

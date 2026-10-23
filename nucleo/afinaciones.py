@@ -6,7 +6,7 @@ bajo sea simplemente otra entrada del diccionario en lugar de una rama especial.
 """
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 
@@ -146,10 +146,20 @@ def registrar_perfil(perfil: PerfilAfinacion) -> str:
 
     Quien importa debe preguntar primero por `clave_de_perfil`: una cancion en
     afinacion estandar no tiene que inventarse un perfil.
+
+    El NOMBRE que se guarda tambien se deriva de las cuerdas, y no es el que trae
+    el perfil que se pasa: la clave la comparten todas las canciones con la misma
+    afinacion, asi que el nombre no puede depender de cual se importo primero. Si
+    no, el selector de afinaciones diria "Afinacion de 'Guitarra ritmica'" en una
+    afinacion que llego con otra cancion.
     """
+    notas = " ".join(cuerda.nota for cuerda in perfil.cuerdas)
     cuerdas = "-".join(cuerda.nota.replace("#", "s").lower() for cuerda in perfil.cuerdas)
     clave = f"a_medida_{cuerdas}_{perfil.trastes}t"
-    PERFILES.setdefault(clave, perfil)
+    PERFILES.setdefault(
+        clave,
+        replace(perfil, nombre=f"Afinación {notas} ({perfil.trastes} trastes)"),
+    )
     return clave
 
 
