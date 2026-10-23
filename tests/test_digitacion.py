@@ -1,3 +1,5 @@
+import math
+
 import numpy as np
 import pytest
 
@@ -26,6 +28,10 @@ def test_el_minimo_nunca_es_peor_que_la_heuristica_de_cercania():
     `digitar` devuelve un minimo, asi que su coste tiene que ser menor o igual que el
     de cualquier otra eleccion sobre las MISMAS posiciones y con la MISMA funcion de
     coste. Si alguna vez falla, el algoritmo esta mal.
+
+    El ancla de la heuristica no hay que derivarla a mano: `coste_total` la deduce
+    igual para las dos digitaciones, quedandose con la mejor colocacion de la mano
+    para la secuencia de posiciones que le dan.
     """
     from nucleo.musica import posiciones_en_mastil
     from nucleo.piezas.desde_ejercicio import elegir_posicion
@@ -43,7 +49,10 @@ def test_el_minimo_nunca_es_peor_que_la_heuristica_de_cercania():
             cercanas.append(elegida)
             anterior = elegida.traste
 
-        assert coste_total(optimo, coste) <= coste_total(tuple(cercanas), coste) + 1e-9
+        propio = coste_total(optimo, GUITARRA, coste)
+        heuristico = coste_total(tuple(cercanas), GUITARRA, coste)
+        assert math.isfinite(propio) and math.isfinite(heuristico)
+        assert propio <= heuristico + 1e-9
 
 
 def test_ninguna_posicion_cae_fuera_del_mastil():
@@ -64,6 +73,23 @@ def test_ningun_salto_supera_el_estiramiento_permitido():
     midis = [40, 41, 42, 43]
     trastes = [p.traste for p in digitar(midis, GUITARRA, coste) if p.traste > 0]
     assert max(trastes) - min(trastes) <= 4
+
+
+def test_un_salto_grande_se_toca_moviendo_la_mano():
+    """El caso que destapo que el modelo viejo llamaba imposible a un desplazamiento.
+
+    Fa2 (midi 41) solo vive en el primer traste de la sexta; Si4 (midi 71) no baja del
+    septimo de la primera. Entre los dos hay seis trastes, mas de los que abarcan los
+    dedos, y aun asi ese salto lo toca cualquiera moviendo la mano. Lo que el coste
+    prohibe es estirar los dedos, no desplazar la mano, asi que la arista existe y el
+    coste es finito.
+    """
+    midis = [41, 71]
+    assert digitar(midis, GUITARRA) == (
+        Posicion(cuerda=6, traste=1),
+        Posicion(cuerda=1, traste=7),
+    )
+    assert math.isfinite(coste_total(digitar(midis, GUITARRA), GUITARRA))
 
 
 def test_una_nota_que_no_existe_en_el_mastil_se_rechaza():
