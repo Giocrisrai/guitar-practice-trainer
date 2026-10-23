@@ -1,12 +1,25 @@
-"""La sesion del carril: lleva el reloj de la pieza y le da de comer al seguidor.
+"""La sesion del carril: lleva el reloj de la pieza y le da de comer al estudio.
 
 Reparto de trabajo con el nucleo, que es lo que explica todo lo demas:
 
-- `SeguidorPieza` (nucleo) sabe que nota toca ahora y a que nota de la pieza
-  pertenece cada pulsacion. Su reloj lo mueven los cuadros de audio.
-- Esta clase (servidor) es la dueña del RELOJ y de la PAUSA. El reloj se inyecta
-  para que las pruebas lo muevan a mano, y la pausa -por falta de señal- es cosa
-  del servidor: el seguidor no sabe nada de cables.
+- `SesionDeEstudio` (nucleo) envuelve al `SeguidorPieza`: sabe que nota toca
+  ahora, a que nota de la pieza pertenece cada pulsacion, en que compas va el
+  cabezal, cuando el bucle da la vuelta y que lleva anotado la pasada. Su reloj
+  lo mueven los cuadros de audio, o el delta que le pasa esta clase.
+- Esta clase (servidor) es la dueña del RELOJ DE PARED y de la PAUSA POR FALTA DE
+  SEÑAL. El reloj se inyecta para que las pruebas lo muevan a mano, y la pausa
+  -por falta de señal- es cosa del servidor: el nucleo no sabe nada de cables.
+
+Dos puertas para el reloj del estudio, y usar la que no toca es un fallo:
+`avanzar(delta)` es relativa (respeta la pausa del usuario y la cuenta atras, y
+puede dar la vuelta al bucle) y `colocar_en(instante)` es absoluta (cancela la
+cuenta atras y nunca da la vuelta). Aqui se avanza cuando el tiempo pasa y se
+coloca cuando hay que recolocar el cabezal donde esta clase dice.
+
+Dos pausas, y tampoco se mezclan: `pausado` es "no llega senal del cable" y la
+decide esta clase mirando el audio; `en_pausa` la decide el usuario y la lleva la
+sesion de estudio. El estado publica las dos, porque la interfaz dice cosas
+distintas.
 
 Es la hermana de `SesionPractica` (`servidor/ejercicios.py`) y copia su forma: se
 suscribe al flujo de analisis como observadora en vez de muestrearlo, protege con
@@ -16,11 +29,19 @@ observador.
 
 import threading
 import time
+from dataclasses import replace
 from typing import Callable
 
 from nucleo.ejercicios.pulsaciones import VENTANA_ATAQUE_COMO_ONSET_S
+from nucleo.piezas.compases import compases_de_la_seccion
+from nucleo.piezas.estudio import (
+    EstadoEstudio,
+    HistorialDeEstudio,
+    PlanDePasada,
+    SesionDeEstudio,
+)
 from nucleo.piezas.modelo import Pieza
-from nucleo.piezas.seguimiento import EstadoCarril, SeguidorPieza
+from nucleo.piezas.seguimiento import EstadoCarril
 from servidor.configuracion import Configuracion
 
 # Cuanto puede llevar el seguidor sin recibir un cuadro de audio para que sea
@@ -39,6 +60,12 @@ from servidor.configuracion import Configuracion
 # sin audio (dispositivo desaparecido, o un arranque antes del primer cuadro) el
 # reloj del seguidor no avanza solo, y el carril tiene que seguir sabiendo donde
 # esta el cabezal.
+#
+# Con la sesion de estudio por medio el limite rige igual y por lo mismo: sus dos
+# puertas al reloj -`colocar_en` y `avanzar`- acaban las dos en `avanzar_a` del
+# seguidor, asi que las dos cuestan las pulsaciones en vuelo. De ahi que esta
+# clase solo mueva el reloj del estudio cuando `_sin_cuadros` es verdad; mientras
+# entra audio lo mueve `procesar`, que es el unico camino que no las pierde.
 ESPERA_SIN_CUADROS_S = VENTANA_ATAQUE_COMO_ONSET_S
 
 # Lo mas que puede entrar en la pieza por cada aviso: el invariante del reloj.
@@ -85,8 +112,33 @@ PERFIL_POR_DEFECTO = Configuracion().perfil
 
 # Lo que publica un carril sin pieza: las mismas claves que con pieza, para que el
 # WebSocket y la interfaz no tengan que distinguir dos formas de estado.
+#
+# La etapa 3c añade los campos de la pasada (compas, repeticion, tempo...), asi
+# que el estado apagado los lleva tambien: si se quedara con los cinco de la
+# etapa 3a, la interfaz tendria otra vez dos formas de estado que distinguir, que
+# es justo lo que este objeto existe para evitar. Los valores son los de "no hay
+# nada que practicar": compas 1 -el unico que no miente sobre un cabezal que no
+# esta en ninguna parte-, ultimo compas 0 porque no hay tramo, y el plan por
+# defecto en lo demas.
 _CARRIL_APAGADO = EstadoCarril(
     instante_s=0.0, indice_actual=0, total=0, completado=False, tocadas=()
+)
+_ESTUDIO_APAGADO = EstadoEstudio(
+    carril=_CARRIL_APAGADO,
+    instante_pulsos=0.0,
+    compas_en_curso=1,
+    total_de_compases=0,
+    primer_compas=1,
+    ultimo_compas=0,
+    repeticion=1,
+    cuenta_atras_restante_s=0.0,
+    factor_tempo=1.0,
+    tempo_efectivo=0.0,
+    en_bucle=False,
+    en_pausa=False,
+    compas_variable=False,
+    ritmo_aproximado=False,
+    tramo_terminado=False,
 )
 
 # El `arranque` que publica un carril sin pieza. Los arranques de verdad empiezan
@@ -96,15 +148,21 @@ ARRANQUE_NINGUNO = 0
 
 
 class SesionCarril:
-    """Propietaria de la pieza en curso, de su seguidor y del reloj que la mueve.
+    """Propietaria de la pieza en curso, de su estudio y del reloj que lo mueve.
 
     Dos relojes, como en el seguidor, y aqui tampoco se pueden mezclar:
 
-    - El de la PIEZA, en segundos desde su comienzo, es lo que publica
-      `estado()["instante_s"]`. Lo lleva esta clase sumando el tiempo
-      transcurrido entre dos miradas, y NO suma los tramos sin señal.
-    - El del ANALISIS, que acompaña a cada cuadro de audio, se le pasa al
-      seguidor tal cual (`procesar`), porque sus esperas estan medidas en el.
+    - El de la PASADA, en segundos desde el comienzo de la pieza y ya estirado por
+      el factor de tempo, es lo que publica `estado()["instante_s"]`. Esta clase
+      mide el tiempo transcurrido entre dos miradas y se lo PASA a la sesion de
+      estudio, que es quien decide que hacer con el: en pausa del usuario no suma
+      nada, durante la cuenta atras la descuenta, y al final del tramo da la
+      vuelta al bucle. Los tramos sin señal no se le pasan.
+    - El del ANALISIS, que acompaña a cada cuadro de audio, se le pasa al estudio
+      tal cual (`procesar`), porque sus esperas estan medidas en el.
+
+    `self._instante` NO es la cuenta de esta clase: es el ESPEJO del reloj del
+    estudio, que es la verdad (ver `_mirar`).
 
     En produccion los dos son `time.monotonic()`; el reloj se inyecta para que las
     pruebas lo muevan a mano, y debe ser monotonico.
@@ -133,7 +191,25 @@ class SesionCarril:
         self._reloj = reloj
         self._perfil_activo_inyectado = perfil_activo
         self._pieza: Pieza | None = None
-        self._seguidor: SeguidorPieza | None = None
+        self._estudio: SesionDeEstudio | None = None
+        # Un historial por NOMBRE de pieza, porque el historial tiene que
+        # sobrevivir a empezar otra pasada de la misma cancion: es justo para eso.
+        # Se vacia al apagar el servidor, que es la decision del usuario.
+        #
+        # La clave es el nombre y no la pieza entera: dos canciones distintas que
+        # se llamen igual comparten historial. Es un empate declarado, y el precio
+        # de equivocarse es un "fallas el 19" de otra cancion, no un dato perdido.
+        self._historiales: dict[str, HistorialDeEstudio] = {}
+        # El historial de la pieza en marcha. Sin pieza no es el de nadie: lo
+        # reemplaza `iniciar` con el que corresponde al nombre, y nadie lo lee
+        # antes (los dos sitios que lo tocan pasan primero por el estudio, que
+        # sin pieza no existe).
+        self._historial = HistorialDeEstudio()
+        # Las dos marcas del detector de final (ver `_cerrar_lo_que_termino`): lo
+        # ultimo que se anoto en el historial, para no anotarlo dos veces. La
+        # repeticion empieza en 1 porque es la primera vuelta, no la vuelta cero.
+        self._termino_anunciado = False
+        self._repeticion_anunciada = 1
         # Que arranque publica el estado: sube en cada `iniciar` y nunca se
         # reutiliza. Es lo que le permite al navegador saber de QUE pieza habla un
         # paquete, en vez de adivinarlo.
@@ -167,18 +243,27 @@ class SesionCarril:
 
     @property
     def activa(self) -> bool:
-        return self._seguidor is not None
+        return self._estudio is not None
 
     @property
     def pieza(self) -> Pieza | None:
         return self._pieza
 
-    def iniciar(self, pieza: Pieza) -> dict:
-        """Arranca una pieza. Devuelve la pieza ENTERA mas el estado inicial.
+    def iniciar(self, pieza: Pieza, plan: PlanDePasada | None = None) -> dict:
+        """Arranca una pieza con su plan. Devuelve la pieza ENTERA y el estado.
 
         La pieza se devuelve aqui y una sola vez: `estado()` no la repite, porque
         lo llama el WebSocket 30 veces por segundo y mandar cientos de notas que
-        no cambian seria tirar el canal.
+        no cambian seria tirar el canal. Quien recargue el navegador a mitad de
+        cancion la vuelve a pedir por `pieza_en_marcha`, que es la deuda que la
+        etapa 3a dejo abierta.
+
+        Sin plan se usa `PlanDePasada()`, que es exactamente el comportamiento de
+        la etapa 3a: la pieza entera, a tempo escrito, sin bucle y sin click.
+
+        Un plan imposible -un factor fuera de rango, un compas que la pieza no
+        tiene- sale como `ValueError` desde el nucleo, y `iniciar_pieza` lo
+        traduce a 400 igual que el de la afinacion.
 
         La respuesta lleva tambien el `arranque` de esta pieza -viene dentro de
         `estado()`-, que es la etiqueta con la que el navegador reconoce despues
@@ -201,25 +286,40 @@ class SesionCarril:
             ahora = self._reloj()
             with self._candado:
                 self._pieza = pieza
-                self._seguidor = SeguidorPieza(pieza)
+                self._estudio = SesionDeEstudio(pieza, plan or PlanDePasada())
+                self._historial = self._historiales.setdefault(
+                    pieza.nombre, HistorialDeEstudio()
+                )
+                self._termino_anunciado = False
+                self._repeticion_anunciada = 1
                 self._arranque += 1
-                self._instante = 0.0
+                # NO cero: con un plan que empieza en el compas 5 el cabezal
+                # arranca donde diga el estudio, que es quien sabe donde cae ese
+                # compas en segundos de la pasada.
+                self._instante = self._estudio.estado.carril.instante_s
                 self._ultima_mirada = ahora
                 self._ultimo_cuadro = None
                 self._pausado = False
-            # El observador se registra AL FINAL, con el seguidor ya en su sitio:
+            # El observador se registra AL FINAL, con el estudio ya en su sitio:
             # si se registrara antes, el primer cuadro podria entrar con
-            # `_seguidor` a None y el audio de ese instante se perderia sin que
+            # `_estudio` a None y el audio de ese instante se perderia sin que
             # nada lo dijera.
             self._sesion_audio.registrar_observador(self._observar)
-        return {"pieza": pieza.a_dict(), **self.estado()}
+        return {
+            "pieza": pieza.a_dict(),
+            "secciones_en_compases": self._secciones_en_compases(pieza),
+            **self.estado(),
+        }
 
     def detener(self) -> None:
         """Para el carril y suelta la pieza. Seguro de llamar varias veces.
 
         El observador se quita PRIMERO, igual que en `SesionPractica`: asi ningun
-        cuadro posterior puede alimentar al seguidor que las lineas siguientes
+        cuadro posterior puede alimentar al estudio que las lineas siguientes
         estan soltando.
+
+        El historial NO se suelta: vive en `_historiales`, por nombre de pieza, y
+        tiene que sobrevivir a detener y volver a empezar la misma cancion.
 
         Va bajo `_candado_arranque` (reentrante, porque `iniciar` lo llama con el
         ya tomado) para que no pueda cruzarse con un `iniciar()` y dejar
@@ -228,15 +328,17 @@ class SesionCarril:
         with self._candado_arranque:
             self._sesion_audio.quitar_observador(self._observar)
             with self._candado:
-                self._seguidor = None
+                self._estudio = None
                 self._pieza = None
                 self._instante = 0.0
                 self._ultima_mirada = self._reloj()
                 self._ultimo_cuadro = None
                 self._pausado = False
+                self._termino_anunciado = False
+                self._repeticion_anunciada = 1
 
     def estado(self) -> dict:
-        """Instantanea para la interfaz: el `EstadoCarril` mas `pausado`.
+        """Instantanea para la interfaz: el `EstadoEstudio` mas `pausado`.
 
         Mueve el reloj aqui, ademas de en `_observar`, y por la misma razon que
         `SesionPractica.estado()` ajusta ahi el metronomo: los dos sitios cubren
@@ -247,9 +349,10 @@ class SesionCarril:
         el observador no vuelve a correr NUNCA. Este metodo, en cambio, lo llama el
         WebSocket a 30 Hz, y es la mitad que sigue viva.
 
-        `pausado` lo añade el servidor y no el nucleo: el seguidor no sabe nada de
+        `pausado` lo añade el servidor y no el nucleo: el nucleo no sabe nada de
         cables, y la interfaz necesita poder decir "sin señal" en vez de fingir
-        que la pieza va sola.
+        que la pieza va sola. `en_pausa` -la del usuario- viene del estudio y es
+        otra cosa: las dos se publican, y la interfaz dice cosas distintas.
         """
         ahora = self._reloj()
         # Fuera del candado: en la sesion de verdad es una propiedad que mira su
@@ -263,7 +366,7 @@ class SesionCarril:
         # lento ahi dentro, esto habria que revisarlo.
         with self._candado:
             self._mirar(ahora, ausente)
-            return self._instantanea(ahora)
+            return self._instantanea()
 
     def _sin_senal(self) -> bool:
         """Si el carril debe tratarse como sin señal: no hay audio que oir.
@@ -296,46 +399,50 @@ class SesionCarril:
         return PERFIL_POR_DEFECTO if configuracion is None else configuracion.perfil
 
     def _observar(self, resultado, instante_analisis: float) -> None:
-        """Alimenta al seguidor con un cuadro de analisis.
+        """Alimenta al estudio con un cuadro de analisis.
 
         Corre DENTRO del hilo de analisis, asi que aqui no se hace nada lento: se
         mueve el reloj bajo candado, se suelta, y `procesar` -que es el trabajo de
         verdad- corre fuera, con el candado del propio seguidor.
 
-        Mientras el carril esta pausado el cuadro NO llega al seguidor. No es un
-        detalle: con el cable enchufado y callado los cuadros de silencio siguen
-        llegando, y `procesar` mueve el reloj del seguidor con cada uno, asi que
-        alimentarlo durante la pausa dejaria el carril corriendo igual que si no
-        hubiera pausa.
+        Mientras el carril esta pausado por falta de señal el cuadro NO llega al
+        estudio. No es un detalle: con el cable enchufado y callado los cuadros de
+        silencio siguen llegando, y `procesar` mueve el reloj con cada uno, asi
+        que alimentarlo durante la pausa dejaria el carril corriendo igual que si
+        no hubiera pausa.
 
         Y si este cuadro llega despues de un hueco largo -el audio se paro y ha
-        vuelto- se le recoloca el reloj al seguidor ANTES de darle de comer. Sin
-        eso, `procesar` calcula el instante de la pieza restandole al reloj del
-        analisis un origen fijado antes del hueco, y el hueco entero entra en el
-        cabezal: con 30 s de apagon, el cabezal saltaba a 30 s aunque el reloj de
-        esta clase se hubiera quedado donde debia. Recolocar es seguro justo ahi,
-        por lo mismo que en `_instantanea`: sin cuadros no hay pulsacion en vuelo
-        que pueda resolverse.
+        vuelto- se le recoloca el reloj al estudio ANTES de darle de comer, con la
+        puerta ABSOLUTA (`colocar_en`) y no con la relativa: es una colocacion en
+        el sitio que esta clase ya decidio, no un tiempo que haya pasado, y
+        tratarla como un avance le haria dar la vuelta al bucle por un hueco de
+        audio. Sin recolocar, `procesar` calcula el instante de la pieza
+        restandole al reloj del analisis un origen fijado antes del hueco, y el
+        hueco entero entra en el cabezal: con 30 s de apagon, el cabezal saltaba a
+        30 s aunque el reloj de esta clase se hubiera quedado donde debia.
+        Recolocar es seguro justo ahi, por lo mismo que en `_mirar`: sin cuadros no
+        hay pulsacion en vuelo que pueda resolverse.
         """
         ahora = self._reloj()
         ausente = self._sin_senal()
         with self._candado:
             self._mirar(ahora, ausente)
-            seguidor = self._seguidor
-            if seguidor is None or self._pausado:
+            estudio = self._estudio
+            if estudio is None or self._pausado:
                 return
             if self._sin_cuadros(ahora):
-                seguidor.avanzar_a(self._instante)
+                estudio.colocar_en(self._instante)
             self._ultimo_cuadro = ahora
-        seguidor.procesar(resultado, instante_analisis)
+        estudio.procesar(resultado, instante_analisis)
 
     def _mirar(self, ahora: float, ausente: bool) -> None:
-        """Mueve el reloj de la pieza y ajusta la pausa. Se llama BAJO candado.
+        """Mueve el reloj de la pasada y ajusta la pausa. Se llama BAJO candado.
 
-        El reloj se lleva sumando lo transcurrido entre dos miradas, y el tramo
-        cuenta solo si en esta mirada HAY señal. Dicho de otro modo: el tiempo sin
-        señal no entra en la pieza, que es lo que pide la spec §5 (un carril que
-        corre con el cable desenchufado te hace fallar notas que nunca sonaron).
+        El tramo transcurrido entre dos miradas se le PASA a la sesion de estudio,
+        y cuenta solo si en esta mirada HAY señal. Dicho de otro modo: el tiempo
+        sin señal no entra en la pieza, que es lo que pide la spec §5 (un carril
+        que corre con el cable desenchufado te hace fallar notas que nunca
+        sonaron).
 
         Atribuir el tramo a la lectura NUEVA y no a la vieja es deliberado: la
         señal se va y vuelve entre dos miradas, y nadie sabe en que punto exacto.
@@ -352,24 +459,37 @@ class SesionCarril:
         cada excepcion a esa regla ha sido un camino nuevo por el que el hueco
         volvia a entrar.
 
-        Al pausar se le congela tambien el reloj al seguidor (`avanzar_a`), que es
-        lo que hace segura la pausa: `avanzar_a` invalida las pulsaciones en vuelo
-        -las tocadas en el tramo que se acaba de abandonar- y deja la
-        correspondencia entre relojes sin fijar, de modo que el primer cuadro tras
-        la vuelta la fija de nuevo y la pieza sigue donde estaba.
+        Al pausar se le congela tambien el reloj al estudio (`colocar_en`, que
+        acaba en el `avanzar_a` del seguidor), que es lo que hace segura la pausa:
+        `avanzar_a` invalida las pulsaciones en vuelo -las tocadas en el tramo que
+        se acaba de abandonar- y deja la correspondencia entre relojes sin fijar,
+        de modo que el primer cuadro tras la vuelta la fija de nuevo y la pieza
+        sigue donde estaba.
         """
-        seguidor = self._seguidor
-        if seguidor is None:
+        estudio = self._estudio
+        if estudio is None:
             self._ultima_mirada = ahora
             return
         transcurrido = ahora - self._ultima_mirada
         self._ultima_mirada = ahora
         if not ausente:
             self._pausado = False
-            self._instante += min(transcurrido, TECHO_TRAMO_S)
+            # El tramo se le pasa a la sesion de estudio, que decide que hacer con
+            # el: en pausa del usuario no suma nada, durante la cuenta atras
+            # descuenta la cuenta, y al final del bucle da la vuelta. Solo cuando
+            # NO llegan cuadros, porque con audio el reloj lo mueve `procesar`
+            # (ver ESPERA_SIN_CUADROS_S: colocarlo con audio entrando cuesta las
+            # pulsaciones en vuelo).
+            if self._sin_cuadros(ahora):
+                estudio.avanzar(min(transcurrido, TECHO_TRAMO_S))
         elif not self._pausado:
             self._pausado = True
-            seguidor.avanzar_a(self._instante)
+            estudio.colocar_en(self._instante)
+        # El reloj de la sesion de estudio es la verdad, y esta clase lo adopta en
+        # vez de llevar su propia cuenta: ella congela durante la cuenta atras y
+        # da la vuelta al bucle. Sin esta linea el cabezal saltaba hacia delante
+        # al acabar cada cuenta atras.
+        self._instante = estudio.estado.carril.instante_s
 
     def _sin_cuadros(self, ahora: float) -> bool:
         """Si el seguidor lleva tanto sin recibir audio que se le puede mover el
@@ -378,23 +498,156 @@ class SesionCarril:
             self._ultimo_cuadro is None or ahora - self._ultimo_cuadro >= ESPERA_SIN_CUADROS_S
         )
 
-    def _instantanea(self, ahora: float) -> dict:
-        """El estado publicable, construido entero bajo candado.
+    def _instantanea(self) -> dict:
+        """El estado publicable, construido entero bajo candado. NO mueve el reloj.
 
-        Cuando hace rato que no llega un cuadro, el reloj del seguidor no avanza
-        solo y hay que moverselo (`avanzar_a`); cuando esta llegando audio, el
-        seguidor ya lo lleva y no se le toca, porque `avanzar_a` le costaria las
-        pulsaciones en vuelo (ver `ESPERA_SIN_CUADROS_S`). En los dos casos el
-        estado sale de UNA sola llamada al seguidor, asi que `instante_s`,
-        `indice_actual` y `tocadas` siempre hablan del mismo instante.
+        Mover el reloj es cosa de `_mirar`, que corre justo antes y es el unico
+        sitio que sabe cuanto tiempo ha pasado; aqui se lee lo que el estudio
+        diga. Este metodo SI colocaba antes el reloj del seguidor, y dejo de
+        hacerlo cuando el reloj de esta clase paso a ser el espejo del estudio:
+        colocarlo aqui seria recolocar el cabezal en el sitio donde el estudio ya
+        lo tiene, cancelandole la cuenta atras treinta veces por segundo.
+
+        El estado sale de UNA sola lectura, asi que `instante_s`, `indice_actual`,
+        `compas_en_curso` y `tocadas` siempre hablan del mismo instante.
+
+        Las dos pausas viajan juntas y separadas: `en_pausa` -la del usuario- la
+        trae el estudio dentro de `a_dict()`, y `pausado` -la falta de señal- la
+        añade esta clase. El nucleo no sabe nada de cables, y la interfaz necesita
+        poder decir "sin señal" en vez de fingir que la pieza va sola.
         """
-        seguidor = self._seguidor
-        if seguidor is None:
+        estudio = self._estudio
+        if estudio is None:
             return {
-                **_CARRIL_APAGADO.a_dict(),
+                **_ESTUDIO_APAGADO.a_dict(),
                 "pausado": False,
                 "arranque": ARRANQUE_NINGUNO,
             }
-        sin_cuadros = self._sin_cuadros(ahora)
-        estado = seguidor.avanzar_a(self._instante) if sin_cuadros else seguidor.estado
+        estado = estudio.estado
+        self._cerrar_lo_que_termino(estado)
         return {**estado.a_dict(), "pausado": self._pausado, "arranque": self._arranque}
+
+    def _cerrar_lo_que_termino(self, estado: EstadoEstudio) -> None:
+        """Anota en el historial lo que acabo de cerrarse, y mueve el tempo si toca.
+
+        Se llama BAJO candado, desde la instantanea, porque es ahi donde se ve el
+        estado nuevo. Lo que mira son dos transiciones, y hacen falta las dos:
+
+        - Cambio de `repeticion`: estudiando un bucle, la pregunta "ya te sale?"
+          es sobre la vuelta que acaba de pasar, asi que cada vuelta es una
+          pasada del historial.
+        - `tramo_terminado` de False a True: sin bucle, la pasada acaba una vez.
+
+        `cerrar_repeticion` devuelve el informe de SOLO esa vuelta, que es lo que
+        se anota: anotar el acumulado contaria las vueltas anteriores otra vez.
+        """
+        estudio = self._estudio
+        if estudio is None:
+            return
+        termino = estado.tramo_terminado and not self._termino_anunciado
+        dio_la_vuelta = estado.repeticion != self._repeticion_anunciada
+        if not termino and not dio_la_vuelta:
+            return
+        self._termino_anunciado = estado.tramo_terminado
+        self._repeticion_anunciada = estado.repeticion
+        # Al dar la vuelta, `_dar_la_vuelta` ya cerro la repeticion por dentro y
+        # su informe se perdio: lo que se anota aqui es lo que el estudio tenga
+        # cerrado. Por eso `SesionDeEstudio._dar_la_vuelta` guarda el informe de
+        # la vuelta en `self._ultima_vuelta`, y aqui se lee.
+        informe = estudio.ultima_vuelta if dio_la_vuelta else estudio.cerrar_repeticion()
+        if informe is None:
+            return
+        self._historial.anotar(informe)
+        if estudio.plan.tempo_automatico:
+            sugerido = self._historial.factor_sugerido(estudio.plan.factor_tempo)
+            if sugerido != estudio.plan.factor_tempo:
+                estudio.cambiar_plan(replace(estudio.plan, factor_tempo=sugerido))
+
+    def _estudio_o_falla(self) -> SesionDeEstudio:
+        """La sesion de estudio en marcha, o el `ValueError` que sale como 400.
+
+        Los cinco endpoints de la etapa 3c se piden sobre una pieza que suena, y
+        pedirlos sin ninguna no es una rotura del servidor: es un pedido que llega
+        tarde -el navegador que tiene la pantalla abierta y la pieza ya detenida-,
+        asi que la respuesta es un 400 que lo dice. La excepcion unica evita que
+        los cinco se inventen cada uno su mensaje.
+        """
+        estudio = self._estudio
+        if estudio is None:
+            raise ValueError("No hay ninguna pieza en marcha que practicar")
+        return estudio
+
+    def cambiar_plan(self, plan: PlanDePasada) -> dict:
+        """Cambia el plan SIN reiniciar la pasada: lo tocado sigue contando."""
+        with self._candado:
+            self._estudio_o_falla().cambiar_plan(plan)
+        return self.estado()
+
+    def saltar(self, numero: int) -> dict:
+        """Coloca el cabezal al principio de un compas DEL TRAMO.
+
+        Un compas fuera del tramo lo rechaza el nucleo con `ValueError`, y sale
+        como 400 igual que los demas: saltar fuera del tramo es cambiar el plan.
+        """
+        with self._candado:
+            self._estudio_o_falla().saltar_al_compas(numero)
+        return self.estado()
+
+    def pausa(self, activa: bool) -> dict:
+        """Pausa a voluntad del usuario. Explicita y no un interruptor: dos clics
+        seguidos desde dos pestañas no pueden dejar el carril en el estado
+        contrario al que las dos pidieron.
+
+        No es la pausa por falta de señal (`self._pausado`), que la decide esta
+        clase mirando el audio: ni se mezclan ni se sobreescriben.
+        """
+        with self._candado:
+            estudio = self._estudio_o_falla()
+            estudio.pausar() if activa else estudio.reanudar()
+        return self.estado()
+
+    def informe(self) -> dict:
+        """Lo tocado en esta pasada, y el historial de la pieza.
+
+        Los dos juntos porque la pantalla los pide juntos: el informe dice como va
+        esta vuelta y el historial, si vas mejor que ayer.
+        """
+        with self._candado:
+            estudio = self._estudio_o_falla()
+            return {
+                "informe": estudio.informe.a_dict(),
+                "historial": self._historial.a_dict(),
+            }
+
+    def _secciones_en_compases(self, pieza: Pieza) -> list[dict]:
+        """Las secciones de la pieza, ya convertidas en rangos de compases.
+
+        La conversion es del NUCLEO (`compases_de_la_seccion`) y viaja hecha: la
+        interfaz no repite la formula. Es la misma regla que la etapa 2a aplico
+        cuatro veces con el umbral de los cents, y aqui ademas el dia que el
+        compas variable se arregle habria que arreglarlo en dos idiomas.
+        """
+        return [
+            {
+                "nombre": seccion.nombre,
+                "primer_compas": compases_de_la_seccion(pieza, indice)[0],
+                "ultimo_compas": compases_de_la_seccion(pieza, indice)[1],
+            }
+            for indice, seccion in enumerate(pieza.secciones)
+        ]
+
+    def pieza_en_marcha(self) -> dict:
+        """La pieza que suena ahora, para quien recargo el navegador.
+
+        `pieza` vale None sin nada en marcha, y NO es un error: el navegador que
+        arranca de cero pregunta y se encuentra con que no hay nada, que es una
+        respuesta.
+        """
+        pieza = self._pieza
+        return {
+            "pieza": None if pieza is None else pieza.a_dict(),
+            "secciones_en_compases": (
+                [] if pieza is None else self._secciones_en_compases(pieza)
+            ),
+            **self.estado(),
+        }

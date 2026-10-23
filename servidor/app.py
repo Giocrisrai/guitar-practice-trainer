@@ -24,6 +24,7 @@ from nucleo.afinaciones import PERFILES, PERFILES_DE_FABRICA
 from nucleo.analisis.pipeline import ResultadoAnalisis
 from nucleo.ejercicios.teoria import ACORDES, ESCALAS, INTERVALOS
 from nucleo.piezas.desde_ejercicio import pieza_desde_ejercicio
+from nucleo.piezas.estudio import PlanDePasada
 from nucleo.piezas.lectores import importar, pistas_de_archivo
 from nucleo.piezas.modelo import Pieza
 from servidor import configuracion as config_modulo
@@ -690,6 +691,30 @@ def crear_app(
             return _leer_o_400(lambda: importar(ruta, numero, perfil))
         return pieza_desde_ejercicio(_generar_o_400(datos))
 
+    def _plan_pedido(datos: dict) -> PlanDePasada:
+        """Construye el plan del cuerpo de la peticion.
+
+        `PlanDePasada` valida lo suyo y lanza `ValueError`; el llamador lo
+        traduce a 400, igual que ya hace `iniciar_pieza` con la afinacion.
+
+        Las claves que faltan toman el valor por defecto del plan, que es el de la
+        etapa 3a. Y el plan es ENTERO, no un parche: lo que el cuerpo no diga
+        vuelve a su valor por defecto, tambien en `/api/piezas/plan`. Es la
+        interfaz quien manda el plan completo, porque es ella la que tiene los
+        controles a la vista y sabe en que posicion esta cada uno.
+        """
+        return PlanDePasada(
+            primer_compas=int(datos.get("primer_compas", 1)),
+            ultimo_compas=(
+                None if datos.get("ultimo_compas") is None else int(datos["ultimo_compas"])
+            ),
+            factor_tempo=float(datos.get("factor_tempo", 1.0)),
+            en_bucle=bool(datos.get("en_bucle", False)),
+            compases_de_cuenta_atras=int(datos.get("compases_de_cuenta_atras", 1)),
+            con_click=bool(datos.get("con_click", False)),
+            tempo_automatico=bool(datos.get("tempo_automatico", False)),
+        )
+
     @app.post("/api/piezas/iniciar")
     def iniciar_pieza(datos: dict = Body(...)) -> dict:
         """Pone una pieza en marcha: un ejercicio generado o una cancion del disco.
@@ -700,14 +725,27 @@ def crear_app(
         Devuelve la pieza ENTERA una sola vez, junto con el estado inicial: el
         navegador la guarda y no vuelve a pedirla. Mandarla tambien por el
         WebSocket, treinta veces por segundo, seria desperdiciar el canal en
-        notas que no cambian.
+        notas que no cambian. Quien recargue el navegador a mitad de cancion la
+        vuelve a pedir por `/api/piezas/pieza`.
+
+        `plan` es opcional, y sin el la pasada es la de la etapa 3a: la pieza
+        entera, a tempo escrito, sin bucle y sin click.
         """
         pieza = _pieza_para_el_carril(datos)
         try:
-            return app.state.carril.iniciar(pieza)
-        except ValueError as error:
-            # La afinacion de la pieza no coincide con la activa (spec §5): es
-            # un pedido mal formado, no una rotura del servidor.
+            # El plan se construye DENTRO del `try`: un factor imposible es un
+            # pedido mal hecho igual que una afinacion que no cuadra, y fuera de
+            # aqui su `ValueError` saldria como un 500, es decir "el servidor se
+            # ha roto", que es mentira.
+            plan = _plan_pedido(datos["plan"]) if datos.get("plan") else None
+            return app.state.carril.iniciar(pieza, plan)
+        except (TypeError, ValueError) as error:
+            # La afinacion de la pieza no coincide con la activa (spec §5), o el
+            # plan pide algo que la pieza no tiene: es un pedido mal formado, no
+            # una rotura del servidor. El `TypeError` es por lo mismo que en
+            # `_generar_o_400`: un valor con un tipo que no es el suyo
+            # (`{"primer_compas": null}`) sale de Python como `TypeError`, y
+            # dejarlo subir lo convertia en un 500.
             raise HTTPException(status_code=400, detail=str(error))
 
     @app.post("/api/piezas/detener")
@@ -718,6 +756,48 @@ def crear_app(
     @app.get("/api/piezas/estado")
     def leer_estado_pieza() -> dict:
         return app.state.carril.estado()
+
+    @app.post("/api/piezas/plan")
+    def cambiar_plan_pieza(datos: dict = Body(...)) -> dict:
+        """Cambia el plan de la pasada en caliente, sin reiniciar nada."""
+        try:
+            return app.state.carril.cambiar_plan(_plan_pedido(datos))
+        except (TypeError, ValueError) as error:
+            raise HTTPException(status_code=400, detail=str(error))
+
+    @app.post("/api/piezas/saltar")
+    def saltar_de_compas(datos: dict = Body(...)) -> dict:
+        """Mueve el cabezal al principio de un compas del tramo que se estudia."""
+        try:
+            return app.state.carril.saltar(int(datos["compas"]))
+        except (KeyError, TypeError, ValueError) as error:
+            raise HTTPException(status_code=400, detail=str(error) or "Falta el compas")
+
+    @app.post("/api/piezas/pausa")
+    def pausar_pieza(datos: dict = Body(...)) -> dict:
+        """La pausa DEL USUARIO, que no es la pausa por falta de señal.
+
+        Es explicita (`activa`) y no un interruptor: dos clics seguidos desde dos
+        pestañas no pueden dejar el carril en el estado contrario al que las dos
+        pidieron.
+        """
+        try:
+            return app.state.carril.pausa(bool(datos.get("activa", True)))
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error))
+
+    @app.get("/api/piezas/informe")
+    def leer_informe_pieza() -> dict:
+        """Lo tocado en esta pasada, compas a compas, y el historial de la pieza."""
+        try:
+            return app.state.carril.informe()
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error))
+
+    @app.get("/api/piezas/pieza")
+    def leer_pieza_en_marcha() -> dict:
+        """La pieza en marcha, para el navegador que se acaba de recargar."""
+        return app.state.carril.pieza_en_marcha()
 
     @app.websocket("/ws/piezas")
     async def emitir_pieza(websocket: WebSocket) -> None:
