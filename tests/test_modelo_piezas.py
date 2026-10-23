@@ -3,6 +3,7 @@ import pytest
 from nucleo.piezas.modelo import (
     NotaEnPieza,
     Pieza,
+    Seccion,
     pulsos_a_segundos,
     segundos_a_pulsos,
 )
@@ -87,3 +88,51 @@ def test_dos_notas_con_el_mismo_inicio_son_un_acorde_admitido_a_proposito():
         nota(midi=45, cuerda=5, inicio=0.0, duracion=3.0),
     ])
     assert p.duracion_pulsos == pytest.approx(3.0)
+
+
+def test_una_pieza_sin_secciones_sigue_valiendo():
+    """Los ejercicios de la etapa 3a no traen secciones y no deben romperse."""
+    p = pieza([nota()])
+    assert p.secciones == ()
+    assert p.ritmo_aproximado is False
+    assert p.tempo_variable is False
+
+
+def test_las_secciones_vienen_ordenadas():
+    with pytest.raises(ValueError, match="orden"):
+        Pieza(
+            nombre="x", perfil="guitarra_estandar", tempo=60, compas=(4, 4),
+            notas=(), secciones=(Seccion("Solo", 8.0), Seccion("Intro", 0.0)),
+        )
+
+
+def test_seccion_en_devuelve_la_que_esta_sonando():
+    p = Pieza(
+        nombre="x", perfil="guitarra_estandar", tempo=60, compas=(4, 4), notas=(),
+        secciones=(Seccion("Intro", 0.0), Seccion("Estribillo", 8.0)),
+    )
+    assert p.seccion_en(0.0).nombre == "Intro"
+    assert p.seccion_en(7.9).nombre == "Intro"
+    assert p.seccion_en(8.0).nombre == "Estribillo"
+    assert p.seccion_en(100.0).nombre == "Estribillo"
+
+
+def test_sin_secciones_no_hay_seccion_en_ninguna_parte():
+    assert pieza([nota()]).seccion_en(0.0) is None
+
+
+def test_una_seccion_antes_del_principio_se_rechaza():
+    with pytest.raises(ValueError, match="negativ"):
+        Pieza(nombre="x", perfil="guitarra_estandar", tempo=60, compas=(4, 4),
+              notas=(), secciones=(Seccion("Intro", -1.0),))
+
+
+def test_a_dict_publica_los_tres_campos_nuevos():
+    p = Pieza(
+        nombre="x", perfil="guitarra_estandar", tempo=60, compas=(4, 4), notas=(),
+        secciones=(Seccion("Intro", 0.0),), ritmo_aproximado=True, tempo_variable=True,
+    )
+    d = p.a_dict()
+    assert d["secciones"] == [{"nombre": "Intro", "inicio_pulsos": 0.0}]
+    assert d["ritmo_aproximado"] is True
+    assert d["tempo_variable"] is True

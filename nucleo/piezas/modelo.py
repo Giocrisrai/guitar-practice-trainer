@@ -58,6 +58,23 @@ class NotaEnPieza:
 
 
 @dataclass(frozen=True)
+class Seccion:
+    """Un trozo con nombre: "Intro", "Estribillo", "Solo".
+
+    Viene de los marcadores del archivo -Guitar Pro los llama marcadores, MusicXML
+    marcas de ensayo, MIDI marcadores de texto-. No se usan todavia: la etapa 3c
+    practicara por secciones, y si se tiran al importar no hay forma de
+    reconstruirlas despues.
+    """
+
+    nombre: str
+    inicio_pulsos: float
+
+    def a_dict(self) -> dict:
+        return {"nombre": self.nombre, "inicio_pulsos": self.inicio_pulsos}
+
+
+@dataclass(frozen=True)
 class Pieza:
     """Notas ordenadas en el tiempo, con la afinacion con que se escribieron.
 
@@ -79,6 +96,13 @@ class Pieza:
     tempo: int
     compas: tuple[int, int]
     notas: tuple[NotaEnPieza, ...]
+    # Los tres llevan valor por defecto: los ejercicios de la etapa 3a construyen
+    # Pieza sin ellos.
+    secciones: tuple[Seccion, ...] = ()
+    # El ritmo se infirio de una tablatura de texto y no es de fiar.
+    ritmo_aproximado: bool = False
+    # La cancion cambiaba de tempo y se tomo el primero.
+    tempo_variable: bool = False
 
     def __post_init__(self) -> None:
         if self.perfil not in PERFILES:
@@ -98,6 +122,19 @@ class Pieza:
                     f"{nota.inicio_pulsos} llega despues de {anterior}"
                 )
             anterior = nota.inicio_pulsos
+        previa = None
+        for seccion in self.secciones:
+            if seccion.inicio_pulsos < 0:
+                raise ValueError(
+                    f"La seccion '{seccion.nombre}' empieza en {seccion.inicio_pulsos}: "
+                    "no puede ser negativo"
+                )
+            if previa is not None and seccion.inicio_pulsos < previa:
+                raise ValueError(
+                    "Las secciones tienen que venir en orden de inicio_pulsos: "
+                    f"{seccion.inicio_pulsos} llega despues de {previa}"
+                )
+            previa = seccion.inicio_pulsos
 
     def __len__(self) -> int:
         return len(self.notas)
@@ -115,6 +152,19 @@ class Pieza:
     def duracion_s(self) -> float:
         return pulsos_a_segundos(self.duracion_pulsos, self.tempo)
 
+    def seccion_en(self, pulsos: float) -> Seccion | None:
+        """La seccion que esta sonando en ese instante, o None si no hay secciones.
+
+        La ultima cuyo inicio no ha pasado todavia. Una pieza sin secciones devuelve
+        None en todas partes, que es lo que ocurre con los ejercicios generados.
+        """
+        actual = None
+        for seccion in self.secciones:
+            if seccion.inicio_pulsos > pulsos:
+                break
+            actual = seccion
+        return actual
+
     def a_dict(self) -> dict:
         return {
             "nombre": self.nombre,
@@ -123,4 +173,7 @@ class Pieza:
             "compas": list(self.compas),
             "duracion_pulsos": self.duracion_pulsos,
             "notas": [nota.a_dict() for nota in self.notas],
+            "secciones": [seccion.a_dict() for seccion in self.secciones],
+            "ritmo_aproximado": self.ritmo_aproximado,
+            "tempo_variable": self.tempo_variable,
         }
