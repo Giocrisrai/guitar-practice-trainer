@@ -11,7 +11,7 @@ import {
 import type { PerfilAfinacion } from "./tipos";
 import type { FamiliaEjercicio } from "./tiposEjercicio";
 import type { Clasificacion, EstadoCarril, NotaDePieza, NotaTocada, Pieza } from "./tiposPieza";
-import { useCarril } from "./useCarril";
+import { useCarril, type PeticionPieza } from "./useCarril";
 import { VistaEscrita } from "./VistaEscritaPieza";
 
 /**
@@ -243,8 +243,19 @@ function ResumenCarril({ pieza, estado }: { pieza: Pieza; estado: EstadoCarril }
   );
 }
 
+interface PropiedadesCarril {
+  /**
+   * Una pieza que YA viene elegida de otra pantalla: hoy, la canción y la pista
+   * que el usuario escogió en `Canciones`. Se arranca al montar y entonces no se
+   * ofrece el configurador de ejercicios, que no es lo que el usuario pidió.
+   *
+   * `null` -o nada- es el carril de siempre: elige tú el ejercicio aquí.
+   */
+  peticion?: PeticionPieza | null;
+}
+
 /** Pantalla del carril: elige la pieza, la toca y la resume. */
-export function Carril() {
+export function Carril({ peticion = null }: PropiedadesCarril) {
   const { estado, pieza, conectado, error, iniciando, instante, iniciar, detener } = useCarril();
   const [familias, setFamilias] = useState<FamiliaEjercicio[]>([]);
   const [perfiles, setPerfiles] = useState<PerfilAfinacion[]>([]);
@@ -279,6 +290,18 @@ export function Carril() {
   useEffect(() => {
     estadoRef.current = estado;
   }, [estado]);
+
+  /**
+   * La pieza que viene pedida de otra pantalla se arranca al montar y UNA SOLA
+   * vez. La marca hace falta porque `detener` vuelve a dejar `pieza` en `null`:
+   * sin ella, el efecto la arrancaría otra vez, y otra, en bucle.
+   */
+  const yaPedida = useRef(false);
+  useEffect(() => {
+    if (peticion === null || yaPedida.current) return;
+    yaPedida.current = true;
+    void iniciar(peticion);
+  }, [peticion, iniciar]);
 
   const cuerdas = useMemo(
     () => (pieza === null ? 1 : cuerdasDeLaPieza(pieza, perfiles)),
@@ -333,6 +356,15 @@ export function Carril() {
   }, [dibujando, pieza, cuerdas, indices, instante]);
 
   if (pieza === null) {
+    // Mientras el POST de una pieza pedida fuera está en vuelo no se ofrece el
+    // configurador de ejercicios: el usuario eligió una canción y ver un selector
+    // de escalas le haría creer que su elección se perdió. Si el arranque falla
+    // (afinación que no coincide, archivo roto), `error` deja de ser nulo y abajo
+    // se ve el motivo con el configurador, que es la salida que le queda.
+    if (peticion !== null && error === null) {
+      return <p className="aviso-carril">Preparando la canción…</p>;
+    }
+
     const empezar = () => {
       const parametros: Record<string, unknown> = {};
       const numero = Number(tempo);

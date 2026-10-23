@@ -67,6 +67,15 @@ registrar_modulo(
 
 registrar_modulo(
     Modulo(
+        clave="canciones",
+        nombre="Canciones",
+        descripcion="Importa una canción de Guitar Pro, MusicXML, MIDI o tablatura",
+        icono="🎵",
+    )
+)
+
+registrar_modulo(
+    Modulo(
         clave="carril",
         nombre="Carril",
         descripcion="Las notas vienen hacia ti: toca cuando llegan",

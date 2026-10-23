@@ -639,6 +639,100 @@ describe("Carril", () => {
   });
 
   /**
+   * La otra puerta al carril: una canción que ya viene elegida de `Canciones`.
+   *
+   * Quien PIDE la pieza tiene que ser quien la DIBUJA, porque la pieza entera viaja
+   * una sola vez en la respuesta de `/iniciar` y el WebSocket no la repite. Así que
+   * el traspaso no puede ser «arranca tú y yo te enseño»: llega la petición y la
+   * arranca esta pantalla.
+   */
+  it("arranca la cancion que le pasan, y manda la pista que le dijeron", async () => {
+    const fetchFalso = crearFetchFalso();
+    vi.stubGlobal("fetch", fetchFalso);
+    render(<Carril peticion={{ cancion: "x.gp5", pista: 2, perfil: null }} />);
+
+    expect(await screen.findByTestId("lienzo-carril")).toBeTruthy();
+    // La pieza no viaja desde aquí: viaja qué canción y qué pista, y en base 1.
+    expect(cuerpoDeIniciar(fetchFalso)).toEqual({
+      cancion: "x.gp5",
+      pista: 2,
+      perfil: null,
+    });
+  });
+
+  /**
+   * Y UNA SOLA vez, aunque la petición vuelva a llegar.
+   *
+   * `detener` deja otra vez la pieza en `null`, y quien pasa la petición puede
+   * escribirla en el JSX en vez de guardarla en estado, así que cada render trae un
+   * objeto nuevo con el mismo contenido. Sin la marca de «ya pedida», esas dos cosas
+   * juntas vuelven a lanzar el POST: la canción se rearranca sola después de
+   * detenerla, en bucle.
+   */
+  it("no vuelve a arrancar la cancion aunque la peticion llegue otra vez", async () => {
+    const fetchFalso = crearFetchFalso();
+    vi.stubGlobal("fetch", fetchFalso);
+    const { rerender } = render(
+      <Carril peticion={{ cancion: "x.gp5", pista: 1, perfil: null }} />
+    );
+    expect(await screen.findByTestId("lienzo-carril")).toBeTruthy();
+
+    await act(async () => {
+      screen.getByRole("button", { name: /detener/i }).click();
+    });
+    await act(async () => {
+      rerender(<Carril peticion={{ cancion: "x.gp5", pista: 1, perfil: null }} />);
+    });
+
+    expect(
+      fetchFalso.mock.calls.filter(([url]) => url === "/api/piezas/iniciar")
+    ).toHaveLength(1);
+  });
+
+  /** Mientras el POST está en vuelo no se ofrece el configurador de ejercicios: el
+   * usuario eligió una canción y un selector de escalas le haría creer que se
+   * perdió su elección. */
+  it("mientras la cancion llega no ofrece elegir un ejercicio", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        const direccion = String(url);
+        if (direccion.includes("/api/ejercicios/familias")) return responder(FAMILIAS);
+        if (direccion.includes("/api/perfiles")) return responder(PERFILES);
+        if (direccion.includes("/api/piezas/iniciar")) return new Promise<Response>(() => {});
+        return responder(ESTADO_APAGADO);
+      })
+    );
+    render(<Carril peticion={{ cancion: "x.gp5", pista: 1, perfil: null }} />);
+
+    expect(await screen.findByText(/preparando la canción/i)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /empezar/i })).toBeNull();
+  });
+
+  /** Y si el carril la rechaza -la afinación de la canción no es la activa- se dice
+   * el motivo y se vuelve a ofrecer el configurador, que es la salida que queda. */
+  it("si el carril rechaza la cancion dice el motivo y deja elegir otra cosa", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        const direccion = String(url);
+        if (direccion.includes("/api/ejercicios/familias")) return responder(FAMILIAS);
+        if (direccion.includes("/api/perfiles")) return responder(PERFILES);
+        if (direccion.includes("/api/piezas/iniciar")) {
+          return responder({ detail: "la pieza esta escrita en guitarra_drop_d" }, false, 400);
+        }
+        return responder(ESTADO_APAGADO);
+      })
+    );
+    render(<Carril peticion={{ cancion: "drop.txt", pista: 1, perfil: null }} />);
+
+    expect(
+      await screen.findByText("la pieza esta escrita en guitarra_drop_d")
+    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: /empezar/i })).toBeTruthy();
+  });
+
+  /**
    * Un bucle de `requestAnimationFrame` que sobrevive al componente sigue
    * dibujando sobre un canvas que ya no está en el documento. Se comprueba de
    * verdad: se sustituyen las dos funciones del navegador, se deja correr un

@@ -22,8 +22,9 @@ def test_se_puede_registrar_un_modulo_nuevo():
 
 
 def test_pedir_un_modulo_inexistente_es_un_error_claro():
-    with pytest.raises(KeyError, match="canciones"):
-        obtener_modulo("canciones")
+    """`efectos` es de una etapa futura; `canciones` ya está registrado y servía."""
+    with pytest.raises(KeyError, match="efectos"):
+        obtener_modulo("efectos")
 
 
 def test_el_modulo_se_serializa_para_la_interfaz():

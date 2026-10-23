@@ -193,3 +193,48 @@ body {
 .etiqueta-cuerda { color: var(--tenue); }
 .traste-actual { background: #ffd166; color: #12161b; font-weight: 700; }
 .equivocadas { list-style: none; margin: 4px 0 0; padding: 0; font-size: 12px; }
+
+/* --- Canciones --- */
+
+/* Dos columnas: la biblioteca a la izquierda y las pistas de la elegida a la
+   derecha. En una ventana estrecha se apilan, porque la lista de canciones no
+   tiene un ancho mínimo que merezca un scroll horizontal. */
+.canciones { display: flex; flex-wrap: wrap; gap: 24px; margin: 16px 0; }
+.biblioteca { flex: 1 1 240px; min-width: 0; }
+.pistas-cancion { flex: 2 1 320px; min-width: 0; }
+
+.subir { display: block; color: var(--tenue); font-size: 13px; margin: 8px 0 4px; }
+
+.lista-canciones, .lista-pistas { list-style: none; margin: 8px 0; padding: 0; }
+.lista-canciones button, .lista-pistas button {
+  display: flex; align-items: baseline; gap: 8px; width: 100%; text-align: left;
+  background: var(--panel); color: var(--texto); border: 1px solid var(--borde);
+  border-radius: 8px; padding: 8px 10px; margin-bottom: 6px; cursor: pointer;
+  font-size: 14px;
+}
+.lista-canciones button[aria-pressed="true"], .lista-pistas button[aria-pressed="true"] {
+  border-color: var(--afinada); font-weight: 600;
+}
+/* Una pista que no se puede usar: apagada y sin cursor de clic. El por qué va
+   debajo, en `.motivo-no-usable`, y lo escribe el núcleo. */
+.lista-pistas button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.nombre-cancion { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.formato-cancion { flex: 0 0 auto; color: var(--tenue); font-size: 12px; }
+.motivo-no-usable { color: var(--tenue); font-size: 12px; margin: 0 0 8px; padding-left: 10px; }
+
+/* Los avisos de antes de empezar. Van en el tono de «esto hay que mirarlo», no en
+   el de error: la canción se puede importar igual, y el aviso dice qué esperar. */
+.aviso-cancion { color: var(--desviada); font-size: 13px; margin: 4px 0; }
+.aviso-cancion button {
+  background: var(--panel); color: var(--texto); border: 1px solid var(--borde);
+  border-radius: 8px; padding: 6px 12px; margin: 4px 0; cursor: pointer; font-size: 14px;
+}
+.error-cancion { color: var(--desviada); font-size: 13px; margin: 4px 0; }
+
+.antes-de-empezar { margin-top: 16px; }
+.antes-de-empezar button {
+  background: var(--panel); color: var(--texto); border: 1px solid var(--borde);
+  border-radius: 8px; padding: 8px 16px; margin-top: 8px; cursor: pointer; font-size: 14px;
+}
+.antes-de-empezar button:disabled { opacity: 0.5; cursor: not-allowed; }

@@ -566,6 +566,148 @@ def test_el_selector_ofrece_el_perfil_activo_aunque_no_sea_de_fabrica(cliente):
 
 
 # ---------------------------------------------------------------------------
+# La puerta al carril: `/api/piezas/iniciar` tambien acepta una cancion
+#
+# Estas pruebas son de `/api/piezas/iniciar` y viven aqui, y no en
+# `tests/test_app_carril.py`, porque hace falta la carpeta de canciones: el
+# `cliente` de alli construye la app SIN `carpeta_canciones`, asi que su biblioteca
+# apunta a la del proyecto. Una prueba no ensucia la carpeta del usuario.
+# ---------------------------------------------------------------------------
+
+
+def _midi_de_dos_pistas() -> bytes:
+    """Un MIDI de dos pistas que NO suenan igual: E3 en la primera, A3 en la segunda.
+
+    Que las dos pistas se distingan POR SU CONTENIDO es lo que hace falta: con dos
+    pistas iguales, pedir la 1 y pedir la 2 dan lo mismo y la prueba de la
+    numeracion no puede fallar.
+    """
+    archivo = mido.MidiFile()
+    for nota in (52, 57):
+        pista = mido.MidiTrack()
+        pista.append(mido.Message("program_change", program=27, time=0))
+        pista.append(mido.Message("note_on", note=nota, velocity=80, time=0))
+        pista.append(mido.Message("note_off", note=nota, velocity=0, time=480))
+        archivo.tracks.append(pista)
+    memoria = io.BytesIO()
+    archivo.save(file=memoria)
+    return memoria.getvalue()
+
+
+def test_el_carril_arranca_una_cancion_de_la_biblioteca(cliente):
+    """La etapa 3b no tenia puerta al carril: `/importar` no arranca y `/iniciar`
+    solo aceptaba un descriptor de ejercicio. Esta es la puerta."""
+    cliente.post("/api/canciones", files={"archivo": ("x.mid", _midi_de_una_nota())})
+    respuesta = cliente.post(
+        "/api/piezas/iniciar", json={"cancion": "x.mid", "pista": 1}
+    )
+    assert respuesta.status_code == 200
+    cuerpo = respuesta.json()
+    assert cuerpo["pieza"]["notas"]
+    # Arrancada de verdad, no solo leida: el carril etiqueta un arranque, y el cero
+    # es el del carril sin pieza.
+    assert cuerpo["arranque"] > 0
+    estado = cliente.get("/api/piezas/estado").json()
+    assert estado["arranque"] == cuerpo["arranque"]
+    assert estado["total"] == len(cuerpo["pieza"]["notas"])
+    cliente.post("/api/piezas/detener")
+
+
+def test_la_pista_que_arranca_es_la_que_se_pidio_en_base_1(cliente):
+    """Una sola numeracion, la del nucleo: `pista: 2` toca la segunda, no la tercera."""
+    cliente.post(
+        "/api/canciones", files={"archivo": ("dos.mid", _midi_de_dos_pistas())}
+    )
+    segunda = cliente.post(
+        "/api/piezas/iniciar", json={"cancion": "dos.mid", "pista": 2}
+    ).json()
+    assert [nota["midi"] for nota in segunda["pieza"]["notas"]] == [57]
+    cliente.post("/api/piezas/detener")
+
+    primera = cliente.post(
+        "/api/piezas/iniciar", json={"cancion": "dos.mid", "pista": 1}
+    ).json()
+    assert [nota["midi"] for nota in primera["pieza"]["notas"]] == [52]
+    cliente.post("/api/piezas/detener")
+
+
+def test_una_cancion_en_otra_afinacion_no_entra_al_carril(cliente):
+    """La regla de afinacion de la etapa 3a se aplica tambien a las canciones.
+
+    Es el motivo de que la cancion la lea el SERVIDOR: si el navegador mandara la
+    pieza ya leida, el perfil con el que dice estar escrita -lo unico que esta
+    comprobacion mira- seria cosa suya.
+    """
+    drop_d = TABLATURA.replace(b"E|", b"D|")
+    cliente.post("/api/canciones", files={"archivo": ("drop.txt", drop_d)})
+    respuesta = cliente.post(
+        "/api/piezas/iniciar", json={"cancion": "drop.txt", "pista": 1}
+    )
+    assert respuesta.status_code == 400
+    detalle = respuesta.json()["detail"]
+    assert "guitarra_drop_d" in detalle
+    assert "guitarra_estandar" in detalle
+    # Y no se ha quedado nada en marcha: el cero es el carril sin pieza.
+    assert cliente.get("/api/piezas/estado").json()["arranque"] == 0
+
+
+def test_las_dos_formas_de_pedir_una_pieza_a_la_vez_dan_400(cliente):
+    cliente.post("/api/canciones", files={"archivo": ("x.txt", TABLATURA)})
+    respuesta = cliente.post(
+        "/api/piezas/iniciar",
+        json={"cancion": "x.txt", "pista": 1, "familia": "escala"},
+    )
+    assert respuesta.status_code == 400
+    detalle = respuesta.json()["detail"]
+    assert "familia" in detalle and "cancion" in detalle
+    assert cliente.get("/api/piezas/estado").json()["arranque"] == 0
+
+
+def test_un_iniciar_sin_cancion_ni_familia_dice_cual_falta(cliente):
+    respuesta = cliente.post("/api/piezas/iniciar", json={})
+    assert respuesta.status_code == 400
+    detalle = respuesta.json()["detail"]
+    assert "familia" in detalle and "cancion" in detalle
+
+
+def test_arrancar_una_cancion_que_no_existe_da_404_y_no_arranca_nada(cliente):
+    respuesta = cliente.post(
+        "/api/piezas/iniciar", json={"cancion": "fantasma.gp5", "pista": 1}
+    )
+    assert respuesta.status_code == 404
+    assert cliente.get("/api/piezas/estado").json()["arranque"] == 0
+
+
+def test_arrancar_un_nombre_que_sale_de_la_carpeta_da_400(cliente):
+    """El `id` llega del navegador tambien por aqui, asi que pasa por el guardia.
+
+    Es el mismo `_ruta_de_cancion` que usa `/importar`, no una copia: una copia es
+    lo que se olvida de actualizar cuando el guardia aprende una forma nueva de
+    salirse.
+    """
+    respuesta = cliente.post(
+        "/api/piezas/iniciar", json={"cancion": "../../../etc/passwd", "pista": 1}
+    )
+    assert respuesta.status_code == 400
+    assert cliente.get("/api/piezas/estado").json()["arranque"] == 0
+
+
+def test_la_pista_de_una_cancion_que_arranca_tambien_se_pide_entera(cliente):
+    """Un numero de pista que no es entero es un pedido mal hecho, no un 500."""
+    cliente.post("/api/canciones", files={"archivo": ("x.txt", TABLATURA)})
+    respuesta = cliente.post(
+        "/api/piezas/iniciar", json={"cancion": "x.txt", "pista": 1.9}
+    )
+    assert respuesta.status_code == 400
+    assert "1.9" in respuesta.json()["detail"]
+
+
+def test_el_modulo_canciones_aparece_junto_a_los_otros(cliente):
+    claves = {m["clave"] for m in cliente.get("/api/modulos").json()}
+    assert {"afinador", "ejercicios", "carril", "canciones"} <= claves
+
+
+# ---------------------------------------------------------------------------
 # El guardia de peticiones: CSRF y rebinding de DNS
 # ---------------------------------------------------------------------------
 
@@ -760,8 +902,14 @@ def test_los_nombres_que_solo_se_parecen_a_localhost_no_pasan(cliente, tmp_path,
     assert _vacia(tmp_path / "canciones")
 
 
-def test_sin_cabecera_host_se_atiende_igual(cliente):
-    """Decision escrita, no efecto colateral: HTTP/1.0 y la terminal no la mandan.
+def test_una_cabecera_host_vacia_se_atiende_igual(cliente):
+    """Decision escrita, no efecto colateral: HTTP/1.0 y la terminal la mandan vacia.
+
+    Lo que se ejerce aqui es un `Host` VACIO, no ausente: `TestClient` siempre manda
+    la cabecera, asi que `{"host": ""}` es lo unico que se puede ejercer desde aqui
+    y el nombre anterior -«sin cabecera host»- prometia otra cosa. Da lo mismo para
+    el guardia, porque `_anfitrion_ajeno` compara el NOMBRE y una cabecera ausente
+    llega a Starlette como `""`: el mismo camino.
 
     Se admite porque lo que delata el rebinding de DNS es un `Host` con el nombre del
     atacante, y un navegador no puede omitir esa cabecera. Antes esto salia de tener

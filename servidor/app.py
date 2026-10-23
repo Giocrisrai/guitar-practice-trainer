@@ -301,8 +301,13 @@ def crear_app(
         ausente sigue admitiéndose, porque hay clientes de terminal, y un `Origin`
         presente que no sea el nuestro se rechaza.
 
-        Se cierra con 1008 (violación de política) y no con 1000: el cliente tiene
-        que poder distinguir «no te quiero» de «ya hemos terminado».
+        Se cierra ANTES de `accept()`, que es rechazar en el handshake, y eso es lo
+        correcto: la conexión no llega a existir. El código 1008 que se pasa aquí es
+        casi decorativo, y decir que «el cliente tiene que poder distinguir 1008 de
+        1000» era inexacto: un cierre previo al `accept()` lo traduce ASGI a un
+        HTTP 403 en el handshake, así que ningún cliente real recibe la trama 1008
+        -solo `TestClient`, que la sintetiza-. Lo que el cliente ve es el 403, y con
+        eso ya distingue «no te quiero» de «ya hemos terminado».
         """
         if (
             _anfitrion_ajeno(websocket.headers) is not None
@@ -562,17 +567,70 @@ def crear_app(
         ejercicio = _generar_o_400(datos)
         return pieza_desde_ejercicio(ejercicio).a_dict()
 
+    def _pieza_para_el_carril(datos: dict):
+        """La pieza que pide `datos`: un ejercicio generado o una cancion del disco.
+
+        Hay DOS formas de pedir una pieza y son exclusivas:
+
+        - `{familia, parametros}`: un ejercicio del catalogo, traducido a pieza por
+          `pieza_desde_ejercicio`. Es la de la etapa 3a.
+        - `{cancion, pista, perfil}`: una cancion de la biblioteca, leida del
+          archivo con el MISMO `importar(ruta, numero, perfil)` que usa
+          `/api/canciones/{id}/importar`. `cancion` es el `id` -el nombre del
+          archivo-, `pista` va en base 1 y `perfil` es opcional, igual que alli.
+
+        Que la cancion la lea el SERVIDOR, y no el navegador que la manda ya leida,
+        es lo que mantiene una sola puerta al carril: la que aplica la regla de
+        afinacion de la etapa 3a (`SesionCarril.iniciar`). Aceptar una `Pieza` del
+        cliente seria creerle las notas, el perfil con el que dice estar escrita y,
+        con el, la afinacion que el carril tiene que comprobar.
+
+        Las dos formas a la vez, o ninguna, es un pedido mal hecho: 400 diciendo
+        cual falta. Decidirlo por la PRESENCIA de la clave y no por su valor es a
+        proposito: `{"familia": ""}` es pedir un ejercicio sin decir cual -y el
+        generador contesta cuales hay-, no es «no he pedido nada».
+
+        `_ruta_de_cancion` y `_leer_o_400` viven mas abajo, en la seccion de la
+        biblioteca; se llaman desde aqui como cierres, que se resuelven al llamar.
+        """
+        pide_cancion = "cancion" in datos
+        pide_ejercicio = "familia" in datos
+        if pide_cancion and pide_ejercicio:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Me has pedido las dos cosas a la vez: un ejercicio "
+                    "('familia') y una cancion ('cancion'). Elige una."
+                ),
+            )
+        if not pide_cancion and not pide_ejercicio:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "No me has dicho que tocar: hace falta 'familia' (un ejercicio "
+                    "del catalogo) o 'cancion' (el id de una cancion de la "
+                    "biblioteca)."
+                ),
+            )
+        if pide_cancion:
+            ruta = _ruta_de_cancion(datos["cancion"])
+            numero = _leer_o_400(lambda: _numero_de_pista(datos.get("pista", 1)))
+            return _leer_o_400(lambda: importar(ruta, numero, datos.get("perfil")))
+        return pieza_desde_ejercicio(_generar_o_400(datos))
+
     @app.post("/api/piezas/iniciar")
     def iniciar_pieza(datos: dict = Body(...)) -> dict:
-        """Genera una pieza y la pone en marcha.
+        """Pone una pieza en marcha: un ejercicio generado o una cancion del disco.
+
+        Las dos formas de pedirla, y por que la cancion la lee el servidor, en
+        `_pieza_para_el_carril`.
 
         Devuelve la pieza ENTERA una sola vez, junto con el estado inicial: el
         navegador la guarda y no vuelve a pedirla. Mandarla tambien por el
         WebSocket, treinta veces por segundo, seria desperdiciar el canal en
         notas que no cambian.
         """
-        ejercicio = _generar_o_400(datos)
-        pieza = pieza_desde_ejercicio(ejercicio)
+        pieza = _pieza_para_el_carril(datos)
         try:
             return app.state.carril.iniciar(pieza)
         except ValueError as error:

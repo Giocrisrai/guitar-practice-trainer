@@ -47,13 +47,39 @@ const AVISO_APAGADO_DESDE_EL_SERVIDOR =
   "El carril se detuvo desde el servidor. Pasa, por ejemplo, al cambiar de " +
   "afinación con una pieza en marcha: la pieza estaba escrita para la anterior.";
 
-/** Lo que hace falta para pedir una pieza. Misma forma que el cuerpo de
+/** Un ejercicio del catálogo. Misma forma que el cuerpo de
  * `/api/ejercicios/iniciar`, porque una pieza se genera del mismo catálogo de
  * familias (`POST /api/piezas/iniciar`, servidor/app.py). */
-export interface PeticionPieza {
+export interface PeticionEjercicio {
   familia: string;
   parametros: Record<string, unknown>;
 }
+
+/**
+ * Una canción de la biblioteca: la lee el SERVIDOR y la pone en el carril.
+ *
+ * `cancion` es el `id` de la ficha, que es el nombre del archivo con extensión;
+ * `pista` va en base 1, como en todo el núcleo; `perfil` es opcional y solo cuenta
+ * donde el archivo no trae afinación.
+ *
+ * La pieza NO viaja desde el navegador. Se manda qué canción y qué pista, y el
+ * servidor la importa con el mismo `importar(ruta, numero, perfil)` que usa
+ * `/api/canciones/{id}/importar`: así hay una sola puerta al carril —la que aplica
+ * la regla de afinación de la etapa 3a—, y aceptar una `Pieza` del cliente sería
+ * creerle las notas y el perfil con el que dice estar escrita.
+ */
+export interface PeticionCancion {
+  cancion: string;
+  pista: number;
+  perfil?: string | null;
+}
+
+/**
+ * Lo que hace falta para pedir una pieza: un ejercicio o una canción. Son las dos
+ * formas que acepta `POST /api/piezas/iniciar`, y son exclusivas —mandar las dos a
+ * la vez, o ninguna, es un 400 que dice cuál falta—.
+ */
+export type PeticionPieza = PeticionEjercicio | PeticionCancion;
 
 export interface SesionCarril {
   /** El último paquete del WebSocket. `null` mientras no llegó ninguno. */
