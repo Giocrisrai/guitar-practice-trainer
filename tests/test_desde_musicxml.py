@@ -122,3 +122,65 @@ def test_una_sola_indicacion_no_basta(tmp_path):
     ruta = escribir(obra, tmp_path)
     nota = pieza_desde_musicxml(ruta, 1).notas[0]
     assert nota.cuerda == 5 and nota.traste == 0
+
+
+def test_la_tablatura_del_archivo_gana_al_algoritmo(tmp_path):
+    """Un 52 en 6/12: el algoritmo nunca lo elegiria (preferiria 4/2 o 5/7)."""
+    obra = partitura([(52, 1.0)], con_tablatura=True)
+    ruta = escribir(obra, tmp_path)
+    nota = pieza_desde_musicxml(ruta, 1).notas[0]
+    assert (nota.cuerda, nota.traste) == (6, 12)
+
+
+def test_una_tablatura_incoherente_con_el_perfil_se_recalcula(tmp_path):
+    """6/5 en el archivo, pero en Drop D la 6a da 38 + 5 = 43, no 45."""
+    from nucleo.afinaciones import perfil_desde_midis, registrar_perfil
+
+    clave = registrar_perfil(perfil_desde_midis("Drop D", [38, 45, 50, 55, 59, 64]))
+    obra = partitura([(45, 1.0), (47, 1.0), (48, 1.0)])
+    indicacion = articulations.StringIndication()
+    indicacion.number = 6
+    traste = articulations.FretIndication()
+    traste.number = 5
+    obra.parts[0].notes[0].articulations.extend([indicacion, traste])
+    ruta = escribir(obra, tmp_path)
+    nota = pieza_desde_musicxml(ruta, 1, clave).notas[0]
+    assert nota.midi == 45
+    assert (nota.cuerda, nota.traste) in {(6, 7), (5, 0)}  # nunca el 6/5 del archivo
+
+
+def test_una_ligadura_continue_tambien_funde(tmp_path):
+    from music21 import tie
+
+    obra = partitura([(40, 1.0), (40, 1.0), (40, 1.0)])
+    notas = obra.parts[0].notes
+    notas[0].tie = tie.Tie("start")
+    notas[1].tie = tie.Tie("continue")
+    notas[2].tie = tie.Tie("stop")
+    pieza = pieza_desde_musicxml(escribir(obra, tmp_path), 1)
+    assert len(pieza.notas) == 1
+    assert pieza.notas[0].duracion_pulsos == pytest.approx(3.0)
+
+
+def test_un_traste_solo_no_basta(tmp_path):
+    obra = partitura([(45, 1.0), (47, 1.0), (48, 1.0)])
+    traste = articulations.FretIndication()
+    traste.number = 5
+    obra.parts[0].notes[0].articulations.append(traste)
+    nota = pieza_desde_musicxml(escribir(obra, tmp_path), 1).notas[0]
+    assert (nota.cuerda, nota.traste) == (5, 0)
+
+
+def test_una_repeticion_mal_formada_es_un_value_error(tmp_path):
+    from music21 import bar
+
+    obra = partitura([(40, 4.0), (45, 4.0)])
+    parte = obra.parts[0].makeMeasures()
+    medidas = list(parte.getElementsByClass("Measure"))
+    medidas[0].leftBarline = bar.Repeat(direction="start")
+    medidas[1].leftBarline = bar.Repeat(direction="start")  # dos inicios seguidos
+    nueva = stream.Score()
+    nueva.append(parte)
+    ruta = escribir(nueva, tmp_path)
+    with pytest.raises(ValueError, match="repeticiones"):
+        pieza_desde_musicxml(ruta, 1)

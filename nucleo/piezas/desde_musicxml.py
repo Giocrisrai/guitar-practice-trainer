@@ -66,9 +66,8 @@ def _atomos(parte) -> list:
     return sueltas
 
 
-def pistas_de_musicxml(ruta: Path | str) -> tuple[PistaDisponible, ...]:
-    """Las partes del archivo, descritas sin convertir ninguna."""
-    obra = _abrir(ruta)
+def _describir(obra) -> tuple[PistaDisponible, ...]:
+    """Las partes de una obra ya abierta, descritas sin convertir ninguna."""
     pistas = []
     for numero, parte in enumerate(_partes(obra), start=1):
         notas = len(_atomos(parte))
@@ -89,6 +88,11 @@ def pistas_de_musicxml(ruta: Path | str) -> tuple[PistaDisponible, ...]:
             )
         )
     return tuple(pistas)
+
+
+def pistas_de_musicxml(ruta: Path | str) -> tuple[PistaDisponible, ...]:
+    """Las partes del archivo, descritas sin convertir ninguna."""
+    return _describir(_abrir(ruta))
 
 
 def _tablatura(nota) -> tuple[int, int] | None:
@@ -166,7 +170,7 @@ def pieza_desde_musicxml(
         disponibles = ", ".join(sorted(PERFILES))
         raise ValueError(f"El perfil '{perfil_clave}' no existe. Opciones: {disponibles}")
     obra = _abrir(ruta)
-    pistas = pistas_de_musicxml(ruta)
+    pistas = _describir(obra)  # el archivo se parsea una sola vez
     if not 1 <= numero_pista <= len(pistas):
         disponibles = ", ".join(f"{p.numero} ({p.nombre})" for p in pistas)
         raise ValueError(
