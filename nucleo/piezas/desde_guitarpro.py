@@ -130,11 +130,18 @@ def _describir(cancion: guitarpro.Song) -> tuple[PistaDisponible, ...]:
     ahi esta el porque). Describir una pista no convierte ni una nota, pero su
     afinacion sí queda disponible, que es lo que el aviso de «aféinate a esto»
     necesita para poder ofrecer el botón.
+
+    Y la clave con la que se dio de alta VIAJA en la descripcion
+    (`PistaDisponible.perfil_clave`). No es un extra: es la unica forma de que quien
+    muestra el aviso proponga exactamente la clave que va a traer la pieza. Mientras
+    el servidor la volvia a deducir comparando las notas de `cuerdas_midi` contra el
+    registro, dos perfiles de la misma afinacion y distinto numero de trastes -una
+    cancion con `fretCount` 22 y otra con 24- se tapaban: el aviso proponia el
+    primero que encajaba y el carril rechazaba la pieza despues de afinarse.
     """
     pistas = []
     for numero, pista in enumerate(cancion.tracks, start=1):
         notas = _contar_notas(pista)
-        _clave_de_pista(pista)
         pistas.append(
             PistaDisponible(
                 numero=numero,
@@ -143,6 +150,7 @@ def _describir(cancion: guitarpro.Song) -> tuple[PistaDisponible, ...]:
                 cuerdas_midi=tuple(cuerda.value for cuerda in pista.strings),
                 notas=notas,
                 motivo_no_usable=_motivo_no_usable(pista, notas),
+                perfil_clave=_clave_de_pista(pista),
             )
         )
     return tuple(pistas)
@@ -418,11 +426,14 @@ def pieza_desde_guitarpro(ruta: Path | str, numero_pista: int) -> Pieza:
     notas, secciones = _convertir(
         pista, _orden_de_compases(pista.measures, normalizado)
     )
-    # La afinacion la decide `_clave_de_pista`, la MISMA funcion por la que pasa el
-    # listado: si cada camino la calculase por su cuenta, el aviso de afinacion
-    # podria comparar la tuya con una clave que la pieza no trae. Aqui no puede ser
-    # None: las dos pistas que no declaran cuerdas ya se han rechazado arriba.
-    clave = _clave_de_pista(pista)
+    # La afinacion es la que ya trae la DESCRIPCION, es decir la que publico el
+    # listado: no se vuelve a calcular aqui. Antes se llamaba otra vez a
+    # `_clave_de_pista` -la misma funcion, asi que daba lo mismo-, pero una sola
+    # llamada deja dicho en el codigo lo que el aviso necesita: la clave del listado
+    # y la de la pieza son el MISMO valor, no dos cuentas que coinciden. Aqui no
+    # puede ser None: las dos pistas que no declaran cuerdas ya se han rechazado
+    # arriba, y son las unicas para las que `_clave_de_pista` no da clave.
+    clave = descripcion.perfil_clave
     assert clave is not None
     compas = _compas(cancion.measureHeaders[0])
     return Pieza(

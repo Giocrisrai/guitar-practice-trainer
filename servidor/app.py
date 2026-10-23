@@ -866,6 +866,16 @@ def crear_app(
         por su cuenta -que es la decisión del núcleo que esta interfaz ya ha
         duplicado siete veces- y acabar diciendo «algo no cuadra».
 
+        **Y se devuelven DOS VECES: por canción y por pista.** El par de nivel
+        canción es el de la primera pista usable, es decir el de la pista que se
+        importará si el usuario no elige otra, y sirve para avisar antes de elegir
+        ninguna. El que decide es el de la PISTA, porque lo que se importa es una
+        pista: con un `.gp5` de pista 1 en estándar y pista 2 en Drop C, el de la
+        canción decía «coincide» y la pista 2 daba un 400 al arrancar, sin ofrecer
+        «Afinarme a...» porque a nivel canción no había nada que avisar. La
+        `afinacion` por pista ya se publicaba; el `coincide` por pista es lo que
+        faltaba para que la interfaz no tenga que compararlo ella.
+
         `coincide` es `True`, `False` o **`None`**, y los tres significan cosas
         distintas. `None` es «el archivo no dice en qué afinación está», que es lo
         que pasa con MIDI y con MusicXML sin tablatura: ahí no hay nada a lo que
@@ -879,25 +889,41 @@ def crear_app(
         """
         ruta = _ruta_de_cancion(identificador)
         pistas = _leer_o_400(lambda: pistas_de_archivo(ruta))
+        perfil_activo = app.state.sesion.configuracion.perfil
+
+        def _afinacion(pista) -> dict:
+            """La afinación de una pista, con la clave QUE PUSO SU LECTOR.
+
+            `pista.perfil_clave` es la clave con la que el lector dio de alta el
+            perfil de esta pista, y es exactamente la que traerá la pieza. Deducirla
+            otra vez a partir de las cuerdas proponía otra en cuanto había dos
+            perfiles de la misma afinación con distinto número de trastes.
+            """
+            return afinacion_de(pista.cuerdas_midi, pista.perfil_clave)
+
+        def _coincide(afinacion: dict) -> bool | None:
+            """Si la afinación activa es la que pide esta afinación; None si no pide."""
+            if not afinacion["declarada"]:
+                return None
+            return afinacion["clave"] == perfil_activo
+
+        publicadas = []
+        for pista in pistas:
+            suya = _afinacion(pista)
+            publicadas.append(
+                {**pista.a_dict(), "afinacion": suya, "coincide": _coincide(suya)}
+            )
         usables = [pista for pista in pistas if pista.usable]
         # La afinación de la canción es la de la primera pista que se puede tocar:
         # es la que se va a importar si el usuario no elige otra.
         referencia = (usables or list(pistas))[0] if pistas else None
-        afinacion = afinacion_de(referencia.cuerdas_midi if referencia else ())
-        perfil_activo = app.state.sesion.configuracion.perfil
+        afinacion = _afinacion(referencia) if referencia else afinacion_de(())
         return {
             **app.state.biblioteca.entrada_de(identificador),
-            "pistas": [
-                {**pista.a_dict(), "afinacion": afinacion_de(pista.cuerdas_midi)}
-                for pista in pistas
-            ],
+            "pistas": publicadas,
             "afinacion": afinacion,
             "perfil_activo": perfil_activo,
-            "coincide": (
-                afinacion["clave"] == perfil_activo
-                if afinacion["declarada"]
-                else None
-            ),
+            "coincide": _coincide(afinacion),
         }
 
     @app.post("/api/canciones/{identificador}/importar")

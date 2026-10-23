@@ -66,6 +66,7 @@ const PISTA_GUITARRA: PistaDisponible = {
   usable: true,
   motivo_no_usable: null,
   afinacion: ESTANDAR,
+  coincide: true,
 };
 
 const PISTA_BATERIA: PistaDisponible = {
@@ -77,7 +78,27 @@ const PISTA_BATERIA: PistaDisponible = {
   usable: false,
   motivo_no_usable: "La pista 2 ('Bateria') no se puede importar: es de percusión.",
   afinacion: SIN_DECLARAR,
+  coincide: null,
 };
+
+/**
+ * El detalle de una canción de UNA pista en `afinacion`.
+ *
+ * La canción y su única pista dicen lo mismo, que es lo que pasa de verdad con un
+ * archivo de una pista: el `coincide` de nivel canción es el de la primera pista
+ * usable. Antes estas pruebas ponían el aviso solo en la canción y dejaban la pista
+ * en estándar, una combinación que el servidor no produce nunca.
+ */
+function conUnaPista(
+  afinacion: AfinacionCancion,
+  coincide: boolean | null
+): Partial<DetalleCancion> {
+  return {
+    afinacion,
+    coincide,
+    pistas: [{ ...PISTA_GUITARRA, afinacion, coincide }],
+  };
+}
 
 /** Una nota de la pieza, con lo que cada prueba quiera cambiar. */
 function nota(cambios: Partial<NotaDePieza> = {}): NotaDePieza {
@@ -247,7 +268,7 @@ describe("Canciones", () => {
   });
 
   it("avisa cuando la cancion pide otra afinacion y ofrece ir al afinador", async () => {
-    montar({ detalle: { afinacion: DROP_C, coincide: false } });
+    montar({ detalle: conUnaPista(DROP_C, false) });
     await elegirLaCancion();
 
     expect(await screen.findByText(/escrita en Drop C/)).toBeTruthy();
@@ -262,11 +283,7 @@ describe("Canciones", () => {
    */
   it("una cancion que no declara afinacion no genera ningun aviso de afinacion", async () => {
     montar({
-      detalle: {
-        afinacion: SIN_DECLARAR,
-        coincide: null,
-        pistas: [{ ...PISTA_GUITARRA, afinacion: SIN_DECLARAR }],
-      },
+      detalle: conUnaPista(SIN_DECLARAR, null),
     });
     await elegirLaCancion();
 
@@ -284,11 +301,7 @@ describe("Canciones", () => {
    */
   it("una cancion que no declara afinacion si se puede tocar", async () => {
     const { tocar } = montar({
-      detalle: {
-        afinacion: SIN_DECLARAR,
-        coincide: null,
-        pistas: [{ ...PISTA_GUITARRA, afinacion: SIN_DECLARAR }],
-      },
+      detalle: conUnaPista(SIN_DECLARAR, null),
     });
     await elegirLaCancion();
     fireEvent.click(await screen.findByRole("button", { name: /guitarra ritmica/i }));
@@ -310,7 +323,7 @@ describe("Canciones", () => {
       cuerdas_midi: [36, 43, 48, 53, 57, 62],
       declarada: true,
     };
-    montar({ detalle: { afinacion: rara, coincide: false } });
+    montar({ detalle: conUnaPista(rara, false) });
     await elegirLaCancion();
 
     expect(await screen.findByText(/No tengo ningún perfil al que afinarte/i)).toBeTruthy();
@@ -391,7 +404,7 @@ describe("Canciones", () => {
    * «Tocar» con `coincide === false` sería ofrecer un 400. Primero el afinador.
    */
   it("con otra afinacion no se puede tocar todavia", async () => {
-    const { tocar } = montar({ detalle: { afinacion: DROP_C, coincide: false } });
+    const { tocar } = montar({ detalle: conUnaPista(DROP_C, false) });
     await elegirLaCancion();
     fireEvent.click(await screen.findByRole("button", { name: /guitarra ritmica/i }));
 
@@ -401,9 +414,88 @@ describe("Canciones", () => {
     expect(tocar).not.toHaveBeenCalled();
   });
 
+  /**
+   * El aviso y el botón son de la PISTA elegida, no de la canción.
+   *
+   * Es el agujero medido: un `.gp5` de pista 1 en estándar y pista 2 en Drop C
+   * publica un `coincide` de nivel canción -el de la primera pista usable- que dice
+   * `true`. Con eso, elegir la pista 2 dejaba «Tocar en el carril» habilitado,
+   * importarla daba 200, arrancarla un 400, y encima no se ofrecía «Afinarme a...»
+   * porque a nivel canción no había nada que avisar: desde la pantalla no había
+   * salida.
+   *
+   * Las dos pistas están en la misma prueba a propósito: con una sola, leer el dato
+   * de la canción pasaría igual.
+   */
+  it("el aviso y el boton miran la pista elegida y no la cancion", async () => {
+    const enDropC: PistaDisponible = {
+      ...PISTA_GUITARRA,
+      numero: 2,
+      nombre: "Guitarra solista",
+      afinacion: DROP_C,
+      coincide: false,
+    };
+    const { tocar } = montar({
+      detalle: {
+        // Lo que publica el servidor: el par de nivel canción es el de la pista 1.
+        afinacion: ESTANDAR,
+        coincide: true,
+        pistas: [PISTA_GUITARRA, enDropC],
+      },
+    });
+    await elegirLaCancion();
+    // Sin pista elegida, el aviso es el de la canción: no hay nada que avisar.
+    expect(await screen.findByRole("button", { name: /guitarra solista/i })).toBeTruthy();
+    expect(screen.queryByText(/escrita en/i)).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /guitarra solista/i }));
+
+    expect(await screen.findByText(/escrita en Drop C/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: /afinador/i })).toBeTruthy();
+    const boton = await screen.findByRole("button", { name: /tocar en el carril/i });
+    expect(boton.hasAttribute("disabled")).toBe(true);
+    fireEvent.click(boton);
+    expect(tocar).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Y la otra mitad: la pista elegida manda también para DEJAR tocar.
+   *
+   * Si la canción pide otra afinación porque su primera pista la pide, pero la pista
+   * que has elegido está en la tuya, el carril la va a aceptar. Mirar el dato de la
+   * canción aquí negaba una pista perfectamente tocable.
+   */
+  it("una pista en tu afinacion se puede tocar aunque la cancion pida otra", async () => {
+    const enDropC: PistaDisponible = {
+      ...PISTA_GUITARRA,
+      afinacion: DROP_C,
+      coincide: false,
+    };
+    const estandar: PistaDisponible = {
+      ...PISTA_GUITARRA,
+      numero: 2,
+      nombre: "Guitarra solista",
+    };
+    const { tocar } = montar({
+      detalle: {
+        afinacion: DROP_C,
+        coincide: false,
+        pistas: [enDropC, estandar],
+      },
+    });
+    await elegirLaCancion();
+    fireEvent.click(await screen.findByRole("button", { name: /guitarra solista/i }));
+
+    expect(screen.queryByText(/escrita en Drop C/)).toBeNull();
+    const boton = await screen.findByRole("button", { name: /tocar en el carril/i });
+    expect(boton.hasAttribute("disabled")).toBe(false);
+    fireEvent.click(boton);
+    expect(tocar).toHaveBeenCalledWith({ cancion: "x.gp5", pista: 2, perfil: null });
+  });
+
   /** La spec §6: «te lleva al afinador con ese perfil puesto». Las dos cosas. */
   it("el boton del afinador deja el perfil puesto y entonces lleva al afinador", async () => {
-    const { fetchFalso, irA } = montar({ detalle: { afinacion: DROP_C, coincide: false } });
+    const { fetchFalso, irA } = montar({ detalle: conUnaPista(DROP_C, false) });
     await elegirLaCancion();
     fireEvent.click(await screen.findByRole("button", { name: /afinador/i }));
 
@@ -418,7 +510,7 @@ describe("Canciones", () => {
   /** Si el PUT falla no se navega en silencio: se dice y te quedas donde estabas. */
   it("si no se pudo cambiar la afinacion lo dice y no lleva al afinador", async () => {
     const { irA } = montar({
-      detalle: { afinacion: DROP_C, coincide: false },
+      detalle: conUnaPista(DROP_C, false),
       putConfig: () => responder({ detail: "perfil desconocido" }, false, 400),
     });
     await elegirLaCancion();

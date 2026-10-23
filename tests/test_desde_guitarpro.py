@@ -4,6 +4,8 @@ Las muestras se FABRICAN con PyGuitarPro, que escribe ademas de leer: ningun
 archivo con derechos de autor entra al repositorio.
 """
 
+import copy
+
 import guitarpro
 import pytest
 
@@ -563,3 +565,110 @@ def test_el_traste_que_se_toca_cuenta_tambien_al_listar(tmp_path):
     (al_listar,) = set(PERFILES) - antes
     assert PERFILES[al_listar].trastes == 24
     assert pieza_desde_guitarpro(ruta, 1).perfil == al_listar
+
+
+def test_un_mastil_corto_que_toca_un_traste_alto_da_un_perfil_que_llega(tmp_path):
+    """`fretCount` BAJO y nota ALTA: lo unico que mide el `max` de los dos.
+
+    Las tres pruebas que fijaban `trastes == 24` ponian `fretCount = 24` -o se
+    apoyaban en el 24 por defecto de PyGuitarPro- Y una nota en el traste 24, asi que
+    `max(24, 24)` no afirmaba nada: mutar
+    `max(_trastes_declarados(pista), traste_maximo)` a `_trastes_declarados(pista)`
+    dejaba la suite entera en verde.
+
+    Aqui la guitarra declara 22 trastes y la pista pisa el 24. El perfil tiene que
+    salir con 24 o la pieza llevaria una nota fuera de su propio mastil, que es
+    justo lo que el docstring de `_clave_de_la_afinacion` dice que se niega a hacer
+    («entonces el perfil conocido seria mentira»).
+    """
+    song = con_notas([(0, 1, 24)], cuerdas_midi=DROP_C)
+    song.tracks[0].fretCount = 22
+    ruta = escribir(song, tmp_path)
+
+    pieza = pieza_desde_guitarpro(ruta, 1)
+    perfil = PERFILES[pieza.perfil]
+    assert perfil.trastes == 24
+    assert max(n.traste for n in pieza.notas) <= perfil.trastes
+    # Y el listado propone esa misma clave, no la del mastil que declara el archivo.
+    (pista,) = pistas_de(ruta)
+    assert pista.perfil_clave == pieza.perfil
+
+
+# ---------------------------------------------------------------------------
+# Dos perfiles de la MISMA afinacion y distinto numero de trastes
+#
+# El unico caso donde el registro puede tapar una clave con otra, y el que faltaba:
+# las tres pruebas de arriba usan una cancion de UNA pista y dos afirman ademas
+# `len(nuevas) == 1`, lo que obliga a un registro que no puede tapar nada.
+#
+# El fallo medido: la clave de un perfil a medida lleva los trastes dentro
+# (`a_medida_c2-g2-c3-f3-a3-d4_24t`), pero quien proponia el aviso la volvia a
+# deducir comparando SOLO el juego de notas MIDI y devolvia la primera entrada que
+# encajara. Con dos canciones en Drop C de `fretCount` 22 y 24, el aviso proponia
+# `..._22t` para las dos, el usuario se afinaba a eso, el listado contestaba
+# `coincide: True` y el carril rechazaba la pieza con un 400.
+# ---------------------------------------------------------------------------
+
+
+def _en_drop_c_con_trastes(trastes, tmp_path, nombre):
+    song = con_notas([(0, 6, 3)], cuerdas_midi=DROP_C)
+    song.tracks[0].fretCount = trastes
+    return escribir(song, tmp_path, nombre)
+
+
+def test_dos_canciones_de_la_misma_afinacion_y_distintos_trastes_no_se_tapan(tmp_path):
+    """Cada una propone SU clave, la que va a traer su pieza.
+
+    La de 22 se mira primero a proposito: su entrada queda antes en el registro, y
+    era la que tapaba a la otra cuando la clave se deducia por las notas.
+    """
+    corta = _en_drop_c_con_trastes(22, tmp_path, "corta.gp5")
+    larga = _en_drop_c_con_trastes(24, tmp_path, "larga.gp5")
+
+    (de_la_corta,) = pistas_de(corta)
+    (de_la_larga,) = pistas_de(larga)
+
+    assert de_la_corta.perfil_clave == "a_medida_c2-g2-c3-f3-a3-d4_22t"
+    assert de_la_larga.perfil_clave == "a_medida_c2-g2-c3-f3-a3-d4_24t"
+    # Y lo que de verdad importa: cada clave es la que trae su pieza.
+    assert de_la_corta.perfil_clave == pieza_desde_guitarpro(corta, 1).perfil
+    assert de_la_larga.perfil_clave == pieza_desde_guitarpro(larga, 1).perfil
+
+
+def test_dos_pistas_de_la_misma_afinacion_y_distintos_trastes_no_se_tapan(tmp_path):
+    """El mismo caso dentro de UN archivo: la pista 1 no puede tapar a la 2.
+
+    Es el peor de los dos, porque las dos claves se dan de alta en la misma llamada
+    a `pistas_de`: la primera entra antes en el registro y la segunda la encontraba
+    al deducir por las notas.
+    """
+    song = con_notas([(0, 6, 3)], cuerdas_midi=DROP_C)
+    song.tracks[0].name = "Corta"
+    song.tracks[0].fretCount = 22
+    segunda = copy.deepcopy(song.tracks[0])
+    segunda.name = "Larga"
+    segunda.number = 2
+    segunda.fretCount = 24
+    song.tracks.append(segunda)
+    ruta = escribir(song, tmp_path, "dos_pistas.gp5")
+
+    corta, larga = pistas_de(ruta)
+    assert corta.perfil_clave == "a_medida_c2-g2-c3-f3-a3-d4_22t"
+    assert larga.perfil_clave == "a_medida_c2-g2-c3-f3-a3-d4_24t"
+    assert corta.perfil_clave == pieza_desde_guitarpro(ruta, 1).perfil
+    assert larga.perfil_clave == pieza_desde_guitarpro(ruta, 2).perfil
+
+
+def test_una_pista_sin_afinacion_que_declarar_no_publica_clave(tmp_path):
+    """Percusion y una pista sin cuerdas: no hay clave que proponer, y se dice.
+
+    None no es un descuido: es «esta pista no pide ninguna afinacion». Publicar
+    cualquier clave aqui seria ofrecerle al usuario afinarse a la bateria.
+    """
+    percusion = escribir(
+        cancion(cuerdas_midi=DROP_C, percusion=True), tmp_path, "percusion.gp5"
+    )
+    sin_cuerdas = escribir(cancion(cuerdas_midi=()), tmp_path, "sin_cuerdas.gp5")
+    assert pistas_de(percusion)[0].perfil_clave is None
+    assert pistas_de(sin_cuerdas)[0].perfil_clave is None
+

@@ -53,6 +53,14 @@ class PistaDisponible:
         una vacia o de una de letra.
     motivo_no_usable: None si se puede importar; si no, la frase que explica por
         que no, escrita para el usuario y no para un programador.
+    perfil_clave: la clave de `PERFILES` de la afinacion de ESTA pista, puesta por
+        el lector que la dio de alta, o None donde el formato no declara afinacion
+        (MIDI, MusicXML). Es la MISMA clave que va a traer la pieza al importar
+        esta pista, y viaja aqui por eso: quien lee el archivo es el unico que sabe
+        con que trastes construyo el perfil, asi que deducirla otra vez a partir de
+        `cuerdas_midi` -comparando notas contra el registro- daba una clave
+        distinta en cuanto habia dos perfiles de la misma afinacion y distinto
+        numero de trastes. Ver `servidor/canciones.afinacion_de`.
     """
 
     numero: int
@@ -61,12 +69,20 @@ class PistaDisponible:
     cuerdas_midi: tuple[int, ...]
     notas: int
     motivo_no_usable: str | None = None
+    perfil_clave: str | None = None
 
     @property
     def usable(self) -> bool:
         return self.motivo_no_usable is None
 
     def a_dict(self) -> dict:
+        """La pista como la publica el servidor.
+
+        `perfil_clave` NO va aqui: el servidor la convierte en la `afinacion` de la
+        pista -con su clave, su nombre y sus cuerdas- y publicar las dos seria
+        publicar la misma decision por dos sitios, que es como nacio el `indice` en
+        base 0 al lado del `numero` en base 1.
+        """
         return {
             "numero": self.numero,
             "nombre": self.nombre,
@@ -190,6 +206,9 @@ def _pistas_de_ascii(ruta: Path | str) -> tuple[PistaDisponible, ...]:
             instrumento="Bajo" if len(cuerdas) == 4 else "Guitarra",
             cuerdas_midi=tuple(midi_de_nombre(cuerda.nota) for cuerda in cuerdas),
             notas=len(pieza.notas),
+            # `Pieza.perfil` ES la clave de `PERFILES`, y la puso este mismo lector
+            # al leer el texto: es la que traera la pieza cuando se importe.
+            perfil_clave=pieza.perfil,
         ),
     )
 

@@ -1272,6 +1272,180 @@ def test_listar_una_cancion_no_llena_el_selector_de_afinaciones(cliente):
 
 
 # ---------------------------------------------------------------------------
+# Dos perfiles de la misma afinacion y distinto numero de trastes
+#
+# El caso que la prueba de arriba no puede dar: con UNA sola cancion rara en el
+# registro no hay nada que pueda taparla. El fallo medido, de punta a punta con la
+# misma cancion en Drop C como `.txt` (22 trastes) y como `.gp5` (24 por su
+# `fretCount`): el listado proponia `..._22t` para las dos, la pieza del `.gp5`
+# traia `..._24t`, pulsar «Afinarme a ... e ir al afinador» daba 200 y el listado
+# contestaba entonces `coincide: True`, y «Tocar en el carril» daba 400. Como
+# `/api/perfiles` publica solo fabrica mas la activa, `..._24t` no era elegible
+# desde ninguna pantalla: esa cancion quedaba intocable para siempre.
+# ---------------------------------------------------------------------------
+
+# La MISMA afinacion del `.gp5` de Drop C, escrita como tablatura de texto: las
+# letras van de la cuerda aguda (arriba) a la grave (abajo).
+TABLATURA_EN_DROP_C = (
+    b"D|--3--5--|\n"
+    b"A|--------|\n"
+    b"F|--------|\n"
+    b"C|--------|\n"
+    b"G|--------|\n"
+    b"C|--------|\n"
+)
+
+
+def test_el_listado_propone_la_clave_de_cada_archivo_y_no_la_de_otro(cliente):
+    """Dos archivos, una afinacion, dos numeros de trastes: dos claves.
+
+    El `.txt` se mira PRIMERO a proposito: su perfil entra antes en el registro, y
+    era el que tapaba al del `.gp5` cuando la clave se deducia comparando notas.
+    """
+    cliente.post("/api/canciones", files={"archivo": ("dropc.txt", TABLATURA_EN_DROP_C)})
+    cliente.post(
+        "/api/canciones", files={"archivo": ("dropc.gp5", _guitarpro_en_drop_c(24))}
+    )
+
+    del_texto = cliente.get("/api/canciones/dropc.txt/pistas").json()["afinacion"]
+    del_guitarpro = cliente.get("/api/canciones/dropc.gp5/pistas").json()["afinacion"]
+
+    assert del_texto["clave"] == "a_medida_c2-g2-c3-f3-a3-d4_22t"
+    assert del_guitarpro["clave"] == "a_medida_c2-g2-c3-f3-a3-d4_24t"
+    # Las dos son la misma afinacion -el mismo juego de cuerdas-, que es lo que hacia
+    # que una tapara a la otra.
+    assert del_texto["cuerdas_midi"] == del_guitarpro["cuerdas_midi"]
+    # Y cada clave es la que trae SU pieza.
+    for nombre, afinacion in (("dropc.txt", del_texto), ("dropc.gp5", del_guitarpro)):
+        pieza = cliente.post(f"/api/canciones/{nombre}/importar", json={"pista": 1})
+        assert pieza.json()["perfil"] == afinacion["clave"]
+
+
+def test_afinarse_a_lo_que_propone_el_listado_basta_con_dos_perfiles_en_juego(cliente):
+    """El camino del usuario entero, con el perfil que tapaba ya en el registro.
+
+    Mirar el `.txt` deja `..._22t` dado de alta; despues se abre el `.gp5`, se pulsa
+    el boton del aviso y se toca. Antes, el paso 4 daba 400 y el 3 decia que estabas
+    bien afinado.
+    """
+    cliente.post("/api/canciones", files={"archivo": ("dropc.txt", TABLATURA_EN_DROP_C)})
+    cliente.post(
+        "/api/canciones", files={"archivo": ("dropc.gp5", _guitarpro_en_drop_c(24))}
+    )
+    cliente.get("/api/canciones/dropc.txt/pistas")
+
+    clave = cliente.get("/api/canciones/dropc.gp5/pistas").json()["afinacion"]["clave"]
+    assert cliente.put("/api/config", json={"perfil": clave}).status_code == 200
+    assert clave in {p["clave"] for p in cliente.get("/api/perfiles").json()}
+    assert cliente.get("/api/canciones/dropc.gp5/pistas").json()["coincide"] is True
+
+    respuesta = cliente.post(
+        "/api/piezas/iniciar", json={"cancion": "dropc.gp5", "pista": 1}
+    )
+    assert respuesta.status_code == 200, respuesta.json().get("detail")
+    cliente.post("/api/piezas/detener")
+
+
+# ---------------------------------------------------------------------------
+# El aviso es de la PISTA elegida, no de la cancion
+#
+# `afinacion` y `coincide` de nivel cancion son los de la primera pista usable. Con
+# un `.gp5` de pista 1 en estandar y pista 2 en Drop C decian «coincide», el boton
+# de la pantalla salia habilitado, importar la pista 2 daba 200 y arrancarla 400, y
+# encima no se ofrecia «Afinarme a...» porque a nivel cancion no habia nada que
+# avisar. El dato por pista hay que publicarlo entero -afinacion Y coincide- para
+# que la interfaz no tenga que compararlo ella.
+# ---------------------------------------------------------------------------
+
+
+def _guitarpro_de_dos_afinaciones() -> bytes:
+    """Un gp5 con la pista 1 en afinacion estandar y la pista 2 en Drop C."""
+    import copy
+    import io
+
+    import guitarpro
+
+    song = guitarpro.Song()
+    song.tempo = 90
+    song.title = "Dos afinaciones"
+    pista = song.tracks[0]
+    pista.name = "En estandar"
+    pista.strings = [
+        guitarpro.GuitarString(number=i + 1, value=v)
+        for i, v in enumerate((64, 59, 55, 50, 45, 40))
+    ]
+    compas = pista.measures[0]
+    voz = compas.voices[0]
+    beat = guitarpro.Beat(
+        voice=voz,
+        start=compas.header.start,
+        duration=guitarpro.Duration(value=4),
+        status=guitarpro.BeatStatus.normal,
+    )
+    beat.notes = [
+        guitarpro.Note(beat=beat, value=3, string=6, type=guitarpro.NoteType.normal)
+    ]
+    voz.beats.append(beat)
+
+    segunda = copy.deepcopy(pista)
+    segunda.name = "En Drop C"
+    segunda.number = 2
+    segunda.strings = [
+        guitarpro.GuitarString(number=i + 1, value=v)
+        for i, v in enumerate((62, 57, 53, 48, 43, 36))
+    ]
+    song.tracks.append(segunda)
+
+    memoria = io.BytesIO()
+    guitarpro.write(song, memoria)
+    return memoria.getvalue()
+
+
+def test_cada_pista_dice_si_coincide_con_tu_afinacion(cliente):
+    """Lo que decide el boton tiene que ser de la pista, y la pista lo publica.
+
+    Las dos pistas estan en la misma prueba a proposito: con una sola, el dato de la
+    cancion valdria igual y la prueba no distinguiria el caso.
+    """
+    cliente.post(
+        "/api/canciones", files={"archivo": ("mixta.gp5", _guitarpro_de_dos_afinaciones())}
+    )
+    detalle = cliente.get("/api/canciones/mixta.gp5/pistas").json()
+
+    assert detalle["perfil_activo"] == "guitarra_estandar"
+    # El de nivel cancion es el de la primera pista usable, y sigue siendo el suyo.
+    assert detalle["coincide"] is True
+    primera, segunda = detalle["pistas"]
+    assert primera["coincide"] is True
+    assert segunda["coincide"] is False
+    assert segunda["afinacion"]["clave"] == "a_medida_c2-g2-c3-f3-a3-d4_24t"
+    # Y es la clave que trae la pieza de ESA pista, que es lo que hace que afinarse a
+    # lo que dice la pantalla baste para que el carril la acepte.
+    pieza = cliente.post("/api/canciones/mixta.gp5/importar", json={"pista": 2}).json()
+    assert pieza["perfil"] == segunda["afinacion"]["clave"]
+
+    assert cliente.put("/api/config", json={"perfil": pieza["perfil"]}).status_code == 200
+    respuesta = cliente.post(
+        "/api/piezas/iniciar", json={"cancion": "mixta.gp5", "pista": 2}
+    )
+    assert respuesta.status_code == 200, respuesta.json().get("detail")
+    cliente.post("/api/piezas/detener")
+
+
+def test_una_pista_sin_afinacion_declarada_no_dice_que_no_coincide(cliente):
+    """`coincide: None` por pista significa lo mismo que por cancion: no pide nada.
+
+    Un MIDI no declara afinacion, asi que no hay nada que avisar y la pieza se
+    importa en el perfil activo. `False` haria que la pantalla dijera «no cuadra,
+    afinate a null» y encima no dejara tocar.
+    """
+    cliente.post("/api/canciones", files={"archivo": ("x.mid", _midi_de_una_nota())})
+    detalle = cliente.get("/api/canciones/x.mid/pistas").json()
+    assert detalle["coincide"] is None
+    assert all(pista["coincide"] is None for pista in detalle["pistas"])
+
+
+# ---------------------------------------------------------------------------
 # Los avisos de tempo y compas variables
 #
 # Los dos se detectaban, se guardaban en la pieza y no llegaban a ninguna parte:

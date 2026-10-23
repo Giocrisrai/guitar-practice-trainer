@@ -245,14 +245,44 @@ export function Canciones({ irA, tocar }: PropiedadesCanciones) {
     }
   };
 
+  /** La pista elegida, buscada por su `numero` (base 1), o `null` si no hay. */
+  const pistaElegida =
+    detalle !== null && pista !== null
+      ? (detalle.pistas.find((disponible) => disponible.numero === pista) ?? null)
+      : null;
+
   /**
-   * Si el carril va a aceptar esta canción.
+   * De quién es el aviso de afinación: de la PISTA elegida, y de la canción solo
+   * mientras no hay ninguna.
+   *
+   * Lo que se importa es una pista, no una canción, así que es la afinación de la
+   * pista la que decide. Medido con un `.gp5` de pista 1 en estándar y pista 2 en
+   * Drop C: el `coincide` de nivel canción -el de la primera pista usable- decía
+   * `true`, el botón salía habilitado, importar la pista 2 daba 200 y arrancarla un
+   * 400, y encima no se ofrecía «Afinarme a...» porque a nivel canción no había
+   * nada que avisar. El dato por pista ya lo publicaba el servidor y esta pantalla
+   * no lo leía.
+   *
+   * Mientras no hay pista elegida se usa el de la canción, que es el de la pista que
+   * se importará si el usuario no elige otra: así el aviso sigue apareciendo al
+   * abrir la canción y no solo al elegir una pista.
+   *
+   * Las dos formas traen `afinacion` y `coincide` con el mismo significado y la
+   * misma cuenta del servidor (ver `tiposCancion.ts`), así que aquí no se compara
+   * nada: se elige de quién es el dato.
+   */
+  const avisoDeAfinacion: Pick<DetalleCancion, "afinacion" | "coincide"> | null =
+    pistaElegida ?? detalle;
+
+  /**
+   * Si el carril va a aceptar esta pista.
    *
    * `coincide === false` es el único caso que lo impide. `null` NO lo impide: es
    * «el archivo no dice en qué afinación está», y entonces la pieza se importa en
    * el perfil activo y el carril la acepta.
    */
-  const carrilLaAcepta = detalle !== null && detalle.coincide !== false;
+  const carrilLaAcepta =
+    avisoDeAfinacion !== null && avisoDeAfinacion.coincide !== false;
 
   return (
     <section className="canciones">
@@ -309,19 +339,21 @@ export function Canciones({ irA, tocar }: PropiedadesCanciones) {
             <h3>{detalle.nombre}</h3>
 
             {/* El aviso de afinación, SOLO con `coincide === false`. Con `null` el
-                archivo no dice en qué afinación está y no hay nada que avisar. */}
-            {detalle.coincide === false && (
+                archivo no dice en qué afinación está y no hay nada que avisar. Y es
+                el de la PISTA elegida en cuanto hay una (ver `avisoDeAfinacion`). */}
+            {avisoDeAfinacion !== null && avisoDeAfinacion.coincide === false && (
               <div className="aviso-cancion">
                 <p>
-                  Esta canción está escrita en {detalle.afinacion.nombre} y tú tienes
-                  puesta {detalle.perfil_activo}: el carril no la va a aceptar así.
+                  {pistaElegida !== null ? "Esta pista" : "Esta canción"} está escrita
+                  en {avisoDeAfinacion.afinacion.nombre} y tú tienes puesta{" "}
+                  {detalle.perfil_activo}: el carril no la va a aceptar así.
                 </p>
-                {detalle.afinacion.clave !== null ? (
+                {avisoDeAfinacion.afinacion.clave !== null ? (
                   <button
                     type="button"
-                    onClick={() => void afinarse(detalle.afinacion.clave!)}
+                    onClick={() => void afinarse(avisoDeAfinacion.afinacion.clave!)}
                   >
-                    Afinarme a {detalle.afinacion.nombre} e ir al afinador
+                    Afinarme a {avisoDeAfinacion.afinacion.nombre} e ir al afinador
                   </button>
                 ) : (
                   // Sin clave no hay perfil al que afinarse. Se dice, pero no se

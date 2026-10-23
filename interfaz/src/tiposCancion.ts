@@ -60,6 +60,13 @@ export interface AfinacionCancion {
  * pista no se puede importar (una de percusión, una vacía, una que no cabe en el
  * mástil). Se muestra tal cual y se enseña junto a la pista: una pista que no se
  * puede elegir sin decir por qué parece un programa roto.
+ *
+ * **`afinacion` y `coincide` son los de ESTA pista, y son los que deciden.** Lo que
+ * se importa es una pista, no una canción: un `.gp5` con la pista 1 en estándar y la
+ * pista 2 en Drop C trae un `coincide` de nivel canción que dice `true` -es el de la
+ * primera pista usable- mientras la pista 2 da un 400 al arrancar. Significan
+ * exactamente lo mismo que los de `DetalleCancion`, incluidos los tres valores de
+ * `coincide`, y los decide el mismo servidor con la misma cuenta.
  */
 export interface PistaDisponible {
   numero: number;
@@ -70,11 +77,17 @@ export interface PistaDisponible {
   usable: boolean;
   motivo_no_usable: string | null;
   afinacion: AfinacionCancion;
+  coincide: boolean | null;
 }
 
 /**
  * Lo que devuelve `GET /api/canciones/{id}/pistas`: la ficha, las pistas y la
  * afinación que pide la canción comparada con la activa.
+ *
+ * `afinacion` y `coincide` de aquí son los de **la primera pista usable**, que es la
+ * que se importará si el usuario no elige otra: valen para avisar ANTES de elegir
+ * pista. En cuanto hay una elegida, los que cuentan son los de ella
+ * (`PistaDisponible.afinacion`, `PistaDisponible.coincide`).
  *
  * **`coincide` tiene TRES valores y los tres significan cosas distintas:**
  *

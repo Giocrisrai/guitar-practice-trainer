@@ -280,36 +280,37 @@ async def leer_subida(leer) -> bytes:
         trozos.append(trozo)
 
 
-def afinacion_de(cuerdas_midi) -> dict:
+def afinacion_de(cuerdas_midi, perfil_clave: str | None = None) -> dict:
     """La afinación que pide un juego de cuerdas al aire: clave, nombre y cuerdas.
 
     `clave` es la del perfil al que hay que afinarse, y es lo que hace ACCIONABLE el
     aviso: con ella la interfaz puede ofrecer el botón que cambia la afinación activa,
-    en vez de decir "esto no cuadra" y dejar al alumno buscando. Se busca en dos
-    sitios, en este orden:
+    en vez de decir "esto no cuadra" y dejar al alumno buscando.
 
-    1. `clave_de_perfil`, que reconoce las afinaciones DE FÁBRICA. Una canción en
-       Drop D tiene que decir `guitarra_drop_d`, no una clave inventada.
-    2. El registro vivo `PERFILES`, donde los lectores dan de alta las afinaciones
-       raras. Esto es para qué sirve el registro vivo: la canción en Drop C ya tiene
-       clave porque el lector se la puso, y repetirle el cálculo aquí -con otros
-       trastes, por ejemplo- habría inventado una clave distinta de la que va a
-       traer la pieza.
+    **`perfil_clave` es la del LECTOR y manda** (`PistaDisponible.perfil_clave`): la
+    puso quien leyó el archivo, que es el mismo que llamó a `registrar_perfil` y el
+    único que sabe con cuántos trastes construyó el perfil. Si la clave viaja desde
+    quien la creó, no puede divergir de la que va a traer la pieza.
 
-       Los lectores la dan de alta **al listar las pistas y al importar**, no solo
-       al importar. Antes era solo al importar, y entonces esta función devolvía
-       `clave: None` la primera vez que se miraba una canción en una afinación rara:
-       la pantalla decía «no tengo ningún perfil al que afinarte» justo en el único
-       caso en que el aviso hacía falta, y empezaba a funcionar la segunda vez que
-       abrías la canción. El alta vive en el lector
-       (`desde_guitarpro._clave_de_pista`, `desde_ascii`) y no aquí a propósito: es
-       quien lee el archivo el que sabe con qué trastes construir el perfil, y la
-       clave tiene que ser exactamente la que va a traer la pieza.
+    Aquí ya se deducía una vez a partir de las notas, y esa tercera cuenta del mismo
+    problema es la que rompía la promesa de la etapa. Las claves a medida llevan los
+    trastes dentro (`a_medida_c2-g2-c3-f3-a3-d4_24t`), pero la deducción comparaba
+    solo el juego de notas MIDI y devolvía la PRIMERA entrada del registro que
+    encajara. Con la misma canción en Drop C como `.txt` (22 trastes) y como `.gp5`
+    (24 por su `fretCount`), el listado proponía `..._22t` para las dos, la pieza del
+    `.gp5` traía `..._24t`, el usuario se afinaba a lo que le decían -y el listado
+    contestaba entonces `coincide: True`- y el carril la rechazaba con un 400. Y
+    `/api/perfiles` solo publica fábrica más la activa, así que `..._24t` no era
+    elegible desde ninguna pantalla: esa canción quedaba intocable para siempre.
 
-    Si no aparece en ninguno de los dos, `clave` es None y el nombre se deriva de las
-    notas. Hoy eso solo pasa con un formato que declare cuerdas y cuyo lector no
-    registre su afinación; MIDI y MusicXML no declaran ninguna y caen por la rama de
-    `declarada: False`, más arriba.
+    Si no llega clave del lector se cae a `clave_de_perfil`, que reconoce las
+    afinaciones DE FÁBRICA y nada más: una canción en Drop D dice `guitarra_drop_d`
+    y no una clave inventada. Es el caso de un formato que declare cuerdas y cuyo
+    lector no las dé de alta, que hoy no existe -Guitar Pro y la tablatura de texto
+    las dan de alta, y MIDI y MusicXML no declaran afinación-; el registro vivo no se
+    vuelve a recorrer por nota, que es justo la cuenta que se ha quitado.
+
+    Si no hay ninguna de las dos, `clave` es None y el nombre se deriva de las notas.
 
     `declarada` dice si el ARCHIVO trae afinación. MIDI y MusicXML sin tablatura no
     la traen (`cuerdas_midi` vacío), y entonces no hay nada a lo que afinarse: la
@@ -324,7 +325,7 @@ def afinacion_de(cuerdas_midi) -> dict:
     # Importación local: `nucleo.afinaciones` es barato, pero este módulo lo usa
     # solo aquí y así queda claro que la biblioteca es carpeta, no teoría musical.
     from nucleo.afinaciones import PERFILES, clave_de_perfil, perfil_desde_midis
-    from nucleo.musica import midi_de_nombre, nombre_de_midi
+    from nucleo.musica import nombre_de_midi
 
     midis = tuple(sorted(cuerdas_midi))
     if not midis:
@@ -334,12 +335,18 @@ def afinacion_de(cuerdas_midi) -> dict:
             "cuerdas_midi": [],
             "declarada": False,
         }
-    clave = clave_de_perfil(perfil_desde_midis("De la canción", midis))
+    clave = perfil_clave
     if clave is None:
-        clave = _clave_en_registro(PERFILES, midis, midi_de_nombre)
-    if clave is not None:
+        clave = clave_de_perfil(perfil_desde_midis("De la canción", midis))
+    if clave is not None and clave in PERFILES:
         nombre = PERFILES[clave].nombre
     else:
+        # Una clave que el registro no conoce no se publica: la pantalla ofrecería
+        # un botón que `PUT /api/config` rechazaría (`Configuracion` valida el perfil
+        # contra `PERFILES`), y eso es el botón muerto que este aviso existe para
+        # evitar. No debería pasar -quien pone la clave es quien la registró-, así
+        # que si pasa, se dice la afinación por su nombre de notas y nada más.
+        clave = None
         nombre = "Afinación " + " ".join(nombre_de_midi(midi) for midi in midis)
     return {
         "clave": clave,
@@ -347,19 +354,6 @@ def afinacion_de(cuerdas_midi) -> dict:
         "cuerdas_midi": list(midis),
         "declarada": True,
     }
-
-
-def _clave_en_registro(perfiles: dict, midis: tuple[int, ...], midi_de_nombre) -> str | None:
-    """La clave del perfil del registro vivo con estas mismas cuerdas al aire, o None.
-
-    Se compara por nota MIDI y no por frecuencia porque los perfiles que registran
-    los lectores salen de notas MIDI: la comparación es exacta por construcción.
-    """
-    for clave, perfil in perfiles.items():
-        suyas = tuple(sorted(midi_de_nombre(cuerda.nota) for cuerda in perfil.cuerdas))
-        if suyas == midis:
-            return clave
-    return None
 
 
 def comprobar_tamano(medidos: int) -> None:
