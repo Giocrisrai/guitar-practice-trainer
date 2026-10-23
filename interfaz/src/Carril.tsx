@@ -295,6 +295,13 @@ export function Carril({ peticion = null }: PropiedadesCarril) {
    * La pieza que viene pedida de otra pantalla se arranca al montar y UNA SOLA
    * vez. La marca hace falta porque `detener` vuelve a dejar `pieza` en `null`:
    * sin ella, el efecto la arrancaría otra vez, y otra, en bucle.
+   *
+   * NO se reinicia cuando `peticion` cambia, a propósito: no hay forma de
+   * distinguir «otra canción» de «el mismo pedido en otro objeto», que es lo que
+   * llega en cada render si quien la pasa la escribe en el JSX. El precio es que una
+   * petición de verdad nueva sobre un carril ya montado se descartaría, y de eso se
+   * encarga quien la pasa: `App` le pone una `key` que cambia con cada traspaso, así
+   * que un pedido nuevo monta un carril nuevo con la marca limpia.
    */
   const yaPedida = useRef(false);
   useEffect(() => {

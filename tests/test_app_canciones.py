@@ -702,6 +702,75 @@ def test_la_pista_de_una_cancion_que_arranca_tambien_se_pide_entera(cliente):
     assert "1.9" in respuesta.json()["detail"]
 
 
+def test_sin_pista_se_arranca_la_primera(cliente):
+    """La pista por defecto es la 1, la misma que en `/importar`, y no la 0.
+
+    Se ejerce con un archivo de DOS pistas que no suenan igual: con uno de una
+    sola, o con dos iguales, un cero por defecto -que el nucleo rechazaria- y un
+    uno darian lo mismo donde importa.
+    """
+    cliente.post(
+        "/api/canciones", files={"archivo": ("dos.mid", _midi_de_dos_pistas())}
+    )
+    respuesta = cliente.post("/api/piezas/iniciar", json={"cancion": "dos.mid"})
+    assert respuesta.status_code == 200
+    assert [nota["midi"] for nota in respuesta.json()["pieza"]["notas"]] == [52]
+    cliente.post("/api/piezas/detener")
+
+
+@pytest.mark.parametrize("valor", [123, True, 1.5, ["x.txt"], {"nombre": "x.txt"}, None])
+def test_una_cancion_que_no_es_un_nombre_da_400_y_no_un_500(cliente, valor):
+    """El `id` sale de un `dict` SIN TIPAR, al contrario que en `/importar`.
+
+    En `/importar` el identificador viene de la ruta y FastAPI ya lo tipa `str`
+    antes de que el handler lo vea. Aqui sale del cuerpo, asi que `{"cancion": 123}`
+    llegaba hasta `unicodedata.normalize` -que exige `str`- y salia como un
+    `TypeError` sin capturar: un 500, es decir «el servidor se ha roto», que es
+    mentira y no le dice al usuario que lo que manda no es un nombre de archivo.
+
+    `True` esta aparte de `123` a proposito: en Python `bool` es un `int`, asi que
+    una comprobacion de tipo descuidada lo deja pasar por otro camino.
+    """
+    respuesta = cliente.post(
+        "/api/piezas/iniciar", json={"cancion": valor, "pista": 1}
+    )
+    assert respuesta.status_code == 400
+    assert cliente.get("/api/piezas/estado").json()["arranque"] == 0
+
+
+def test_una_cancion_vacia_sigue_pidiendo_una_cancion_sin_decir_cual(cliente):
+    """El otro lado de lo mismo: `{"cancion": ""}` no es «no he pedido nada».
+
+    Si las dos formas se distinguieran por el VALOR y no por la presencia de la
+    clave, una cadena vacia -o un `null`- caeria en «no me has dicho que tocar», que
+    es el mensaje equivocado: lo que falta no es la forma, es el nombre del archivo,
+    y el mensaje tiene que hablar de eso para que se pueda arreglar.
+    """
+    respuesta = cliente.post("/api/piezas/iniciar", json={"cancion": "", "pista": 1})
+    assert respuesta.status_code == 400
+    detalle = respuesta.json()["detail"]
+    assert "nombre" in detalle
+    # No es el mensaje de «falta una de las dos formas».
+    assert "familia" not in detalle
+
+
+def test_una_familia_vacia_sigue_pidiendo_un_ejercicio_sin_decir_cual(cliente):
+    """`{"familia": ""}` NO es «no he pedido nada»: es «dime cuales hay».
+
+    Por eso las dos formas se distinguen por la PRESENCIA de la clave y no por su
+    valor. La interfaz manda la familia vacia a proposito mientras el catalogo no ha
+    llegado (`Carril.tsx`), para que lo que se ve seleccionado y lo que viaja sean
+    siempre lo mismo, y la respuesta tiene que ser la lista de familias y no «no me
+    has dicho que tocar».
+    """
+    respuesta = cliente.post("/api/piezas/iniciar", json={"familia": "", "parametros": {}})
+    assert respuesta.status_code == 400
+    detalle = respuesta.json()["detail"]
+    # El mensaje del generador, que enumera las familias; no el de «falta una forma».
+    assert "escala" in detalle
+    assert "cancion" not in detalle
+
+
 def test_el_modulo_canciones_aparece_junto_a_los_otros(cliente):
     claves = {m["clave"] for m in cliente.get("/api/modulos").json()}
     assert {"afinador", "ejercicios", "carril", "canciones"} <= claves

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { DetalleCancion, FichaCancion, PiezaImportada } from "./tiposCancion";
 import type { RespuestaConfig } from "./tipos";
@@ -100,6 +100,24 @@ export function Canciones({ irA, tocar }: PropiedadesCanciones) {
   const [errorPieza, setErrorPieza] = useState<string | null>(null);
   const [errorAfinador, setErrorAfinador] = useState<string | null>(null);
 
+  /**
+   * Contadores de petición: cada llamada se queda con un número y solo escribe en
+   * la pantalla si al volver sigue siendo la última.
+   *
+   * Soltar el estado por delante -como hace `elegirCancion`- cubre el MIENTRAS, que
+   * es otra cosa: cubre que no se vean las pistas de A con el título de B durante la
+   * espera, pero no la LLEGADA fuera de orden. `fetch` no promete orden, así que dos
+   * clics rápidos -canción A, canción B- dejaban el detalle de A debajo del título
+   * de B en cuanto el de A llegaba tarde, y entonces elegir una pista de la lista de
+   * A importaba una pista de B.
+   *
+   * Son dos contadores y no uno porque las dos peticiones no caducan igual: elegir
+   * otra pista deja rancia la pieza en vuelo pero no el detalle, y elegir otra
+   * canción deja rancias las dos (por eso `elegirCancion` sube los dos).
+   */
+  const ultimoDetalle = useRef(0);
+  const ultimaPieza = useRef(0);
+
   /** Vuelve a leer la carpeta. Al montar y después de cada subida. */
   const cargarLista = useCallback(
     () =>
@@ -131,10 +149,25 @@ export function Canciones({ irA, tocar }: PropiedadesCanciones) {
     setErrorPistas(null);
     setErrorPieza(null);
     setErrorAfinador(null);
+    // Esta petición es la última del detalle, y además deja rancia cualquier pieza
+    // que siga en vuelo: era de la canción anterior.
+    //
+    // Esa segunda línea es defensa en profundidad y hoy NO se ve: el bloque de los
+    // avisos exige también una pista elegida, y `setPista(null)` de arriba ya la
+    // quita, así que una pieza rancia que entrara aquí se guardaría sin pintarse.
+    // Se queda porque lo que sostiene es el invariante —`pieza` y `detalle` hablan
+    // siempre de la misma canción— y no el píxel; está medido en el informe:
+    // quitarla sola no rompe ninguna prueba, y quitarla junto con `setPista(null)`
+    // sí.
+    const mia = (ultimoDetalle.current += 1);
+    ultimaPieza.current += 1;
     try {
-      setDetalle(await pedir<DetalleCancion>(ruta(ficha.id, "/pistas")));
+      const recibido = await pedir<DetalleCancion>(ruta(ficha.id, "/pistas"));
+      if (ultimoDetalle.current === mia) setDetalle(recibido);
     } catch (excepcion) {
-      setErrorPistas(mensajeDe(excepcion, "No pude leer las pistas de esta canción"));
+      if (ultimoDetalle.current === mia) {
+        setErrorPistas(mensajeDe(excepcion, "No pude leer las pistas de esta canción"));
+      }
     }
   }, []);
 
@@ -145,20 +178,22 @@ export function Canciones({ irA, tocar }: PropiedadesCanciones) {
     setPista(numero);
     setPieza(null);
     setErrorPieza(null);
+    const mia = (ultimaPieza.current += 1);
     try {
-      setPieza(
-        await pedir<PiezaImportada>(ruta(identificador, "/importar"), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          // `perfil` solo cuenta donde el archivo no trae afinación, y entonces
-          // manda el perfil activo: no se elige uno desde aquí, porque
-          // reinterpretar una tablatura en Drop D con otro perfil dibujaría
-          // trastes que la canción no toca.
-          body: JSON.stringify({ pista: numero, perfil: null }),
-        })
-      );
+      const recibida = await pedir<PiezaImportada>(ruta(identificador, "/importar"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        // `perfil` solo cuenta donde el archivo no trae afinación, y entonces
+        // manda el perfil activo: no se elige uno desde aquí, porque
+        // reinterpretar una tablatura en Drop D con otro perfil dibujaría
+        // trastes que la canción no toca.
+        body: JSON.stringify({ pista: numero, perfil: null }),
+      });
+      if (ultimaPieza.current === mia) setPieza(recibida);
     } catch (excepcion) {
-      setErrorPieza(mensajeDe(excepcion, "No pude importar esta pista"));
+      if (ultimaPieza.current === mia) {
+        setErrorPieza(mensajeDe(excepcion, "No pude importar esta pista"));
+      }
     }
   };
 

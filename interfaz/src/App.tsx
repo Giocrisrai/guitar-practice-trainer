@@ -33,6 +33,19 @@ export function App() {
    * y avisa; el carril arranca y dibuja.
    */
   const [peticionCarril, setPeticionCarril] = useState<PeticionCancion | null>(null);
+  /**
+   * Cuántos traspasos ha habido. Solo sirve de `key` del carril.
+   *
+   * La marca de «ya pedida» de `Carril` no se reinicia nunca, y debe ser así: su
+   * trabajo es que un re-render con otro objeto del mismo contenido no vuelva a
+   * lanzar el POST. El precio es que una petición NUEVA sobre un carril ya montado
+   * se descartaría en silencio. Hoy eso no pasa porque cambiar de módulo lo
+   * desmonta, pero depender de eso es depender de cómo está escrito el `main` de
+   * aquí abajo; con la `key`, cada traspaso monta un carril nuevo y la marca empieza
+   * limpia, aunque mañana se abran dos módulos a la vez o se toque dos veces la
+   * misma pista de la misma canción.
+   */
+  const [traspasos, setTraspasos] = useState(0);
   const [diagnostico, setDiagnostico] = useState<Diagnostico | null>(null);
 
   useEffect(() => {
@@ -63,6 +76,7 @@ export function App() {
   /** Lleva esta canción al carril, que es quien la arranca y la dibuja. */
   const tocarEnElCarril = (peticion: PeticionCancion) => {
     setPeticionCarril(peticion);
+    setTraspasos((cuantos) => cuantos + 1);
     setActivo("carril");
   };
 
@@ -96,7 +110,7 @@ export function App() {
         {activo === "afinador" && <Afinador />}
         {activo === "ejercicios" && <Ejercicios />}
         {activo === "canciones" && <Canciones irA={irA} tocar={tocarEnElCarril} />}
-        {activo === "carril" && <Carril peticion={peticionCarril} />}
+        {activo === "carril" && <Carril key={traspasos} peticion={peticionCarril} />}
       </main>
     </div>
   );

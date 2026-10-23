@@ -25,6 +25,7 @@ from nucleo.analisis.pipeline import ResultadoAnalisis
 from nucleo.ejercicios.teoria import ACORDES, ESCALAS, INTERVALOS
 from nucleo.piezas.desde_ejercicio import pieza_desde_ejercicio
 from nucleo.piezas.lectores import importar, pistas_de_archivo
+from nucleo.piezas.modelo import Pieza
 from servidor import configuracion as config_modulo
 from servidor.canciones import (
     MARGEN_MULTIPART_BYTES,
@@ -567,7 +568,7 @@ def crear_app(
         ejercicio = _generar_o_400(datos)
         return pieza_desde_ejercicio(ejercicio).a_dict()
 
-    def _pieza_para_el_carril(datos: dict):
+    def _pieza_para_el_carril(datos: dict) -> Pieza:
         """La pieza que pide `datos`: un ejercicio generado o una cancion del disco.
 
         Hay DOS formas de pedir una pieza y son exclusivas:
@@ -589,6 +590,14 @@ def crear_app(
         cual falta. Decidirlo por la PRESENCIA de la clave y no por su valor es a
         proposito: `{"familia": ""}` es pedir un ejercicio sin decir cual -y el
         generador contesta cuales hay-, no es «no he pedido nada».
+
+        Los TRES valores que trae el cuerpo pasan por `_leer_o_400`, y el de
+        `cancion` tambien: aqui salen de un `dict` sin tipar, no de la ruta -donde
+        FastAPI ya los tipa `str` antes de que `/importar` los vea-, asi que
+        `{"cancion": 123}` llegaba hasta `unicodedata.normalize` y salia como un
+        `TypeError` sin capturar, es decir un 500: «el servidor se ha roto», que es
+        mentira. Un parametro con un tipo que no es el suyo es un pedido mal hecho,
+        igual que una pista que no es entera.
 
         `_ruta_de_cancion` y `_leer_o_400` viven mas abajo, en la seccion de la
         biblioteca; se llaman desde aqui como cierres, que se resuelven al llamar.
@@ -613,7 +622,7 @@ def crear_app(
                 ),
             )
         if pide_cancion:
-            ruta = _ruta_de_cancion(datos["cancion"])
+            ruta = _leer_o_400(lambda: _ruta_de_cancion(datos["cancion"]))
             numero = _leer_o_400(lambda: _numero_de_pista(datos.get("pista", 1)))
             return _leer_o_400(lambda: importar(ruta, numero, datos.get("perfil")))
         return pieza_desde_ejercicio(_generar_o_400(datos))

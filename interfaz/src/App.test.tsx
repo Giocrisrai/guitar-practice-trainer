@@ -182,6 +182,29 @@ describe("App", () => {
   });
 
   /**
+   * Y se puede traspasar otra vez: volver a canciones, elegir y tocar arranca de
+   * nuevo. La `key` del carril hace que cada traspaso monte un carril con la marca
+   * de «ya pedida» limpia; hoy esta prueba pasa también sin la `key`, porque cambiar
+   * de módulo ya desmonta el carril, así que no la discrimina (está dicho en el
+   * informe). Lo que sí afirma es que el segundo traspaso llega.
+   */
+  it("se puede traspasar una segunda cancion despues de la primera", async () => {
+    const fetchFalso = crearFetchFalso();
+    vi.stubGlobal("fetch", fetchFalso);
+    render(<App />);
+
+    for (let vez = 0; vez < 2; vez += 1) {
+      fireEvent.click(await screen.findByTitle("importa"));
+      fireEvent.click(await screen.findByText("x"));
+      fireEvent.click(await screen.findByRole("button", { name: /guitarra ritmica/i }));
+      fireEvent.click(await screen.findByRole("button", { name: /tocar en el carril/i }));
+      expect(await screen.findByTestId("lienzo-carril")).toBeTruthy();
+    }
+
+    expect(arranques(fetchFalso)).toHaveLength(2);
+  });
+
+  /**
    * La canción pendiente es del traspaso, no del módulo. Sin soltarla al navegar,
    * abrir el carril desde la cabecera horas después volvía a arrancar la canción de
    * entonces en vez de ofrecer el configurador.

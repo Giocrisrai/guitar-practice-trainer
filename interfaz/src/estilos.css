@@ -223,8 +223,8 @@ body {
 .formato-cancion { flex: 0 0 auto; color: var(--tenue); font-size: 12px; }
 .motivo-no-usable { color: var(--tenue); font-size: 12px; margin: 0 0 8px; padding-left: 10px; }
 
-/* Los avisos de antes de empezar. Van en el tono de «esto hay que mirarlo», no en
-   el de error: la canción se puede importar igual, y el aviso dice qué esperar. */
+/* Los avisos de antes de empezar y los errores comparten el color: la paleta solo
+   tiene `--afinada` y `--desviada`, y lo que no es «bien» es `--desviada`. */
 .aviso-cancion { color: var(--desviada); font-size: 13px; margin: 4px 0; }
 .aviso-cancion button {
   background: var(--panel); color: var(--texto); border: 1px solid var(--borde);
