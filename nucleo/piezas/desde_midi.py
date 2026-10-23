@@ -19,13 +19,10 @@ from collections import defaultdict, deque
 from pathlib import Path
 
 import mido
-import numpy as np
-from scipy.optimize import linear_sum_assignment
 
-from nucleo.afinaciones import PERFILES, PerfilAfinacion
-from nucleo.piezas.digitacion import digitar
+from nucleo.afinaciones import PERFILES
+from nucleo.piezas.digitacion import digitar, separar_cuerdas_de_acordes
 from nucleo.piezas.lectores import FAMILIAS_GM, PistaDisponible
-from nucleo.musica import Posicion, nombre_de_midi, posiciones_en_mastil
 from nucleo.piezas.modelo import NotaEnPieza, Pieza, Seccion
 
 # El canal de percusion de General MIDI, contado desde 0.
@@ -165,74 +162,6 @@ def _metas(archivo: mido.MidiFile, tipo: str) -> list[tuple[int, mido.MetaMessag
     return sorted(encontrados, key=lambda par: par[0])
 
 
-# Coste de una asignacion imposible (una cuerda que no da esa nota).
-_IMPOSIBLE = 1e6
-
-
-def _separar_cuerdas_de_acordes(
-    crudas: list[tuple[int, float, float]],
-    posiciones: tuple[Posicion, ...],
-    perfil: PerfilAfinacion,
-) -> tuple[Posicion, ...]:
-    """Corrige las notas que suenan a la vez para que no compartan cuerda.
-
-    `digitar` trata la lista como una secuencia: dos notas con el mismo instante son
-    para el dos pasos seguidos, y nada le impide ponerlas en la misma cuerda, que
-    es fisicamente imposible. Aqui, para cada grupo con el mismo inicio, se reparten
-    las cuerdas con una asignacion de coste minimo (scipy), donde cada nota cuesta
-    la distancia en trastes a lo que `digitar` habia elegido para ella: se cambia lo
-    minimo.
-
-    LO QUE ASEGURA: cuerdas distintas para las notas de un mismo instante. LO QUE NO
-    ASEGURA: que el acorde se pueda tocar con una mano. El coste solo mira cuanto
-    cambia cada nota respecto a lo que eligio `digitar`, no cuanto se abren los
-    trastes DENTRO del acorde. Medido: un Mi menor (52, 55, 59, 64) sale como 4/2,
-    5/10, 2/0 y 3/9, un tramo de 10 trastes (en la muestra hubo aperturas de hasta
-    12), que ninguna mano alcanza. Los acordes se importan pero no se siguen; la voz
-    del acorde queda para una etapa posterior.
-
-    Otras limitaciones declaradas:
-    - Solo se agrupan notas con el MISMO inicio exacto. Una nota sostenida que se
-      solapa con otra de inicio distinto puede seguir compartiendo cuerda con ella:
-      es el mismo defecto por otra puerta, y no se cubre.
-    - El reparto es local al acorde: no vuelve a optimizar la pieza entera, asi que
-      con acordes el resultado ya no es el minimo global.
-
-    Lanza `ValueError` si el acorde no se puede tocar (mas notas que cuerdas, o
-    notas que no admiten cuerdas distintas).
-    """
-    corregidas = list(posiciones)
-    i = 0
-    while i < len(crudas):
-        j = i
-        while j < len(crudas) and crudas[j][1] == crudas[i][1]:
-            j += 1
-        grupo = range(i, j)
-        if len(grupo) > 1 and len({posiciones[k].cuerda for k in grupo}) < len(grupo):
-            cuerdas = sorted({c.cuerda for k in grupo
-                              for c in posiciones_en_mastil(crudas[k][0], perfil)})
-            coste = np.full((len(grupo), len(cuerdas)), _IMPOSIBLE)
-            for fila, k in enumerate(grupo):
-                for opcion in posiciones_en_mastil(crudas[k][0], perfil):
-                    coste[fila, cuerdas.index(opcion.cuerda)] = abs(
-                        opcion.traste - posiciones[k].traste
-                    )
-            filas, columnas = linear_sum_assignment(coste)
-            if len(filas) < len(grupo) or coste[filas, columnas].max() >= _IMPOSIBLE:
-                notas = ", ".join(nombre_de_midi(crudas[k][0]) for k in grupo)
-                raise ValueError(
-                    f"El acorde {notas} (en el pulso {crudas[i][1]:g}) no se puede "
-                    f"tocar en {perfil.nombre}: no hay una cuerda distinta para cada nota."
-                )
-            for fila, columna in zip(filas, columnas, strict=True):
-                nota = crudas[grupo[fila]][0]
-                traste = next(o.traste for o in posiciones_en_mastil(nota, perfil)
-                              if o.cuerda == cuerdas[columna])
-                corregidas[grupo[fila]] = Posicion(cuerdas[columna], traste)
-        i = j
-    return tuple(corregidas)
-
-
 def pieza_desde_midi(
     ruta: Path | str, numero_pista: int, perfil_clave: str = "guitarra_estandar"
 ) -> Pieza:
@@ -278,7 +207,15 @@ def pieza_desde_midi(
             f"{perfil.nombre}: {error}. Si el archivo es de piano u otro instrumento "
             "mas grave o mas agudo, prueba con otra pista o con otra afinacion."
         ) from None
-    posiciones = _separar_cuerdas_de_acordes(crudas, posiciones, perfil)
+    # El reparto de cuerdas de un acorde vive en `digitacion.py` y no aqui: el
+    # problema lo tienen todos los que digitan -MIDI y MusicXML sin tablatura-, no
+    # este formato. Ver `separar_cuerdas_de_acordes`, con lo que asegura y lo que no.
+    posiciones = separar_cuerdas_de_acordes(
+        [midi for midi, _, _ in crudas],
+        [inicio for _, inicio, _ in crudas],
+        posiciones,
+        perfil,
+    )
     notas = tuple(
         NotaEnPieza(
             midi=midi,

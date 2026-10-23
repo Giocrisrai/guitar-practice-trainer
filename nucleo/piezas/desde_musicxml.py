@@ -19,7 +19,7 @@ from pathlib import Path
 
 from nucleo.afinaciones import PERFILES
 from nucleo.musica import Posicion, posiciones_en_mastil
-from nucleo.piezas.digitacion import digitar
+from nucleo.piezas.digitacion import digitar, separar_cuerdas_de_acordes
 from nucleo.piezas.lectores import PistaDisponible
 from nucleo.piezas.modelo import NotaEnPieza, Pieza, Seccion
 
@@ -146,12 +146,22 @@ def _crudas(parte) -> list[dict]:
     return crudas
 
 
-def _posiciones(crudas: list[dict], perfil) -> list[Posicion]:
+def _posiciones(crudas: list[dict], perfil) -> tuple[Posicion, ...]:
     """La del archivo cuando es coherente con el perfil; si no, la de `digitar`.
 
     Las notas sin tablatura se digitan TODAS de golpe (el minimo es sobre la pieza
     entera). Una tablatura que no da esa altura en el perfil elegido -otra afinacion,
     una cejilla- tampoco se respeta: se digita como si no la trajera.
+
+    Y al final se reparten las cuerdas de los acordes
+    (`digitacion.separar_cuerdas_de_acordes`, la MISMA funcion que usa MIDI). Hace
+    falta porque `digitar` trata la lista como una secuencia: dos notas con el mismo
+    inicio son para el dos pasos seguidos y nada le impide ponerlas en la misma
+    cuerda. Medido con el mismo Mi menor (52, 55, 59, 64) del docstring de MIDI, este
+    lector dibujaba el acorde en las cuerdas 4, 4, 2 y 2 -dos pares compartiendo
+    cuerda, una digitacion que no existe- mientras MIDI lo dibujaba en 4, 5, 2 y 3.
+    Lo que la funcion asegura y lo que no -la apertura de trastes del acorde sigue sin
+    medirse- esta declarado donde vive.
     """
     elegidas: list[Posicion | None] = []
     for ataque in crudas:
@@ -165,7 +175,12 @@ def _posiciones(crudas: list[dict], perfil) -> list[Posicion]:
         digitadas = digitar([crudas[i]["midi"] for i in faltan], perfil)
         for i, posicion in zip(faltan, digitadas, strict=True):
             elegidas[i] = posicion
-    return elegidas  # type: ignore[return-value]
+    return separar_cuerdas_de_acordes(
+        [ataque["midi"] for ataque in crudas],
+        [ataque["inicio"] for ataque in crudas],
+        tuple(elegidas),  # type: ignore[arg-type]
+        perfil,
+    )
 
 
 def pieza_desde_musicxml(

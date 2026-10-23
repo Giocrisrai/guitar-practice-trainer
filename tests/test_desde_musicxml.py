@@ -1,6 +1,8 @@
 import pytest
 from music21 import articulations, note, stream, tempo
 
+from nucleo.afinaciones import PERFILES
+from nucleo.musica import Posicion, posiciones_en_mastil
 from nucleo.piezas.desde_musicxml import pieza_desde_musicxml, pistas_de_musicxml
 
 
@@ -211,3 +213,62 @@ def test_un_acorde_va_con_la_grave_primero_como_en_los_demas_lectores(tmp_path):
 
     notas = pieza_desde_musicxml(escribir(obra, tmp_path, "acorde.xml"), 1).notas
     assert [n.midi for n in notas] == [52, 55, 59, 64]
+
+
+def _con_acorde(midis, duracion=2.0):
+    """Una partitura de un solo acorde, sin tablatura."""
+    from music21 import chord
+
+    parte = stream.Part()
+    parte.partName = "Guitarra"
+    parte.append(tempo.MetronomeMark(number=80))
+    acorde = chord.Chord(list(midis))
+    acorde.quarterLength = duracion
+    parte.append(acorde)
+    obra = stream.Score()
+    obra.append(parte)
+    return obra
+
+
+def test_un_acorde_no_pone_dos_notas_en_la_misma_cuerda(tmp_path):
+    """La misma correccion que MIDI, con la misma funcion, y hacia falta.
+
+    Medido antes del arreglo con este mismo Mi menor: MusicXML dibujaba el acorde en
+    las cuerdas 4, 4, 2 y 2 -dos pares compartiendo cuerda, una digitacion que no
+    existe- mientras MIDI lo dibujaba en 4, 5, 2 y 3. `_posiciones` pasaba las notas
+    a `digitar` como una secuencia y no ejecutaba nada equivalente.
+
+    Comprueba SOLO que las cuerdas son distintas y que cada posicion da su nota. NO
+    comprueba que el acorde se pueda tocar con una mano: la apertura de trastes
+    dentro del acorde no se mide ni se limita (este Mi menor sale con 10).
+    """
+    ruta = escribir(_con_acorde((52, 55, 59, 64)), tmp_path, "acorde.xml")
+    notas = pieza_desde_musicxml(ruta, 1).notas
+    perfil = PERFILES["guitarra_estandar"]
+
+    assert len({n.cuerda for n in notas}) == 4
+    assert sorted(n.midi for n in notas) == [52, 55, 59, 64]
+    for n in notas:  # cada posicion produce de verdad esa nota
+        assert Posicion(n.cuerda, n.traste) in posiciones_en_mastil(n.midi, perfil)
+
+
+def test_un_acorde_que_ninguna_mano_toca_se_rechaza(tmp_path):
+    """40, 45 y 49 a la vez: el 40 solo vive en la 6a y el 45 y el 49 en la 5a y la 6a.
+
+    El mensaje es el de la funcion compartida, asi que nombra el acorde: antes este
+    archivo se importaba sin queja, con dos notas en la misma cuerda.
+    """
+    ruta = escribir(_con_acorde((40, 45, 49)), tmp_path, "imposible.xml")
+    with pytest.raises(ValueError, match="acorde"):
+        pieza_desde_musicxml(ruta, 1)
+
+
+def test_una_tablatura_que_no_choca_con_nadie_se_queda_quieta(tmp_path):
+    """El reparto cambia lo minimo, asi que la tablatura del archivo sobrevive.
+
+    Es el limite declarado por el otro lado: una posicion dada por el archivo se
+    mueve SI choca con otra nota del mismo acorde, y no se mueve si no choca.
+    """
+    ruta = escribir(partitura([(45, 1.0)], con_tablatura=True), tmp_path, "tab.xml")
+    nota = pieza_desde_musicxml(ruta, 1).notas[0]
+    assert (nota.cuerda, nota.traste) == (6, 5)
