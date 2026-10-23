@@ -6,14 +6,16 @@ Capa fina. No calcula nada musical: solo publica lo que la sesión ya produce.
 import asyncio
 from pathlib import Path
 
-from fastapi import Body, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import Body, FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 
-from nucleo.afinaciones import PERFILES
+from nucleo.afinaciones import PERFILES, PERFILES_DE_FABRICA
 from nucleo.analisis.pipeline import ResultadoAnalisis
 from nucleo.ejercicios.teoria import ACORDES, ESCALAS, INTERVALOS
 from nucleo.piezas.desde_ejercicio import pieza_desde_ejercicio
+from nucleo.piezas.lectores import importar, pistas_de_archivo
 from servidor import configuracion as config_modulo
+from servidor.canciones import Biblioteca, afinacion_de, formato_de, leer_subida
 from servidor.ejercicios import SesionPractica
 from servidor.modulos import listar_modulos
 from servidor.piezas import SesionCarril
@@ -34,13 +36,21 @@ def crear_app(
     ruta_interfaz: Path | None = None,
     practica: SesionPractica | None = None,
     carril: SesionCarril | None = None,
+    carpeta_canciones: Path | None = None,
 ) -> FastAPI:
-    """Construye la aplicación alrededor de una sesión ya creada."""
+    """Construye la aplicación alrededor de una sesión ya creada.
+
+    `carpeta_canciones` es la biblioteca: `canciones/` si no se dice otra cosa, y
+    `tmp_path` en las pruebas, para que ninguna ensucie la carpeta del proyecto.
+    """
     app = FastAPI(title="proyecto_musica")
     app.state.sesion = sesion
     app.state.ruta_config = config_modulo.RUTA_POR_DEFECTO
     app.state.practica = practica or SesionPractica(sesion)
     app.state.carril = carril or SesionCarril(sesion)
+    app.state.biblioteca = (
+        Biblioteca(carpeta_canciones) if carpeta_canciones is not None else Biblioteca()
+    )
 
     @app.get("/api/modulos")
     def leer_modulos() -> list[dict]:
@@ -49,7 +59,16 @@ def crear_app(
 
     @app.get("/api/perfiles")
     def leer_perfiles() -> list[dict]:
-        """Perfiles de afinación con sus cuerdas, para dibujar el mástil."""
+        """Perfiles de afinación con sus cuerdas, para dibujar el mástil.
+
+        Se publican los DE FÁBRICA, no el registro vivo `PERFILES`. El registro vivo
+        crece cada vez que se importa una canción en una afinación rara
+        (`registrar_perfil`), así que publicarlo entero llenaba el selector del
+        afinador de entradas como «Afinación C2 G2 C3 F3 A3 D4 (24 trastes)»: una
+        afinación que el usuario no eligió, que no sabe de dónde salió y a la que
+        nadie quiere afinarse. El registro vivo sigue existiendo para lo que es,
+        resolver la clave de la afinación que pide una canción (ver `afinacion_de`).
+        """
         return [
             {
                 "clave": clave,
@@ -60,7 +79,7 @@ def crear_app(
                     for c in perfil.cuerdas
                 ],
             }
-            for clave, perfil in PERFILES.items()
+            for clave, perfil in PERFILES_DE_FABRICA.items()
         ]
 
     @app.get("/api/dispositivos")
@@ -311,6 +330,153 @@ def crear_app(
                 await asyncio.sleep(intervalo)
         except WebSocketDisconnect:
             return
+
+    # -----------------------------------------------------------------------
+    # La biblioteca de canciones: la carpeta, la subida y los dos lectores.
+    # -----------------------------------------------------------------------
+
+    def _ruta_de_cancion(identificador: str) -> Path:
+        """La ruta de una canción que existe, o 400 / 404 explicando qué pasa.
+
+        El `{id}` de la URL es el nombre del archivo y llega del navegador, así que
+        pasa por el guardia de `Biblioteca` antes de tocar el disco: un nombre que
+        sale de la carpeta es una peticion mal formada (400), no una canción que
+        falta (404), y distinguirlos importa porque son dos arreglos distintos.
+        """
+        try:
+            ruta = app.state.biblioteca.ruta_de(identificador)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error))
+        if not ruta.is_file():
+            raise HTTPException(
+                status_code=404,
+                detail=f"No tengo ninguna canción llamada '{identificador}'.",
+            )
+        return ruta
+
+    def _leer_o_400(accion):
+        """Ejecuta una lectura de archivo y traduce sus fallos a un 400.
+
+        Se capturan tres excepciones y ninguna sobra:
+
+        - `ValueError`: lo que lanzan los lectores cuando el archivo no sirve o la
+          pista pedida no existe, ya con el mensaje escrito para el usuario.
+        - `TypeError`: un parámetro con un tipo que no es el suyo sale de Python
+          así, igual que en `_generar_o_400`. Es un pedido mal hecho, no una rotura.
+        - `FileNotFoundError`: los lectores de `.txt` y `.tab` leen el archivo
+          directamente y, si desaparece entre la comprobación y la lectura, lanzan
+          esto y no `ValueError` como los otros tres formatos. Capturar solo
+          `ValueError` dejaba ese único caso escapándose como un 500.
+        """
+        try:
+            return accion()
+        except (ValueError, TypeError, FileNotFoundError) as error:
+            raise HTTPException(status_code=400, detail=str(error))
+
+    def _avisos_de(pieza) -> list[str]:
+        """Lo que hay que advertir de una pieza recién importada, en frases.
+
+        Hoy solo el ritmo aproximado de la tablatura de texto. El sitio existe
+        porque hay al menos un aviso más que dar y no está dado: las casillas de
+        primera y segunda vez de Guitar Pro producen un compás de más, en silencio,
+        y cuando el lector sepa detectarlo su frase va aquí, sin tocar la forma de
+        la respuesta ni la interfaz.
+        """
+        avisos = []
+        if pieza.ritmo_aproximado:
+            avisos.append(
+                "El ritmo de esta pieza es APROXIMADO: el archivo no lo trae y se ha "
+                "deducido del espaciado, así que las duraciones pueden no cuadrar."
+            )
+        return avisos
+
+    @app.get("/api/canciones")
+    def leer_canciones() -> list[dict]:
+        """Las canciones de la carpeta. La carpeta es la base de datos."""
+        return app.state.biblioteca.listar()
+
+    @app.post("/api/canciones")
+    async def subir_cancion(archivo: UploadFile = File(...)) -> dict:
+        """Guarda un archivo en la carpeta y devuelve su ficha.
+
+        El nombre y el formato se validan ANTES de leer el cuerpo: un `.pdf` se
+        rechaza sin haber traído un solo byte a la memoria.
+        """
+        nombre = archivo.filename or ""
+        try:
+            app.state.biblioteca.ruta_de(nombre)
+            formato_de(nombre)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error))
+        try:
+            datos = await leer_subida(archivo.read)
+            return app.state.biblioteca.guardar(nombre, datos)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error))
+
+    @app.get("/api/canciones/{identificador}/pistas")
+    def leer_pistas(identificador: str) -> dict:
+        """Las pistas del archivo y LA AFINACIÓN QUE PIDE, sin importar nada.
+
+        Listar es barato: no se convierte ninguna nota, solo se describe lo que el
+        archivo trae para que el usuario elija la pista.
+
+        Además de las pistas se devuelven `afinacion`, `perfil_activo` y `coincide`,
+        y eso LO DECIDE EL SERVIDOR. Es lo que hace accionable el aviso de «aféinate
+        a esto»: la interfaz recibe la clave del perfil al que hay que afinarse y
+        puede ofrecer el botón que lo cambia, en vez de comparar listas de cuerdas
+        por su cuenta -que es la decisión del núcleo que esta interfaz ya ha
+        duplicado siete veces- y acabar diciendo «algo no cuadra».
+
+        `indice` de cada pista es lo que espera `/importar`, y va en base 0; `numero`
+        es el que ve el usuario, y va en base 1 como en todo el núcleo. Van los dos
+        porque son dos cosas distintas y confundirlas importaba una pista.
+        """
+        ruta = _ruta_de_cancion(identificador)
+        pistas = _leer_o_400(lambda: pistas_de_archivo(ruta))
+        usables = [pista for pista in pistas if pista.usable]
+        # La afinación de la canción es la de la primera pista que se puede tocar:
+        # es la que se va a importar si el usuario no elige otra.
+        referencia = (usables or list(pistas))[0] if pistas else None
+        afinacion = afinacion_de(referencia.cuerdas_midi if referencia else ())
+        perfil_activo = app.state.sesion.configuracion.perfil
+        return {
+            **app.state.biblioteca.entrada_de(identificador),
+            "pistas": [
+                {
+                    **pista.a_dict(),
+                    "indice": indice,
+                    "afinacion": afinacion_de(pista.cuerdas_midi),
+                }
+                for indice, pista in enumerate(pistas)
+            ],
+            "afinacion": afinacion,
+            "perfil_activo": perfil_activo,
+            "coincide": afinacion["clave"] == perfil_activo,
+        }
+
+    @app.post("/api/canciones/{identificador}/importar")
+    def importar_cancion(identificador: str, datos: dict = Body(default={})) -> dict:
+        """Convierte una pista en `Pieza` y la devuelve, SIN ponerla en marcha.
+
+        Devuelve la pieza entera -con sus avisos- y nada más: ponerla en marcha es
+        `/api/piezas/iniciar`, que es quien comprueba la afinación activa. Separarlo
+        deja previsualizar una canción en otra afinación sin que el carril la
+        rechace, que es justo cuando el usuario necesita ver a qué afinarse.
+
+        `pista` es el ÍNDICE que trae `/pistas` (base 0) y aquí se traduce al número
+        de pista del núcleo (base 1), que es el que entiende `importar`.
+
+        `perfil` es opcional y solo cuenta donde el archivo no trae afinación (MIDI,
+        MusicXML sin tablatura, texto). Si no se da, manda lo que diga el archivo:
+        reinterpretar una tablatura en Drop D con el perfil activo dibujaría trastes
+        que la canción no toca.
+        """
+        ruta = _ruta_de_cancion(identificador)
+        indice = _leer_o_400(lambda: int(datos.get("pista", 0)))
+        perfil = datos.get("perfil")
+        pieza = _leer_o_400(lambda: importar(ruta, indice + 1, perfil))
+        return {**pieza.a_dict(), "avisos": _avisos_de(pieza)}
 
     if ruta_interfaz is not None and ruta_interfaz.exists():
         app.mount("/", StaticFiles(directory=ruta_interfaz, html=True), name="interfaz")
