@@ -6,7 +6,9 @@ from nucleo.piezas.lectores import (
     _CONVERSORES,
     _LECTORES,
     FORMATOS,
+    NO_LEIBLES,
     importar,
+    mensaje_extension_no_valida,
     pistas_de_archivo,
 )
 
@@ -21,6 +23,35 @@ def test_los_cuatro_formatos_estan_registrados():
 
 def test_las_dos_tablas_cubren_las_mismas_extensiones():
     assert set(_LECTORES) == set(_CONVERSORES) == set(FORMATOS)
+
+
+def test_lo_que_no_se_puede_leer_no_esta_en_formatos():
+    """La regla de `FORMATOS`: si una extension esta en la tabla, se puede abrir.
+
+    `.gpx` y `.gp` estuvieron dentro y no se podian leer, asi que el archivo entraba
+    en la biblioteca y reventaba despues, al pedir las pistas. Las dos tablas tienen
+    que ser disjuntas o volvemos a eso.
+    """
+    assert set(FORMATOS) & set(NO_LEIBLES) == set()
+
+
+@pytest.mark.parametrize("extension", [".gpx", ".gp", ".GPX"])
+def test_el_rechazo_de_un_guitar_pro_moderno_dice_que_hacer(tmp_path, extension):
+    """No basta con «no reconozco esto»: el usuario tiene un archivo de Guitar Pro.
+
+    Lo que necesita saber es que ESE formato no se lee y que exportando a gp5 sigue
+    adelante, no la lista de extensiones a secas.
+    """
+    mensaje = mensaje_extension_no_valida(extension)
+    assert "Guitar Pro" in mensaje
+    assert ".gp5" in mensaje
+
+    ruta = tmp_path / f"cancion{extension}"
+    ruta.write_bytes(b"BCFZ no soy un gp5")
+    with pytest.raises(ValueError, match=r"\.gp5"):
+        pistas_de_archivo(ruta)
+    with pytest.raises(ValueError, match=r"\.gp5"):
+        importar(ruta, 1)
 
 
 def test_una_extension_desconocida_se_rechaza_diciendo_cuales_valen(tmp_path):
@@ -77,7 +108,7 @@ _LECTORES_REALES = {
 @pytest.mark.parametrize(
     ("modulo", "extensiones"),
     [
-        ("desde_guitarpro", (".gp3", ".gp4", ".gp5", ".gpx", ".gp")),
+        ("desde_guitarpro", (".gp3", ".gp4", ".gp5")),
         ("desde_midi", (".mid", ".midi")),
         ("desde_musicxml", (".xml", ".musicxml", ".mxl")),
     ],
@@ -173,3 +204,101 @@ def test_un_txt_que_no_es_tablatura_se_rechaza_al_listar(tmp_path):
     ruta.write_text("la lista de la compra")
     with pytest.raises(ValueError, match="tablatura"):
         pistas_de_archivo(ruta)
+
+
+# ---------------------------------------------------------------------------
+# El invariante de `FORMATOS`: lo que esta en la tabla se abre de verdad
+# ---------------------------------------------------------------------------
+
+
+def _escribir_muestra(ruta):
+    """Un archivo de verdad del formato que pide la extension de `ruta`.
+
+    Fabricado con las librerias del proyecto, como el resto de las pruebas: ningun
+    archivo con derechos de autor entra al repositorio.
+    """
+    import guitarpro
+    import mido
+    from music21 import note, stream, tempo
+
+    formato = FORMATOS[ruta.suffix.lower()]
+    if formato == "Guitar Pro":
+        song = guitarpro.Song()
+        song.tempo = 90
+        pista = song.tracks[0]
+        pista.name = "Guitarra"
+        pista.strings = [
+            guitarpro.GuitarString(number=i + 1, value=v)
+            for i, v in enumerate((64, 59, 55, 50, 45, 40))
+        ]
+        compas = pista.measures[0]
+        voz = compas.voices[0]
+        beat = guitarpro.Beat(
+            voice=voz,
+            start=compas.header.start,
+            duration=guitarpro.Duration(value=4),
+            status=guitarpro.BeatStatus.normal,
+        )
+        beat.notes = [
+            guitarpro.Note(beat=beat, value=3, string=6, type=guitarpro.NoteType.normal)
+        ]
+        voz.beats.append(beat)
+        guitarpro.write(song, str(ruta))
+        return
+    if formato == "MIDI":
+        archivo = mido.MidiFile(ticks_per_beat=480)
+        pista = mido.MidiTrack()
+        archivo.tracks.append(pista)
+        pista.append(mido.Message("note_on", note=52, velocity=64, time=0))
+        pista.append(mido.Message("note_off", note=52, velocity=0, time=480))
+        archivo.save(str(ruta))
+        return
+    if formato == "Tablatura de texto":
+        ruta.write_text(TABLATURA)
+        return
+    # MusicXML. `.mxl` es el mismo documento COMPRIMIDO, con su `META-INF`: es la
+    # extension con mas papeletas de estar en la tabla sin funcionar, asi que se
+    # fabrica el contenedor de verdad en vez de darla por buena.
+    parte = stream.Part()
+    parte.partName = "Guitarra"
+    parte.append(tempo.MetronomeMark(number=80))
+    for midi in (45, 47, 48):
+        n = note.Note(midi)
+        n.quarterLength = 1.0
+        parte.append(n)
+    obra = stream.Score()
+    obra.append(parte)
+    if ruta.suffix.lower() != ".mxl":
+        obra.write("musicxml", fp=str(ruta))
+        return
+    import zipfile
+
+    suelto = ruta.with_suffix(".xml")
+    obra.write("musicxml", fp=str(suelto))
+    with zipfile.ZipFile(ruta, "w", zipfile.ZIP_DEFLATED) as comprimido:
+        comprimido.writestr(
+            "META-INF/container.xml",
+            '<?xml version="1.0" encoding="UTF-8"?><container><rootfiles>'
+            '<rootfile full-path="partitura.xml"/></rootfiles></container>',
+        )
+        comprimido.writestr("partitura.xml", suelto.read_text())
+    suelto.unlink()
+
+
+@pytest.mark.parametrize("extension", sorted(FORMATOS))
+def test_toda_extension_de_formatos_abre_un_archivo_de_verdad(tmp_path, extension):
+    """El invariante que `.gpx` y `.gp` rompian: estar en la tabla es funcionar.
+
+    Las dos pasaban `_extension` -estaban en `FORMATOS` y en las dos tablas de
+    despacho- y morian dentro del lector. Un despacho simulado no lo ve: hay que
+    abrir un archivo de cada formato. Si manana alguien anade una extension a la
+    tabla sin lector que la abra, esta prueba lo dice aqui y no en la biblioteca del
+    usuario.
+    """
+    ruta = tmp_path / f"muestra{extension}"
+    _escribir_muestra(ruta)
+
+    pistas = pistas_de_archivo(ruta)
+    assert pistas, f"'{extension}' no describe ninguna pista"
+    pieza = importar(ruta, 1)
+    assert pieza.notas, f"'{extension}' se abre pero no trae ninguna nota"

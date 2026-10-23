@@ -1136,3 +1136,222 @@ def test_un_websocket_sin_origen_sigue_conectando(cliente, ruta):
         WS_LOCAL + ruta, headers={"host": "localhost:8420"}
     ) as ws:
         assert ws.receive_json()
+
+
+# ---------------------------------------------------------------------------
+# Lo que no se puede leer se rechaza EN LA PUERTA
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("nombre", "contenido"),
+    [
+        # Guitar Pro 7+: un ZIP con `Content/score.gpif` dentro.
+        ("moderna.gp", b"PK\x03\x04 esto es un zip de Guitar Pro 7"),
+        # Guitar Pro 6: el contenedor BCFZ.
+        ("moderna.gpx", b"BCFZ" + b"\x00" * 64),
+        ("MAYUSCULA.GPX", b"BCFZ" + b"\x00" * 64),
+    ],
+)
+def test_un_guitar_pro_moderno_se_rechaza_al_subir(cliente, tmp_path, nombre, contenido):
+    """Antes entraba en la biblioteca y reventaba despues, al pedir las pistas.
+
+    Un archivo que se sube y falla en otra pantalla, hablando de versiones de un
+    formato, es peor que uno que no entra: el usuario ya se lo ha copiado. Asi que
+    el rechazo es el 400 de la subida, la carpeta se queda vacia y el mensaje dice
+    que exporte a gp5.
+    """
+    respuesta = cliente.post("/api/canciones", files={"archivo": (nombre, contenido)})
+    assert respuesta.status_code == 400
+    detalle = respuesta.json()["detail"]
+    assert "Guitar Pro" in detalle and ".gp5" in detalle
+    assert _vacia(tmp_path / "canciones")
+    assert cliente.get("/api/canciones").json() == []
+
+
+# ---------------------------------------------------------------------------
+# El aviso de afinacion funciona LA PRIMERA VEZ, tambien en Guitar Pro
+# ---------------------------------------------------------------------------
+
+
+def _guitarpro_en_drop_c(fret_count: int = 24) -> bytes:
+    """Un gp5 de una pista en Drop C (C2 G2 C3 F3 A3 D4), afinacion que no es de fabrica.
+
+    `Track.strings` va de la cuerda MAS AGUDA a la mas grave, que es lo que documenta
+    `gp5.readTrack`, asi que los MIDI van en ese orden.
+    """
+    import io
+
+    import guitarpro
+
+    song = guitarpro.Song()
+    song.tempo = 90
+    song.title = "En Drop C"
+    pista = song.tracks[0]
+    pista.name = "Guitarra"
+    pista.fretCount = fret_count
+    pista.strings = [
+        guitarpro.GuitarString(number=i + 1, value=v)
+        for i, v in enumerate((62, 57, 53, 48, 43, 36))
+    ]
+    compas = pista.measures[0]
+    voz = compas.voices[0]
+    beat = guitarpro.Beat(
+        voice=voz,
+        start=compas.header.start,
+        duration=guitarpro.Duration(value=4),
+        status=guitarpro.BeatStatus.normal,
+    )
+    beat.notes = [
+        guitarpro.Note(beat=beat, value=3, string=6, type=guitarpro.NoteType.normal)
+    ]
+    voz.beats.append(beat)
+    memoria = io.BytesIO()
+    guitarpro.write(song, memoria)
+    return memoria.getvalue()
+
+
+def test_una_cancion_de_guitar_pro_rara_dice_a_que_afinarse_la_primera_vez(cliente):
+    """El fallo que esta prueba fija, y es el que mas importa de la etapa.
+
+    El perfil de una afinacion rara se daba de alta al IMPORTAR, no al listar. Asi
+    que la primera vez que mirabas las pistas de una cancion en Drop C, `clave` era
+    `None` y la pantalla decia «No tengo ningun perfil al que afinarte»: el aviso
+    fallaba en el unico caso en el que hacia falta, porque con una afinacion de
+    fabrica ya funcionaba. Y empezaba a funcionar la segunda vez que abrias la
+    cancion, que es como no funcionar.
+    """
+    cliente.post("/api/canciones", files={"archivo": ("dropc.gp5", _guitarpro_en_drop_c())})
+
+    # Nada mas listar, SIN haber importado ninguna pista.
+    detalle = cliente.get("/api/canciones/dropc.gp5/pistas").json()
+    assert detalle["coincide"] is False
+    assert detalle["afinacion"]["declarada"] is True
+    clave = detalle["afinacion"]["clave"]
+    assert clave is not None, "sin clave la pantalla no puede ofrecer el afinador"
+    assert clave.startswith("a_medida_")
+    assert "C2" in detalle["afinacion"]["nombre"]
+
+
+def test_la_clave_que_propone_el_listado_es_la_que_trae_la_pieza(cliente):
+    """Afinarse a lo que te dicen tiene que bastar para que el carril te acepte.
+
+    Si el listado propusiera una clave y la pieza trajera otra, el usuario se
+    afinaria a lo que le dice la pantalla y el carril seguiria rechazando la
+    cancion. Esta prueba recorre el camino entero: listar, afinarse, arrancar.
+    """
+    cliente.post("/api/canciones", files={"archivo": ("dropc.gp5", _guitarpro_en_drop_c())})
+    clave = cliente.get("/api/canciones/dropc.gp5/pistas").json()["afinacion"]["clave"]
+
+    pieza = cliente.post("/api/canciones/dropc.gp5/importar", json={"pista": 1}).json()
+    assert pieza["perfil"] == clave
+
+    # El botón de la pantalla: afinarse a la clave que propuso el listado.
+    assert cliente.put("/api/config", json={"perfil": clave}).status_code == 200
+    # Y entonces el selector del afinador la ofrece, que es lo que deja volver.
+    assert clave in {p["clave"] for p in cliente.get("/api/perfiles").json()}
+    # Y el carril la acepta.
+    respuesta = cliente.post(
+        "/api/piezas/iniciar", json={"cancion": "dropc.gp5", "pista": 1}
+    )
+    assert respuesta.status_code == 200
+    assert cliente.get("/api/canciones/dropc.gp5/pistas").json()["coincide"] is True
+    cliente.post("/api/piezas/detener")
+
+
+def test_listar_una_cancion_no_llena_el_selector_de_afinaciones(cliente):
+    """El alta al listar no puede convertir el selector en un cajon de sastre.
+
+    `/api/perfiles` publica las de fabrica mas la ACTIVA, asi que dar de alta la
+    afinacion de una cancion que solo has mirado no la mete en el menu.
+    """
+    antes = {p["clave"] for p in cliente.get("/api/perfiles").json()}
+    cliente.post("/api/canciones", files={"archivo": ("dropc.gp5", _guitarpro_en_drop_c())})
+    cliente.get("/api/canciones/dropc.gp5/pistas")
+    assert {p["clave"] for p in cliente.get("/api/perfiles").json()} == antes
+
+
+# ---------------------------------------------------------------------------
+# Los avisos de tempo y compas variables
+#
+# Los dos se detectaban, se guardaban en la pieza y no llegaban a ninguna parte:
+# `_avisos_de` solo miraba `ritmo_aproximado`. La pantalla pinta los avisos del
+# servidor tal cual, asi que el agujero estaba entero en el servidor.
+# ---------------------------------------------------------------------------
+
+
+def _guitarpro_con(cambio: str) -> bytes:
+    """Un gp5 de dos compases que cambia de tempo o de compas en el segundo."""
+    import io
+
+    import guitarpro
+
+    song = guitarpro.Song()
+    song.tempo = 76
+    song.title = "Cambia"
+    pista = song.tracks[0]
+    pista.name = "Guitarra"
+    pista.strings = [
+        guitarpro.GuitarString(number=i + 1, value=v)
+        for i, v in enumerate((64, 59, 55, 50, 45, 40))
+    ]
+    song.addMeasureHeader(guitarpro.MeasureHeader())
+    pista.measures.append(guitarpro.Measure(pista, song.measureHeaders[-1]))
+    for compas in pista.measures:
+        voz = compas.voices[0]
+        beat = guitarpro.Beat(
+            voice=voz,
+            start=compas.header.start,
+            duration=guitarpro.Duration(value=4),
+            status=guitarpro.BeatStatus.normal,
+        )
+        beat.notes = [
+            guitarpro.Note(beat=beat, value=3, string=6, type=guitarpro.NoteType.normal)
+        ]
+        voz.beats.append(beat)
+    if cambio == "tempo":
+        pista.measures[1].voices[0].beats[0].effect.mixTableChange = (
+            guitarpro.MixTableChange(tempo=guitarpro.MixTableItem(value=120))
+        )
+    else:
+        song.measureHeaders[1].timeSignature.numerator = 3
+    memoria = io.BytesIO()
+    guitarpro.write(song, memoria)
+    return memoria.getvalue()
+
+
+def test_un_cambio_de_tempo_se_avisa(cliente):
+    """`Pieza` se queda con el primer tempo: la cancion entera se toca a ese."""
+    cliente.post(
+        "/api/canciones", files={"archivo": ("tempo.gp5", _guitarpro_con("tempo"))}
+    )
+    pieza = cliente.post("/api/canciones/tempo.gp5/importar", json={"pista": 1}).json()
+    assert pieza["tempo_variable"] is True
+    assert any("TEMPO" in aviso for aviso in pieza["avisos"])
+    # El aviso dice a qué tempo se va a tocar, que es lo accionable.
+    assert any("76" in aviso for aviso in pieza["avisos"])
+
+
+def test_un_cambio_de_compas_se_avisa_y_menciona_la_vista_escrita(cliente):
+    """Importa el doble: la vista escrita trocea con UN compas constante.
+
+    Con un 3/4 en medio, las barras caen fuera de sitio desde ahi hasta el final
+    (`interfaz/src/vistaEscrita.ts`), y el usuario tiene que saberlo antes de
+    ponerse a leer.
+    """
+    cliente.post(
+        "/api/canciones", files={"archivo": ("compas.gp5", _guitarpro_con("compas"))}
+    )
+    pieza = cliente.post("/api/canciones/compas.gp5/importar", json={"pista": 1}).json()
+    assert pieza["compas_variable"] is True
+    assert any("COMPÁS" in aviso for aviso in pieza["avisos"])
+    assert any("4/4" in aviso for aviso in pieza["avisos"])
+
+
+def test_una_cancion_sin_sorpresas_no_trae_ningun_aviso(cliente):
+    """Si todo avisara de algo, el aviso no querria decir nada."""
+    cliente.post(
+        "/api/canciones", files={"archivo": ("limpia.gp5", _guitarpro_en_drop_c())}
+    )
+    pieza = cliente.post("/api/canciones/limpia.gp5/importar", json={"pista": 1}).json()
+    assert pieza["avisos"] == []

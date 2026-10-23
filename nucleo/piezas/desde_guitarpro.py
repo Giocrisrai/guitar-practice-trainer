@@ -124,10 +124,17 @@ def pistas_de(ruta: Path | str) -> tuple[PistaDisponible, ...]:
 
 
 def _describir(cancion: guitarpro.Song) -> tuple[PistaDisponible, ...]:
-    """El listado de `pistas_de`, a partir de una cancion ya abierta."""
+    """El listado de `pistas_de`, a partir de una cancion ya abierta.
+
+    Da de alta la afinacion de cada pista que declare cuerdas (`_clave_de_pista`, y
+    ahi esta el porque). Describir una pista no convierte ni una nota, pero su
+    afinacion sí queda disponible, que es lo que el aviso de «aféinate a esto»
+    necesita para poder ofrecer el botón.
+    """
     pistas = []
     for numero, pista in enumerate(cancion.tracks, start=1):
         notas = _contar_notas(pista)
+        _clave_de_pista(pista)
         pistas.append(
             PistaDisponible(
                 numero=numero,
@@ -303,6 +310,68 @@ def _trastes_declarados(pista: guitarpro.Track) -> int:
     return TRASTES_POR_DEFECTO
 
 
+def _traste_maximo(pista: guitarpro.Track) -> int:
+    """El traste mas alto que pisa la pista, sin convertir nada.
+
+    Se cuenta sobre las notas `normal`, el mismo filtro que `_contar_notas` y que
+    `_convertir`: una ligadura alarga una nota que ya existe y una nota muerta no
+    entra, asi que ninguna de las dos puede aportar un traste que las normales no
+    tengan.
+
+    Lo usan los DOS caminos -listar y leer- y a proposito: el traste maximo entra en
+    la clave del perfil a medida (`_clave_de_la_afinacion`), asi que si cada camino
+    lo calculase a su manera, listar una cancion podria dar de alta
+    `a_medida_..._22t` e importarla `a_medida_..._24t`, y el aviso de afinacion
+    compararia la tuya con una clave que la pieza no va a traer. Una sola cuenta,
+    una sola clave.
+    """
+    return max(
+        (
+            nota.value
+            for compas in pista.measures
+            for voz in compas.voices
+            for beat in voz.beats
+            for nota in beat.notes
+            if nota.type is guitarpro.NoteType.normal
+        ),
+        default=0,
+    )
+
+
+def _clave_de_pista(pista: guitarpro.Track) -> str | None:
+    """La clave de `PERFILES` de la afinacion de la pista, **dandola de alta**.
+
+    None si la pista no declara cuerdas -percusion, o una pista sin cuerdas-: ahi no
+    hay afinacion de la que hablar.
+
+    Esta funcion es la union de los dos caminos, y la razon es un fallo medido: el
+    alta del perfil colgaba solo de `pieza_desde_guitarpro`, asi que al LISTAR las
+    pistas de una cancion en una afinacion rara el perfil todavia no existia,
+    `servidor/canciones.afinacion_de` devolvia `clave: None` y la pantalla decia «no
+    tengo ningun perfil al que afinarte». Es decir: el aviso de afinacion fallaba en
+    el unico caso en el que hacia falta -con una afinacion de fabrica ya funcionaba-
+    y empezaba a funcionar a la segunda vez que abrias la cancion, que es como no
+    funcionar.
+
+    Listar las pistas de una cancion es un acto de intencion igual que importarla:
+    el usuario la ha abierto. Asi que el alta se hace en los dos sitios, y como es
+    `registrar_perfil` quien la hace -con una clave derivada de las cuerdas y un
+    `setdefault`-, hacerla dos veces no deja dos entradas.
+    """
+    if pista.isPercussionTrack or not pista.strings:
+        return None
+    traste_maximo = _traste_maximo(pista)
+    # El nombre que se le da al perfil es provisional: `registrar_perfil` guarda uno
+    # derivado de las cuerdas, porque la clave la comparten todas las canciones con
+    # la misma afinacion y el nombre no puede depender de cual se importo primero.
+    perfil = perfil_desde_midis(
+        f"Afinación de '{pista.name.strip() or 'la pista'}'",
+        _cuerdas_de_grave_a_aguda(pista),
+        trastes=max(_trastes_declarados(pista), traste_maximo),
+    )
+    return _clave_de_la_afinacion(perfil, traste_maximo)
+
+
 def _clave_de_la_afinacion(perfil: PerfilAfinacion, traste_maximo: int) -> str:
     """La clave de `PERFILES` con la que guardar esta afinacion.
 
@@ -349,19 +418,16 @@ def pieza_desde_guitarpro(ruta: Path | str, numero_pista: int) -> Pieza:
     notas, secciones = _convertir(
         pista, _orden_de_compases(pista.measures, normalizado)
     )
-    traste_maximo = max((nota.traste for nota in notas), default=0)
-    # El nombre que se le da al perfil es provisional: `registrar_perfil` guarda uno
-    # derivado de las cuerdas, porque la clave la comparten todas las canciones con
-    # la misma afinacion y el nombre no puede depender de cual se importo primero.
-    perfil = perfil_desde_midis(
-        f"Afinación de '{descripcion.nombre}'",
-        _cuerdas_de_grave_a_aguda(pista),
-        trastes=max(_trastes_declarados(pista), traste_maximo),
-    )
+    # La afinacion la decide `_clave_de_pista`, la MISMA funcion por la que pasa el
+    # listado: si cada camino la calculase por su cuenta, el aviso de afinacion
+    # podria comparar la tuya con una clave que la pieza no trae. Aqui no puede ser
+    # None: las dos pistas que no declaran cuerdas ya se han rechazado arriba.
+    clave = _clave_de_pista(pista)
+    assert clave is not None
     compas = _compas(cancion.measureHeaders[0])
     return Pieza(
         nombre=cancion.title.strip() or ruta.stem,
-        perfil=_clave_de_la_afinacion(perfil, traste_maximo),
+        perfil=clave,
         tempo=cancion.tempo,
         compas=compas,
         notas=notas,

@@ -468,3 +468,98 @@ def test_el_nombre_de_la_afinacion_no_depende_de_la_cancion_que_llego_primero(tm
         claves.append(pieza_desde_guitarpro(escribir(song, tmp_path, archivo), 1).perfil)
     assert claves[0] == claves[1]
     assert PERFILES[claves[0]].nombre == "Afinación C2 G2 C3 F3 A3 D4 (24 trastes)"
+
+
+# ---------------------------------------------------------------------------
+# El alta del perfil: LISTAR tambien la hace, no solo importar
+#
+# El fallo que estas pruebas fijan: el alta colgaba solo de
+# `pieza_desde_guitarpro`, asi que al listar las pistas de una cancion en una
+# afinacion rara el perfil no existia todavia, `afinacion_de` devolvia
+# `clave: None` y la pantalla decia «no tengo ningun perfil al que afinarte». El
+# aviso de afinacion fallaba justo en el unico caso en el que hacia falta -con una
+# afinacion de fabrica ya funcionaba- y empezaba a funcionar la SEGUNDA vez que
+# abrias la cancion.
+# ---------------------------------------------------------------------------
+
+DROP_C = (62, 57, 53, 48, 43, 36)  # orden de Track.strings: de la aguda a la grave
+
+
+def test_listar_las_pistas_da_de_alta_la_afinacion_rara(tmp_path):
+    """Sin importar nada: describir las pistas basta para tener a que afinarse."""
+    ruta = escribir(cancion(cuerdas_midi=DROP_C), tmp_path)
+    antes = set(PERFILES)
+
+    pistas_de(ruta)
+
+    nuevas = set(PERFILES) - antes
+    assert len(nuevas) == 1
+    (clave,) = nuevas
+    assert clave.startswith("a_medida_")
+    # Y las cuerdas del perfil dado de alta son las del archivo, de grave a aguda.
+    cuerdas = PERFILES[clave].cuerdas
+    assert [c.nota for c in cuerdas] == ["C2", "G2", "C3", "F3", "A3", "D4"]
+
+
+def test_listar_e_importar_dan_la_misma_clave_de_perfil(tmp_path):
+    """La que de verdad protege el aviso.
+
+    Si los dos caminos calculasen la clave por su cuenta, el aviso compararia tu
+    afinacion con una clave que la pieza no va a traer: el usuario se afinaria a lo
+    que le dicen y el carril seguiria rechazandole la cancion. Por eso el traste
+    maximo lo cuenta UNA funcion y los dos caminos pasan por ella.
+    """
+    song = cancion(cuerdas_midi=DROP_C)
+    song.tracks[0].fretCount = 24
+    ruta = escribir(song, tmp_path)
+
+    antes = set(PERFILES)
+    pistas_de(ruta)
+    (al_listar,) = set(PERFILES) - antes
+
+    al_importar = pieza_desde_guitarpro(ruta, 1).perfil
+    assert al_listar == al_importar
+    assert PERFILES[al_importar].trastes == 24
+
+
+def test_listar_una_afinacion_de_fabrica_no_da_de_alta_nada(tmp_path):
+    """El registro vivo no es un cajon de sastre: lo conocido no se duplica."""
+    antes = set(PERFILES)
+    pistas_de(escribir(cancion(), tmp_path))
+    assert set(PERFILES) == antes
+
+
+def test_listar_una_pista_sin_afinacion_que_declarar_no_da_de_alta_nada(tmp_path):
+    """Percusion y una pista sin cuerdas no tienen afinacion de la que hablar.
+
+    La pista de percusion lleva a proposito unas cuerdas RARAS: con la afinacion
+    estandar, saltarse la comprobacion de percusion no daria de alta nada igual
+    -estandar ya es de fabrica- y la prueba no distinguiria el caso. En una pista de
+    percusion `Note.string` no significa nada, asi que su "afinacion" tampoco, y dar
+    de alta un perfil con ella seria ofrecerle al usuario afinarse a la bateria.
+    """
+    antes = set(PERFILES)
+    pistas_de(
+        escribir(
+            cancion(cuerdas_midi=DROP_C, percusion=True), tmp_path, "percusion.gp5"
+        )
+    )
+    pistas_de(escribir(cancion(cuerdas_midi=()), tmp_path, "sin_cuerdas.gp5"))
+    assert set(PERFILES) == antes
+
+
+def test_el_traste_que_se_toca_cuenta_tambien_al_listar(tmp_path):
+    """La cuenta del traste maximo tiene que ser la misma en los dos caminos.
+
+    Una pista en afinacion rara que toca el traste 24 necesita un perfil de 24
+    trastes. Si al listar se contara sobre otra cosa -o no se contara-, la clave del
+    listado seria `..._22t` y la de la pieza `..._24t`: dos perfiles para una
+    afinacion y un aviso que apunta al que no es.
+    """
+    song = con_notas([(0, 1, 24)], cuerdas_midi=DROP_C)
+    ruta = escribir(song, tmp_path)
+    antes = set(PERFILES)
+    pistas_de(ruta)
+    (al_listar,) = set(PERFILES) - antes
+    assert PERFILES[al_listar].trastes == 24
+    assert pieza_desde_guitarpro(ruta, 1).perfil == al_listar

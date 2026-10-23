@@ -758,17 +758,44 @@ def crear_app(
     def _avisos_de(pieza) -> list[str]:
         """Lo que hay que advertir de una pieza recién importada, en frases.
 
-        Hoy solo el ritmo aproximado de la tablatura de texto. El sitio existe
-        porque hay al menos un aviso más que dar y no está dado: las casillas de
-        primera y segunda vez de Guitar Pro producen un compás de más, en silencio,
-        y cuando el lector sepa detectarlo su frase va aquí, sin tocar la forma de
-        la respuesta ni la interfaz.
+        Tres, y los tres son cosas que la pieza ya sabe de sí misma y que nadie le
+        estaba contando al usuario:
+
+        - El ritmo aproximado de la tablatura de texto.
+        - El tempo variable. `Pieza` se queda con el primero, así que una canción
+          que acelera se toca entera al tempo del principio.
+        - El compás variable. Importa el doble, porque además de tocarse con el
+          compás equivocado **la vista escrita trocea la pieza con uno solo**
+          (`interfaz/src/vistaEscrita.ts`): con un 3/4 en medio, las barras caen en
+          el sitio equivocado desde ahí hasta el final.
+
+        Los dos últimos se detectaban, se guardaban en la pieza y no llegaban a
+        ninguna parte: el campo estaba puesto y esta función no lo miraba. La
+        pantalla pinta estas frases tal cual, así que añadirlas no toca la interfaz
+        ni la forma de la respuesta.
+
+        El aviso que sigue sin estar es el de las casillas de primera y segunda vez
+        de Guitar Pro, que producen un compás de más en silencio: el lector todavía
+        no lo detecta, así que aquí no hay nada que mirar. Cuando lo detecte, su
+        frase va aquí y nada más cambia.
         """
         avisos = []
         if pieza.ritmo_aproximado:
             avisos.append(
                 "El ritmo de esta pieza es APROXIMADO: el archivo no lo trae y se ha "
                 "deducido del espaciado, así que las duraciones pueden no cuadrar."
+            )
+        if pieza.tempo_variable:
+            avisos.append(
+                f"La canción CAMBIA DE TEMPO y aquí se toca entera a {pieza.tempo} "
+                f"ppm, el primero que trae el archivo."
+            )
+        if pieza.compas_variable:
+            avisos.append(
+                f"La canción CAMBIA DE COMPÁS y aquí se toca entera en "
+                f"{pieza.compas[0]}/{pieza.compas[1]}, el primero que trae el "
+                f"archivo. En la vista escrita, las barras de compás caerán fuera de "
+                f"sitio a partir del cambio."
             )
         return avisos
 

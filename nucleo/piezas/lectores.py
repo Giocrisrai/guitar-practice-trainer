@@ -88,12 +88,21 @@ _MIDI = "MIDI"
 _MUSICXML = "MusicXML"
 _ASCII = "Tablatura de texto"
 
+# La regla de esta tabla: **si una extension esta aqui, se puede abrir**. No es una
+# lista de deseos ni de formatos emparentados, es la de los que funcionan.
+#
+# `.gpx` y `.gp` estuvieron aqui y se han sacado: son los contenedores de Guitar
+# Pro 6 y 7, y PyGuitarPro solo trae lectores de gp3, gp4 y gp5, asi que entraban a
+# la biblioteca y fallaban despues, al pedir las pistas, con un «unsupported
+# version» que no le dice nada a nadie. Un archivo que se sube y revienta mas tarde
+# es peor que uno que no entra: el usuario ya se lo ha copiado y el error le llega
+# en otra pantalla, hablando de versiones de un formato. Siguen reconocidas en
+# `NO_LEIBLES` para poder decir POR QUE no, que es lo unico que hacia falta de
+# ellas.
 FORMATOS: dict[str, str] = {
     ".gp3": _GUITAR_PRO,
     ".gp4": _GUITAR_PRO,
     ".gp5": _GUITAR_PRO,
-    ".gpx": _GUITAR_PRO,
-    ".gp": _GUITAR_PRO,
     ".mid": _MIDI,
     ".midi": _MIDI,
     ".xml": _MUSICXML,
@@ -102,6 +111,39 @@ FORMATOS: dict[str, str] = {
     ".txt": _ASCII,
     ".tab": _ASCII,
 }
+
+# Extensiones que se reconocen y NO se pueden leer, con de que son. No estan en
+# `FORMATOS` -no funcionan- pero se nombran para que el rechazo explique el caso y
+# diga la salida, en vez de contestar «no reconozco esto» sobre un archivo que el
+# usuario sacó de Guitar Pro y que a sus ojos es una partitura perfectamente buena.
+NO_LEIBLES: dict[str, str] = {
+    ".gpx": "Guitar Pro 6",
+    ".gp": "Guitar Pro 7 o posterior",
+}
+
+
+def mensaje_extension_no_valida(extension: str) -> str:
+    """La frase con la que se rechaza una extension, para el usuario.
+
+    Vive aqui y no en el servidor porque es el nucleo el que sabe que se puede leer:
+    la subida (`servidor/canciones.formato_de`) y la lectura (`_extension`) rechazan
+    por lo mismo y tienen que decir lo mismo. Dos mensajes separados ya se
+    desincronizaron una vez -uno decia «sin extension» y el otro «sin extensión»- y
+    el que importa, el de la subida, es el que el usuario ve primero.
+    """
+    validas = ", ".join(sorted(FORMATOS))
+    de_que = NO_LEIBLES.get(extension.lower())
+    if de_que is not None:
+        return (
+            f"Los archivos '{extension}' son de {de_que}, y la librería con la que "
+            f"leemos Guitar Pro no sabe abrirlos. Ábrelo en Guitar Pro o en "
+            f"TuxGuitar y expórtalo como .gp5, que sí funciona. "
+            f"Los formatos que valen: {validas}"
+        )
+    return (
+        f"No sé leer archivos '{extension or 'sin extensión'}'. "
+        f"Los que valen: {validas}"
+    )
 
 
 def _diferido(modulo: str, nombre: str) -> Callable:
@@ -192,7 +234,7 @@ def _con_perfil(
 # Dos tablas con las mismas claves: listar las pistas y convertir una.
 _LECTORES: dict[str, Callable[[Path | str], tuple[PistaDisponible, ...]]] = {
     **dict.fromkeys(
-        (".gp3", ".gp4", ".gp5", ".gpx", ".gp"),
+        (".gp3", ".gp4", ".gp5"),
         _diferido("desde_guitarpro", "pistas_de"),
     ),
     **dict.fromkeys((".mid", ".midi"), _diferido("desde_midi", "pistas_de_midi")),
@@ -203,7 +245,7 @@ _LECTORES: dict[str, Callable[[Path | str], tuple[PistaDisponible, ...]]] = {
 }
 
 _CONVERSORES: dict[str, Callable[[Path | str, int, str | None], Pieza]] = {
-    **dict.fromkeys((".gp3", ".gp4", ".gp5", ".gpx", ".gp"), _pieza_de_guitarpro),
+    **dict.fromkeys((".gp3", ".gp4", ".gp5"), _pieza_de_guitarpro),
     **dict.fromkeys(
         (".mid", ".midi"), _con_perfil(_diferido("desde_midi", "pieza_desde_midi"))
     ),
@@ -218,10 +260,7 @@ _CONVERSORES: dict[str, Callable[[Path | str, int, str | None], Pieza]] = {
 def _extension(ruta: Path | str, tabla: dict) -> str:
     extension = Path(ruta).suffix.lower()
     if extension not in tabla:
-        validas = ", ".join(sorted(FORMATOS))
-        raise ValueError(
-            f"No sé leer archivos '{extension or 'sin extension'}'. Los que valen: {validas}"
-        )
+        raise ValueError(mensaje_extension_no_valida(Path(ruta).suffix))
     return extension
 
 

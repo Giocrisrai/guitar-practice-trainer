@@ -12,15 +12,16 @@ Las formas de salirse que se cubren, y por qué cada comprobación está donde e
 se explican en `ruta_de`.
 
 Lo que esta clase NO hace: leer el contenido musical. De eso sabe
-`nucleo/piezas/lectores.py`, y aquí solo se usa su tabla `FORMATOS` para saber qué
-extensiones se admiten. El núcleo no sabe que existe un servidor.
+`nucleo/piezas/lectores.py`, y aquí solo se usan su tabla `FORMATOS` —para saber qué
+extensiones se admiten— y la frase con la que se rechazan las demás. El núcleo no
+sabe que existe un servidor.
 """
 
 import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 
-from nucleo.piezas.lectores import FORMATOS
+from nucleo.piezas.lectores import FORMATOS, mensaje_extension_no_valida
 
 # Lo más que se admite subir, por archivo.
 #
@@ -110,14 +111,17 @@ def _nombre_seguro(nombre: str) -> str:
 
 
 def formato_de(nombre: str) -> str:
-    """El nombre legible del formato de `nombre`, o `ValueError` con los que valen."""
+    """El nombre legible del formato de `nombre`, o `ValueError` con los que valen.
+
+    El mensaje lo escribe el núcleo (`mensaje_extension_no_valida`) y no este
+    módulo: es el núcleo el que sabe qué se puede abrir, y esta es la puerta donde
+    se nota. Un `.gpx` o un `.gp` —Guitar Pro 6 y 7, que no se pueden leer— se
+    rechazan **aquí, al subir**, y no después al pedir las pistas: así el archivo no
+    entra en la biblioteca y el usuario lee por qué en la pantalla donde lo soltó.
+    """
     extension = Path(nombre).suffix.lower()
     if extension not in FORMATOS:
-        validas = ", ".join(sorted(FORMATOS))
-        raise ValueError(
-            f"No sé leer archivos '{extension or 'sin extensión'}'. "
-            f"Los que valen: {validas}"
-        )
+        raise ValueError(mensaje_extension_no_valida(Path(nombre).suffix))
     return FORMATOS[extension]
 
 
@@ -287,14 +291,25 @@ def afinacion_de(cuerdas_midi) -> dict:
     1. `clave_de_perfil`, que reconoce las afinaciones DE FÁBRICA. Una canción en
        Drop D tiene que decir `guitarra_drop_d`, no una clave inventada.
     2. El registro vivo `PERFILES`, donde los lectores dan de alta las afinaciones
-       raras al leer el archivo. Esto es para qué sirve el registro vivo: la canción
-       en Drop C ya tiene clave porque el lector se la puso, y repetirle el cálculo
-       aquí -con otros trastes, por ejemplo- habría inventado una clave distinta de
-       la que va a traer la pieza.
+       raras. Esto es para qué sirve el registro vivo: la canción en Drop C ya tiene
+       clave porque el lector se la puso, y repetirle el cálculo aquí -con otros
+       trastes, por ejemplo- habría inventado una clave distinta de la que va a
+       traer la pieza.
+
+       Los lectores la dan de alta **al listar las pistas y al importar**, no solo
+       al importar. Antes era solo al importar, y entonces esta función devolvía
+       `clave: None` la primera vez que se miraba una canción en una afinación rara:
+       la pantalla decía «no tengo ningún perfil al que afinarte» justo en el único
+       caso en que el aviso hacía falta, y empezaba a funcionar la segunda vez que
+       abrías la canción. El alta vive en el lector
+       (`desde_guitarpro._clave_de_pista`, `desde_ascii`) y no aquí a propósito: es
+       quien lee el archivo el que sabe con qué trastes construir el perfil, y la
+       clave tiene que ser exactamente la que va a traer la pieza.
 
     Si no aparece en ninguno de los dos, `clave` es None y el nombre se deriva de las
-    notas. None es la respuesta honesta: no hay perfil al que afinarse todavía, y
-    fabricar uno aquí ensuciaría el registro con afinaciones que nadie ha importado.
+    notas. Hoy eso solo pasa con un formato que declare cuerdas y cuyo lector no
+    registre su afinación; MIDI y MusicXML no declaran ninguna y caen por la rama de
+    `declarada: False`, más arriba.
 
     `declarada` dice si el ARCHIVO trae afinación. MIDI y MusicXML sin tablatura no
     la traen (`cuerdas_midi` vacío), y entonces no hay nada a lo que afinarse: la
