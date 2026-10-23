@@ -544,16 +544,71 @@ describe("Canciones", () => {
   });
 
   /**
+   * La tercera petición que escribe en la pantalla es la lectura de la carpeta, y
+   * también puede solaparse consigo misma: la del montaje contra la de una subida.
+   * Si la del montaje llega tarde, la canción que acabas de subir desaparece de la
+   * lista sin que nada haya cambiado en el disco.
+   */
+  it("la lista que llega tarde no borra la cancion recien subida", async () => {
+    const SUBIDA: FichaCancion = { ...CANCION, id: "nueva.gp5", nombre: "nueva" };
+    const pendientes: ((respuesta: Response) => void)[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string, opciones?: RequestInit) => {
+        const direccion = String(url);
+        const metodo = opciones?.method ?? "GET";
+        if (direccion === "/api/canciones" && metodo === "GET") {
+          return new Promise<Response>((cumplir) => pendientes.push(cumplir));
+        }
+        if (direccion === "/api/canciones" && metodo === "POST") return responder(SUBIDA);
+        if (direccion.endsWith("/pistas")) {
+          return responder({
+            ...SUBIDA,
+            pistas: [PISTA_GUITARRA],
+            afinacion: ESTANDAR,
+            perfil_activo: "guitarra_estandar",
+            coincide: true,
+          });
+        }
+        return Promise.reject(new Error(`fetch no simulado: ${direccion}`));
+      })
+    );
+    render(<Canciones irA={vi.fn()} tocar={vi.fn()} />);
+    await waitFor(() => expect(pendientes).toHaveLength(1));
+
+    // Se sube sin esperar la lectura del montaje: ahora hay dos en vuelo.
+    fireEvent.change(await entradaDeSubida(), {
+      target: { files: [new File(["x"], "nueva.gp5")] },
+    });
+    await waitFor(() => expect(pendientes).toHaveLength(2));
+
+    // La de la subida contesta con la canción nueva, y la del montaje después, con
+    // la carpeta de antes.
+    await act(async () => {
+      pendientes[1](cuerpo([CANCION, SUBIDA]));
+    });
+    await act(async () => {
+      pendientes[0](cuerpo([CANCION]));
+    });
+
+    // Se mira el botón de LA LISTA, no el texto «nueva» a secas: el título de la
+    // derecha también lo dice, porque la subida abre la canción, y seguiría
+    // diciéndolo con la lista rancia debajo.
+    expect(screen.getByRole("button", { name: /nueva/i })).toBeTruthy();
+  });
+
+  /**
    * Y elegir otra CANCIÓN deja rancia la pieza en vuelo, no solo el detalle: los
    * avisos de una pista de la canción anterior debajo del título de la nueva son
    * los avisos de otra canción.
    *
-   * **Declarada como prueba de no-regresión:** esta propiedad está defendida dos
-   * veces —el contador de `elegirCancion` y el `setPista(null)` que vacía el bloque
-   * de avisos—, así que ninguna mutación de una sola línea la tumba. Medido:
-   * quitando solo el contador pasa, quitando solo `setPista(null)` pasa, y quitando
-   * las dos cae. Está aquí porque las dos defensas se pueden perder de una en una y
-   * esto dice qué se rompería si se pierden las dos.
+   * **Declarada como prueba de no-regresión:** esta propiedad está defendida por
+   * partida doble —el contador de `elegirCancion` por un lado, y por el otro que el
+   * bloque de avisos exija una pista que `setPista(null)` acaba de quitar—, así que
+   * ninguna mutación de una sola línea la tumba. Medido, cada defensa sola pasa y
+   * cada pareja cae: contador + `setPista(null)`, y contador + el `pista !== null`
+   * del render. Está aquí porque las defensas se pueden perder de una en una, y
+   * ésta dice qué se rompe cuando se pierden dos.
    */
   it("la pieza que llega tarde de la cancion anterior no se pinta", async () => {
     const A: FichaCancion = { ...CANCION, id: "a.gp5", nombre: "a" };

@@ -68,12 +68,27 @@ def _nombre_seguro(nombre: str) -> str:
 
     Esta es la primera de las dos redes, y la que da los mensajes buenos. La segunda
     -resolver contra la carpeta- está en `ruta_de` y es la que manda.
+
+    Lo primero que se comprueba es el TIPO, y se comprueba aquí y no en quien llama
+    porque aquí es por donde pasan todos los nombres. La anotación dice `str`, pero
+    por este camino entran valores de un cuerpo JSON sin tipar
+    (`POST /api/piezas/iniciar` manda `{"cancion": ...}`), y un `nombre or ""`
+    aceptaba cualquier valor veraz: un `123` llegaba hasta
+    `unicodedata.normalize`, que exige `str`, y salía como
+    `TypeError: normalize() argument 2 must be str, not int`. Eso acabó en una
+    respuesta de usuario, que es lo que no puede pasar: el mensaje tiene que decirle
+    que lo que manda no es un nombre de archivo, igual que `_numero_de_pista` le
+    dice que la pista se pide con un número entero.
     """
+    if not isinstance(nombre, str):
+        raise ValueError(
+            f"El nombre de una canción es un texto, y me llegó {nombre!r}."
+        )
     # NFC: macOS entrega los nombres en NFD y el navegador suele mandarlos en NFC.
     # Normalizar aquí evita que "canción.txt" se guarde con una forma y luego no se
     # encuentre con la otra. No tiene nada que ver con la seguridad; está aquí
     # porque es el único sitio por el que pasan todos los nombres.
-    nombre = unicodedata.normalize("NFC", nombre or "").strip()
+    nombre = unicodedata.normalize("NFC", nombre).strip()
     if not nombre:
         raise ValueError("El archivo tiene que traer un nombre.")
     if "\x00" in nombre:

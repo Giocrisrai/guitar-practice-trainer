@@ -44,6 +44,14 @@ export function App() {
    * aquí abajo; con la `key`, cada traspaso monta un carril nuevo y la marca empieza
    * limpia, aunque mañana se abran dos módulos a la vez o se toque dos veces la
    * misma pista de la misma canción.
+   *
+   * Lo que arrastra, dicho para quien llegue el día que sirva: un remontaje cierra
+   * el WebSocket del carril (`useCarril`, en la limpieza del efecto) pero NO llama a
+   * `POST /api/piezas/detener`, así que la pieza anterior se quedaría en marcha en
+   * el servidor hasta que el `iniciar` de la nueva la detenga. Hoy no añade ningún
+   * camino —cambiar de módulo ya hacía exactamente eso—, y es la misma deuda que
+   * tienen `Carril` y `Ejercicios` al desmontarse: su sitio es la limpieza de
+   * `useCarril`/`useEjercicio`, no esta `key`.
    */
   const [traspasos, setTraspasos] = useState(0);
   const [diagnostico, setDiagnostico] = useState<Diagnostico | null>(null);

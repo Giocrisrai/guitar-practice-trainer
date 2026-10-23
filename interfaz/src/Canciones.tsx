@@ -111,27 +111,31 @@ export function Canciones({ irA, tocar }: PropiedadesCanciones) {
    * de B en cuanto el de A llegaba tarde, y entonces elegir una pista de la lista de
    * A importaba una pista de B.
    *
-   * Son dos contadores y no uno porque las dos peticiones no caducan igual: elegir
-   * otra pista deja rancia la pieza en vuelo pero no el detalle, y elegir otra
-   * canción deja rancias las dos (por eso `elegirCancion` sube los dos).
+   * Son TRES, uno por petición que escribe en la pantalla, y no uno solo, porque
+   * las tres no caducan igual: elegir otra pista deja rancia la pieza en vuelo pero
+   * no el detalle ni la lista; elegir otra canción deja rancias la pieza y el
+   * detalle pero no la lista; y la lista solo la deja rancia otra lectura de la
+   * lista (la del montaje contra la de una subida, o dos subidas seguidas).
    */
+  const ultimaLista = useRef(0);
   const ultimoDetalle = useRef(0);
   const ultimaPieza = useRef(0);
 
   /** Vuelve a leer la carpeta. Al montar y después de cada subida. */
-  const cargarLista = useCallback(
-    () =>
-      pedir<FichaCancion[]>("/api/canciones").then(
-        (lista) => {
-          setCanciones(lista);
-          setErrorLista(null);
-        },
-        (excepcion: unknown) => {
-          setErrorLista(mensajeDe(excepcion, "No pude leer la carpeta de canciones"));
-        }
-      ),
-    []
-  );
+  const cargarLista = useCallback(() => {
+    const mia = (ultimaLista.current += 1);
+    return pedir<FichaCancion[]>("/api/canciones").then(
+      (lista) => {
+        if (ultimaLista.current !== mia) return;
+        setCanciones(lista);
+        setErrorLista(null);
+      },
+      (excepcion: unknown) => {
+        if (ultimaLista.current !== mia) return;
+        setErrorLista(mensajeDe(excepcion, "No pude leer la carpeta de canciones"));
+      }
+    );
+  }, []);
 
   useEffect(() => {
     void cargarLista();
@@ -156,9 +160,11 @@ export function Canciones({ irA, tocar }: PropiedadesCanciones) {
     // avisos exige también una pista elegida, y `setPista(null)` de arriba ya la
     // quita, así que una pieza rancia que entrara aquí se guardaría sin pintarse.
     // Se queda porque lo que sostiene es el invariante —`pieza` y `detalle` hablan
-    // siempre de la misma canción— y no el píxel; está medido en el informe:
-    // quitarla sola no rompe ninguna prueba, y quitarla junto con `setPista(null)`
-    // sí.
+    // siempre de la misma canción— y no el píxel. Medido, y las dos parejas están
+    // en el informe: quitarla sola no rompe ninguna prueba, y quitarla junto con
+    // `setPista(null)` sí; quitarla junto con el `pista !== null` del render —que es
+    // justo el escenario futuro que esto para, pintar la pieza sin exigir pista—
+    // también.
     const mia = (ultimoDetalle.current += 1);
     ultimaPieza.current += 1;
     try {

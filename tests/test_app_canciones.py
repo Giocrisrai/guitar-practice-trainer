@@ -719,14 +719,29 @@ def test_sin_pista_se_arranca_la_primera(cliente):
 
 
 @pytest.mark.parametrize("valor", [123, True, 1.5, ["x.txt"], {"nombre": "x.txt"}, None])
-def test_una_cancion_que_no_es_un_nombre_da_400_y_no_un_500(cliente, valor):
+def test_una_cancion_que_no_es_un_nombre_lo_dice_y_no_es_un_500(cliente, valor):
     """El `id` sale de un `dict` SIN TIPAR, al contrario que en `/importar`.
 
     En `/importar` el identificador viene de la ruta y FastAPI ya lo tipa `str`
     antes de que el handler lo vea. Aqui sale del cuerpo, asi que `{"cancion": 123}`
     llegaba hasta `unicodedata.normalize` -que exige `str`- y salia como un
     `TypeError` sin capturar: un 500, es decir «el servidor se ha roto», que es
-    mentira y no le dice al usuario que lo que manda no es un nombre de archivo.
+    mentira.
+
+    Lo que se afirma es EL MENSAJE y no solo el 400. Capturar el `TypeError` cerca
+    de la llamada ya daba un 400, pero con
+    `"normalize() argument 2 must be str, not int"` dentro: un mensaje interno de
+    Python en una respuesta de usuario, que no le dice que lo que manda no es un
+    nombre de archivo. La comprobacion de tipo vive en `_nombre_seguro`, que es por
+    donde pasan TODOS los nombres, y trae su propia frase; un mensaje que ninguna
+    prueba fija es un mensaje que vuelve a romperse.
+
+    Los seis valores entran por la MISMA rama, la del tipo, y eso es nuevo: antes
+    los valores falsos -`None` aqui, y lo mismo valdria para `0`, `False`, `[]` o
+    `{}`- los convertia en `""` un `nombre or ""` y caian por la rama del nombre
+    vacio, asi que no ejercian nada de esto. Ahora el `isinstance` es lo primero y
+    los coge todos. El unico que sigue cayendo por la rama del nombre vacio es `""`,
+    que SI es un texto, y tiene su propia prueba.
 
     `True` esta aparte de `123` a proposito: en Python `bool` es un `int`, asi que
     una comprobacion de tipo descuidada lo deja pasar por otro camino.
@@ -735,7 +750,63 @@ def test_una_cancion_que_no_es_un_nombre_da_400_y_no_un_500(cliente, valor):
         "/api/piezas/iniciar", json={"cancion": valor, "pista": 1}
     )
     assert respuesta.status_code == 400
+    detalle = respuesta.json()["detail"]
+    assert "El nombre de una canción es un texto" in detalle
+    # Dice QUE llego, para que quien lo lea reconozca lo que mando.
+    assert repr(valor) in detalle
+    # Y nada de las tripas de Python.
+    assert "normalize" not in detalle
     assert cliente.get("/api/piezas/estado").json()["arranque"] == 0
+
+
+@pytest.mark.parametrize(
+    "ruta_y_cuerpo",
+    [
+        ("/api/canciones/x.txt/importar", {"pista": 1, "perfil": ["x"]}),
+        ("/api/piezas/iniciar", {"cancion": "x.txt", "pista": 1, "perfil": ["x"]}),
+    ],
+    ids=["importar", "iniciar"],
+)
+def test_un_perfil_que_no_es_una_clave_lo_dice_sin_tripas_de_python(
+    cliente, ruta_y_cuerpo
+):
+    """De la misma familia que el nombre, y por las dos puertas.
+
+    `perfil` tambien llega de un cuerpo sin tipar y acaba en un `in` sobre el
+    registro de perfiles, que es un `dict`, asi que `{"perfil": ["x"]}` salia con
+    `TypeError: unhashable type: 'list'` dentro del 400. Esto es anterior a la
+    pantalla de canciones -`/importar` ya lo tenia-, y se arregla en el mismo sitio
+    por el que pasa el valor.
+    """
+    ruta, cuerpo = ruta_y_cuerpo
+    cliente.post("/api/canciones", files={"archivo": ("x.txt", TABLATURA)})
+    respuesta = cliente.post(ruta, json=cuerpo)
+    assert respuesta.status_code == 400
+    detalle = respuesta.json()["detail"]
+    assert "El perfil se pide con su clave en texto" in detalle
+    assert "['x']" in detalle
+    assert "unhashable" not in detalle
+
+
+def test_un_perfil_en_texto_sigue_contando_donde_cuenta(cliente):
+    """La comprobacion es solo del TIPO: una clave de texto sigue llegando al nucleo.
+
+    Y el que no existe lo rechaza el nucleo, con su lista de opciones. Esta prueba
+    existe para que la comprobacion de tipo no se convierta en «ningun perfil pasa»:
+    sin ella, un `isinstance` al reves pasaria igual.
+    """
+    cliente.post("/api/canciones", files={"archivo": ("x.mid", _midi_de_una_nota())})
+    bueno = cliente.post(
+        "/api/canciones/x.mid/importar", json={"pista": 1, "perfil": "guitarra_drop_d"}
+    )
+    assert bueno.status_code == 200
+    assert bueno.json()["perfil"] == "guitarra_drop_d"
+
+    malo = cliente.post(
+        "/api/canciones/x.mid/importar", json={"pista": 1, "perfil": "ukelele"}
+    )
+    assert malo.status_code == 400
+    assert "ukelele" in malo.json()["detail"]
 
 
 def test_una_cancion_vacia_sigue_pidiendo_una_cancion_sin_decir_cual(cliente):

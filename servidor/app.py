@@ -140,6 +140,26 @@ def _numero_de_pista(valor) -> int:
     return valor
 
 
+def _perfil_pedido(valor) -> str | None:
+    """`valor` como clave de perfil, o `None`, o `ValueError` diciendo que pasa.
+
+    Solo el TIPO. Que el perfil EXISTA lo decide el nucleo, que ademas enumera los
+    que hay (`desde_ascii`: "El perfil 'x' no existe. Opciones: ..."); repetir aqui
+    esa lista seria tener dos catalogos y uno de los dos se quedaria viejo.
+
+    Hace falta porque `perfil` llega de un cuerpo sin tipar y acaba en un `in` sobre
+    el registro de perfiles, que es un `dict`: `{"perfil": ["x"]}` salia como
+    `TypeError: unhashable type: 'list'`, es decir un mensaje interno de Python en
+    una respuesta de usuario. Es el mismo problema que tenia el nombre de la cancion
+    (`_nombre_seguro`) y se arregla igual, en el sitio por el que pasa el valor.
+    """
+    if valor is None or isinstance(valor, str):
+        return valor
+    raise ValueError(
+        f"El perfil se pide con su clave en texto, y me llego {valor!r}."
+    )
+
+
 def _mensaje_peticion_enorme(declarados: int) -> str:
     megas = TAMANO_MAXIMO_BYTES // (1024 * 1024)
     return (
@@ -624,7 +644,8 @@ def crear_app(
         if pide_cancion:
             ruta = _leer_o_400(lambda: _ruta_de_cancion(datos["cancion"]))
             numero = _leer_o_400(lambda: _numero_de_pista(datos.get("pista", 1)))
-            return _leer_o_400(lambda: importar(ruta, numero, datos.get("perfil")))
+            perfil = _leer_o_400(lambda: _perfil_pedido(datos.get("perfil")))
+            return _leer_o_400(lambda: importar(ruta, numero, perfil))
         return pieza_desde_ejercicio(_generar_o_400(datos))
 
     @app.post("/api/piezas/iniciar")
@@ -875,7 +896,7 @@ def crear_app(
         """
         ruta = _ruta_de_cancion(identificador)
         numero = _leer_o_400(lambda: _numero_de_pista(datos.get("pista", 1)))
-        perfil = datos.get("perfil")
+        perfil = _leer_o_400(lambda: _perfil_pedido(datos.get("perfil")))
         pieza = _leer_o_400(lambda: importar(ruta, numero, perfil))
         return {**pieza.a_dict(), "avisos": _avisos_de(pieza)}
 
