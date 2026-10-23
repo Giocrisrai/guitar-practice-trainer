@@ -55,7 +55,7 @@ class PerfilAfinacion:
         return 2**exponente
 
 
-PERFILES: dict[str, PerfilAfinacion] = {
+PERFILES_DE_FABRICA: dict[str, PerfilAfinacion] = {
     "guitarra_estandar": PerfilAfinacion(
         nombre="Guitarra estándar",
         cuerdas=(
@@ -103,6 +103,12 @@ PERFILES: dict[str, PerfilAfinacion] = {
     ),
 }
 
+# El registro vivo de afinaciones: arranca con las de fabrica y los lectores de
+# archivos dan de alta en el las que traiga una cancion (ver `registrar_perfil`).
+# Se separan porque `clave_de_perfil` solo debe reconocer las de fabrica: importar
+# una cancion en Drop C no convierte el Drop C en una afinacion conocida.
+PERFILES: dict[str, PerfilAfinacion] = dict(PERFILES_DE_FABRICA)
+
 
 def perfil_desde_midis(
     nombre: str, midis: list[int] | tuple[int, ...], trastes: int = 22
@@ -128,17 +134,40 @@ def perfil_desde_midis(
     return PerfilAfinacion(nombre=nombre, cuerdas=cuerdas, trastes=trastes)
 
 
+def registrar_perfil(perfil: PerfilAfinacion) -> str:
+    """Da de alta `perfil` en `PERFILES` y devuelve su clave.
+
+    Existe porque `Pieza.perfil` es una CLAVE de `PERFILES` y no un `PerfilAfinacion`:
+    una cancion en Drop C no se podria importar si su afinacion no tuviera nombre en
+    el diccionario. La clave se deriva de las cuerdas y de los trastes, asi que
+    importar el mismo archivo dos veces no llena el diccionario de copias:
+
+        a_medida_c2-g2-c3-f3-a3-d4_24t
+
+    Quien importa debe preguntar primero por `clave_de_perfil`: una cancion en
+    afinacion estandar no tiene que inventarse un perfil.
+    """
+    cuerdas = "-".join(cuerda.nota.replace("#", "s").lower() for cuerda in perfil.cuerdas)
+    clave = f"a_medida_{cuerdas}_{perfil.trastes}t"
+    PERFILES.setdefault(clave, perfil)
+    return clave
+
+
 def clave_de_perfil(
     perfil: PerfilAfinacion, tolerancia_cents: float = 1.0
 ) -> str | None:
-    """Clave de `PERFILES` cuyo juego de cuerdas coincide con el perfil, o None.
+    """Clave de un perfil DE FABRICA cuyo juego de cuerdas coincide, o None.
 
     Compara por frecuencia, no por igualdad de flotantes: dos cuerdas coinciden si
 
         |1200 · log2(f / f_conocida)| <= tolerancia_cents
+
+    Recorre `PERFILES_DE_FABRICA` y no `PERFILES` a proposito: las afinaciones que
+    dan de alta los lectores no son afinaciones conocidas, y si se compararan, la
+    segunda vez que se importara la misma cancion rara se reconoceria a si misma.
     """
     frecuencias = np.array([cuerda.frecuencia for cuerda in perfil.cuerdas])
-    for clave, conocido in PERFILES.items():
+    for clave, conocido in PERFILES_DE_FABRICA.items():
         if len(conocido.cuerdas) != len(frecuencias):
             continue
         conocidas = np.array([cuerda.frecuencia for cuerda in conocido.cuerdas])

@@ -2,9 +2,11 @@ import pytest
 
 from nucleo.afinaciones import (
     PERFILES,
+    PERFILES_DE_FABRICA,
     PerfilAfinacion,
     clave_de_perfil,
     perfil_desde_midis,
+    registrar_perfil,
 )
 
 
@@ -89,3 +91,27 @@ def test_el_perfil_a_medida_sirve_para_digitar():
 
     perfil = perfil_desde_midis("Drop C", [36, 43, 48, 53, 57, 62])
     assert len(digitar([36, 48, 60], perfil)) == 3
+
+
+def test_un_perfil_a_medida_se_da_de_alta_para_que_una_pieza_pueda_nombrarlo():
+    """`Pieza.perfil` es una clave de `PERFILES`, no un perfil."""
+    perfil = perfil_desde_midis("Drop C", [36, 43, 48, 53, 57, 62], trastes=24)
+    clave = registrar_perfil(perfil)
+    assert PERFILES[clave] is perfil
+    assert clave not in PERFILES_DE_FABRICA
+
+
+def test_dar_de_alta_el_mismo_perfil_dos_veces_no_lo_duplica():
+    midis = [36, 43, 48, 53, 57, 62]
+    primera = registrar_perfil(perfil_desde_midis("Drop C", midis))
+    cuantos = len(PERFILES)
+    segunda = registrar_perfil(perfil_desde_midis("Drop C otra vez", midis))
+    assert primera == segunda
+    assert len(PERFILES) == cuantos
+
+
+def test_dar_de_alta_un_perfil_no_lo_vuelve_una_afinacion_conocida():
+    """Si no, importar la misma cancion rara dos veces la reconoceria a si misma."""
+    perfil = perfil_desde_midis("Drop C", [36, 43, 48, 53, 57, 62])
+    registrar_perfil(perfil)
+    assert clave_de_perfil(perfil) is None
