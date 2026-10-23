@@ -128,13 +128,26 @@ FORMATOS: dict[str, str] = {
     ".tab": _ASCII,
 }
 
-# Extensiones que se reconocen y NO se pueden leer, con de que son. No estan en
-# `FORMATOS` -no funcionan- pero se nombran para que el rechazo explique el caso y
-# diga la salida, en vez de contestar «no reconozco esto» sobre un archivo que el
-# usuario sacó de Guitar Pro y que a sus ojos es una partitura perfectamente buena.
-NO_LEIBLES: dict[str, str] = {
-    ".gpx": "Guitar Pro 6",
-    ".gp": "Guitar Pro 7 o posterior",
+# Extensiones que se reconocen y NO se pueden leer, con de que son Y CON LA SALIDA.
+# No estan en `FORMATOS` -no funcionan- pero se nombran para que el rechazo explique
+# el caso y diga que hacer, en vez de contestar «no reconozco esto» sobre un archivo
+# que el usuario sacó de Guitar Pro y que a sus ojos es una partitura perfectamente
+# buena.
+#
+# La salida va en la TABLA y no en la frase a proposito: la frase decia «la librería
+# con la que leemos Guitar Pro no sabe abrirlos» para cualquier entrada de aqui. Hoy
+# las dos son de Guitar Pro y es verdad, pero una tercera -un `.ptb` de Power Tab,
+# por ejemplo- habria salido con una frase falsa y mandando al usuario a exportar
+# desde un programa que no tiene. Quien añada una extension escribe su salida.
+NO_LEIBLES: dict[str, tuple[str, str]] = {
+    ".gpx": (
+        "Guitar Pro 6",
+        "Ábrelo en Guitar Pro o en TuxGuitar y expórtalo como .gp5, que sí funciona.",
+    ),
+    ".gp": (
+        "Guitar Pro 7 o posterior",
+        "Ábrelo en Guitar Pro o en TuxGuitar y expórtalo como .gp5, que sí funciona.",
+    ),
 }
 
 
@@ -146,15 +159,17 @@ def mensaje_extension_no_valida(extension: str) -> str:
     por lo mismo y tienen que decir lo mismo. Dos mensajes separados ya se
     desincronizaron una vez -uno decia «sin extension» y el otro «sin extensión»- y
     el que importa, el de la subida, es el que el usuario ve primero.
+
+    De que es el formato y cual es la salida los dice `NO_LEIBLES`, no esta funcion:
+    aqui solo se montan. Ver ahi el porque.
     """
     validas = ", ".join(sorted(FORMATOS))
-    de_que = NO_LEIBLES.get(extension.lower())
-    if de_que is not None:
+    conocida = NO_LEIBLES.get(extension.lower())
+    if conocida is not None:
+        de_que, salida = conocida
         return (
-            f"Los archivos '{extension}' son de {de_que}, y la librería con la que "
-            f"leemos Guitar Pro no sabe abrirlos. Ábrelo en Guitar Pro o en "
-            f"TuxGuitar y expórtalo como .gp5, que sí funciona. "
-            f"Los formatos que valen: {validas}"
+            f"Los archivos '{extension}' son de {de_que}, y no sé abrirlos. "
+            f"{salida} Los formatos que valen: {validas}"
         )
     return (
         f"No sé leer archivos '{extension or 'sin extensión'}'. "
@@ -181,8 +196,14 @@ def _diferido(modulo: str, nombre: str) -> Callable:
 def _leer_texto(ruta: Path) -> str:
     """El contenido de un archivo de texto; UTF-8 y, si no, Windows-1252.
 
-    Las tablaturas de los foros llegan en cualquiera de las dos. Latin-1 no puede
-    fallar, asi que nunca se rechaza un archivo por su codificacion.
+    Las tablaturas de los foros llegan en cualquiera de las dos.
+
+    Lo que hace que nunca se rechace un archivo por su codificacion es el
+    `errors="replace"`, y NO la codificacion elegida: cp1252 no es latin-1 y tiene
+    cinco bytes sin definir (0x81, 0x8d, 0x8f, 0x90, 0x9d), asi que decodificar con
+    ella si puede fallar. Con `replace`, un byte asi se convierte en el caracter de
+    reemplazo y la tablatura se lee igual; lo unico que se pierde es ese caracter,
+    que en una tablatura no es un numero ni un guion.
     """
     datos = ruta.read_bytes()
     try:

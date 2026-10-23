@@ -110,7 +110,13 @@ def test_los_pesos_son_datos_y_cambiarlos_cambia_la_eleccion():
 
 
 def test_mil_notas_se_digitan_en_un_pestaneo():
-    """O(n*k^2) con k<=6: una cancion larga no puede tardar."""
+    """O(n*k^2*T^2) con k<=6 y T=23: una cancion larga no puede tardar.
+
+    El coste es el que documenta el modulo, con las anclas dentro: el estado es la
+    pareja (posicion, traste donde esta la mano), asi que la transicion entre dos
+    notas es k*T por k*T. Aqui decia `O(n*k^2)`, que es el coste de la version sin
+    anclas, es decir de otro algoritmo.
+    """
     import time
 
     generador = np.random.default_rng(3)

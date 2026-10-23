@@ -1,4 +1,13 @@
-/** Formas exactas que llegan del servidor para las piezas. Espejo de nucleo/piezas. */
+/**
+ * Formas que llegan del servidor para las piezas, de `nucleo/piezas`.
+ *
+ * **Espejo PARCIAL, a propósito.** `Pieza` declara aquí solo los campos que esta
+ * interfaz usa, y los que faltan están nombrados en su propio comentario: añadirlos
+ * obligaría a escribirlos en los literales de prueba de dos archivos
+ * (`Canciones.test.tsx`, `VistaEscritaPieza.test.tsx`) sin que nada los lea. Lo que
+ * sí es exacto es el NOMBRE y el TIPO de lo que está: si el núcleo renombra un campo
+ * que aparece aquí, lo que hay que cambiar es esta línea.
+ */
 
 /** Una nota de la pieza, con su sitio en el mástil y su sitio en el tiempo.
  * Tal y como la manda `NotaEnPieza.a_dict()` (nucleo/piezas/modelo.py). */
@@ -17,6 +26,13 @@ export interface NotaDePieza {
  * El WebSocket `/ws/piezas` NUNCA la manda: viajó una sola vez al iniciar, y
  * repetirla treinta veces por segundo desperdiciaría el canal en notas que no
  * cambian (`Pieza.a_dict()`, nucleo/piezas/modelo.py).
+ *
+ * **Lo que el servidor manda y aquí NO está declarado**, porque esta interfaz no lo
+ * lee: `secciones`, `ritmo_aproximado`, `tempo_variable`, `compas_variable` y
+ * `casillas_de_repeticion`. Los cuatro últimos llegan ya convertidos en frases
+ * dentro de `avisos` (`_avisos_de`, servidor/app.py), que es lo que la pantalla
+ * pinta; `secciones` no la usa nada todavía y la va a consumir la etapa 3c, que es
+ * cuando toca declararla.
  */
 export interface Pieza {
   nombre: string;

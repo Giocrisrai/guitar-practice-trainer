@@ -259,8 +259,14 @@ Qué mejora, con lo que mide cada número:
 - **Nunca cuesta más** que la heurística de cercanía de la etapa 3a, con la misma
   función de coste para las dos (`tests/test_digitacion.py`).
 - **El recorrido de la mano baja un 37 %** sobre material aleatorio (200 secuencias
-  de 20 notas) y un 98 % en una escala de do mayor de 120 notas. No hay una cifra
-  única: depende entero del material.
+  de 20 notas). Con una escala no hay una cifra única, y no porque sea difícil de
+  medir: **depende entero de la FORMA del recorrido**, y la misma escala de do mayor
+  de 120 notas da **del 27 % al 100 %** según cómo esté recorrida. Las cuatro formas
+  medidas, que las reproduce `uv run python -m herramientas.medir_digitacion`:
+  diente de sierra C3..C6 **27,1 %**, sube y baja **55,7 %**, diente de sierra en un
+  rango más grave (C2..C5) **65,6 %**, una octava en bucle **100 %**. Aquí había un
+  «98 % en una escala de do mayor de 120 notas» que no se podía comprobar: no decía
+  qué escala y el script que lo produjo no estaba en el repositorio.
 - **El salto crudo de traste a traste entre notas pisadas sale un 10 % PEOR**, y
   peor en 123 de esas 200 secuencias. No es una contradicción, es qué optimiza: el
   coste mínimo prefiere las cuerdas al aire, que son gratis, y eso separa los
@@ -291,20 +297,43 @@ corta. Dibujar los trastes de una afinación con la guitarra en otra es peor que
 dibujar nada. Previsualizar sí se puede: importar una canción y ver sus notas no
 pasa por el carril, que es justo lo que hace falta para saber a qué afinarte.
 
+**El aviso es de la PISTA que eliges**, no de la canción. Lo que se importa es una
+pista, así que es su afinación la que decide: un `.gp5` con la pista 1 en estándar y
+la pista 2 en Drop C avisa al elegir la segunda y no al abrir la canción. Mientras no
+has elegido ninguna, el aviso es el de la primera pista usable, que es la que se
+importaría si no eliges otra.
+
 **El aviso funciona también con una afinación que no es de fábrica**, y a la
 primera. De fábrica son estándar, Drop D y los dos bajos; una canción en Drop C no
 está en esa lista, y es precisamente la que necesita que le digan a qué afinarse.
 El perfil de una afinación rara se da de alta al **listar** las pistas, no solo al
-importarlas, y la clave que propone el listado es exactamente la que va a traer la
-pieza: afinarte a lo que te dicen basta para que el carril te acepte. El selector
-del afinador no se llena por mirar canciones —publica las de fábrica más la activa—,
-así que la afinación rara aparece en él cuando te afinas a ella, que es cuando hace
-falta para dibujar bien el mástil.
+importarlas, y **la clave que propone el listado la pone el lector que dio de alta
+el perfil**, que es el mismo que va a leer la pieza: por eso es exactamente la que la
+pieza va a traer, y afinarte a lo que te dicen basta para que el carril te acepte. El
+selector del afinador no se llena por mirar canciones —publica las de fábrica más la
+activa—, así que la afinación rara aparece en él cuando te afinas a ella, que es
+cuando hace falta para dibujar bien el mástil.
 
-Un borde que queda, porque la honestidad está en los bordes: **solo Guitar Pro y la
-tablatura de texto declaran su afinación.** MIDI y MusicXML no, así que con ellos
-`coincide` es siempre `null` y la pieza se lee en tu perfil activo, cuadre o no con
-lo que el autor tocaba.
+Eso incluye el caso que lo rompía, medido de punta a punta: la misma canción en
+Drop C como `.txt` (22 trastes) y como `.gp5` (24, los que declara el archivo) son
+**dos perfiles distintos de la misma afinación**, y cada archivo propone el suyo.
+Antes la clave se volvía a deducir comparando las notas de las cuerdas y se quedaba
+con el primer perfil que encajara, así que el `.gp5` proponía el del `.txt`, el
+listado decía que estabas bien afinado y el carril contestaba 400: desde la pantalla
+no había salida, porque el perfil que la pieza traía no era elegible en ninguna
+parte. Hoy cada archivo propone el suyo y, afinándote a lo que te dice, el carril
+acepta los dos.
+
+Dos bordes que quedan, porque la honestidad está en los bordes:
+
+- **Dos perfiles de la misma afinación física piden afinarse por separado.** El de
+  22 trastes y el de 24 tienen las mismas seis cuerdas, así que pasar del `.txt` al
+  `.gp5` del ejemplo te pide un cambio de afinación que **en la guitarra no es
+  ningún cambio**: es un clic y nada que tocar. Es ruido, no un callejón sin salida,
+  y el aviso siempre lleva al perfil que el carril acepta.
+- **Solo Guitar Pro y la tablatura de texto declaran su afinación.** MIDI y MusicXML
+  no, así que con ellos `coincide` es siempre `null` y la pieza se lee en tu perfil
+  activo, cuadre o no con lo que el autor tocaba.
 
 **Poner una canción en el carril** es `POST /api/piezas/iniciar` con
 `{cancion, pista, perfil}` —el nombre del archivo, el número de pista en base 1 y,

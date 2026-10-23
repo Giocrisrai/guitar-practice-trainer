@@ -191,6 +191,12 @@ def crear_app(
     (`ANFITRIONES_LOCALES` si no se dice otra cosa); ver `guardia_de_peticiones`.
     De ahí salen DOS conjuntos y no uno: el del `Host`, tal cual se da, y el de los
     `Origin` admitidos (`_origenes_desde`), que es el mismo sin la cadena vacía.
+
+    **Hoy nadie le pasa `anfitriones`**, y se queda a propósito: es el único modo de
+    inyectar esa lista en una prueba sin tocar una constante global del módulo, que
+    es lo que hace que una prueba del guardia dependa del orden en que se ejecutan
+    los archivos. Si se borra, probar el guardia con otros nombres obliga a
+    monkeypatchear `ANFITRIONES_LOCALES`.
     """
     app = FastAPI(title="proyecto_musica")
     app.state.sesion = sesion
@@ -265,6 +271,42 @@ def crear_app(
         que exigir el puerto exacto habría roto el modo en que se desarrolla esto.
         Y distinguir puertos no defendería de nada: cualquier proceso de esta máquina
         puede hablar con el servidor sin pasar por un navegador.
+
+        Lo que este guardia NO cubre, y es una decisión escrita y no un descuido:
+        **un `GET` con efecto secundario.** La regla 2 solo mira el `Origin` en los
+        métodos que cambian algo (`METODOS_QUE_CAMBIAN`), porque da por hecho que un
+        `GET` no cambia nada, y hoy hay uno que sí:
+        `GET /api/canciones/{id}/pistas` da de alta en `PERFILES` la afinación de
+        cada pista del archivo (`desde_guitarpro._clave_de_pista`). Así que un
+        `<img src="http://127.0.0.1:8420/api/canciones/x.gp5/pistas">` de una web
+        ajena puede provocar esas escrituras: el `Host` que llega es el nuestro, de
+        modo que la regla 1 no lo para, y la respuesta no se la lleva nadie —la
+        política del navegador se la niega—, pero la escritura ocurre.
+
+        **Se deja así**, y aquí está lo que lo acota y lo que costaría cerrarlo:
+
+        - El alta es un `setdefault` en un diccionario en memoria, derivado de las
+          cuerdas del archivo. No escribe en el disco, no cambia la configuración ni
+          la afinación activa, y no quita nada: `registrar_perfil` no reemplaza una
+          entrada que ya esté. Lo peor que consigue una web ajena es dejar entradas
+          en un diccionario del proceso, y solo de archivos que ya están en la
+          biblioteca del usuario (el `{id}` se resuelve contra la carpeta).
+        - `/api/perfiles` publica las de fábrica más la ACTIVA, así que una entrada
+          colada ahí no aparece en el selector del afinador ni se puede elegir.
+        - Lo que NO se puede hacer es dejar el alta para el `POST`: la clave que
+          propone el aviso de afinación tiene que existir en `PERFILES` cuando el
+          usuario pulsa «Afinarme a…», porque `Configuracion` valida el perfil
+          contra ese registro y si no está el botón contesta 400. Registrar solo al
+          importar es exactamente el fallo que se arregló en esta etapa —el aviso no
+          funcionaba la primera vez que abrías la canción—, así que cerrar esto por
+          ahí vuelve a romperlo.
+        - El arreglo que sí cabría, si algún día molesta: exigir el `Origin` también
+          en los `GET` que mutan, con una lista explícita de esas rutas. No rompería
+          la terminal —`curl` no manda `Origin` y un `Origin` ausente se admite por
+          la regla 3—, así que el coste es la lista: hay que mantenerla a mano, y una
+          ruta que empiece a mutar y no se apunte deja el agujero abierto sin que
+          nada avise. Mientras el único efecto sea una entrada en un diccionario que
+          nadie puede elegir, esa lista cuesta más de lo que cierra.
 
         Los WebSocket no pasan por este middleware -ASGI no los enruta por aquí-,
         así que montan las mismas comprobaciones por su cuenta antes de aceptar la

@@ -348,10 +348,21 @@ def _trastes_declarados(pista: guitarpro.Track) -> int:
 def _traste_maximo(pista: guitarpro.Track) -> int:
     """El traste mas alto que pisa la pista, sin convertir nada.
 
-    Se cuenta sobre las notas `normal`, el mismo filtro que `_contar_notas` y que
-    `_convertir`: una ligadura alarga una nota que ya existe y una nota muerta no
-    entra, asi que ninguna de las dos puede aportar un traste que las normales no
-    tengan.
+    Se cuenta sobre las notas `normal`, el MISMO filtro que `_contar_notas` y que
+    `_convertir`, y eso es lo que importa: lo que se mide es el traste mas alto de
+    las notas que de verdad van a entrar en la pieza, asi que ninguna nota de la
+    pieza puede caer fuera del mastil del perfil.
+
+    No se afirma que contar las demas diera lo mismo. Para `tie` si es cierto por
+    construccion -una ligadura alarga una nota que ya existe, con su misma cuerda y
+    su mismo traste-, pero para `dead` NO: el traste de una nota muerta es el que
+    quiso quien escribio el archivo y puede ser mas alto que cualquier nota normal.
+    Una `dead` en el traste 24 de una pista que no pasa del 12 ampliaria el perfil a
+    24 trastes sin que ninguna nota de la pieza llegue ahi, y por eso no se cuenta:
+    el mastil lo fija lo que se toca. (Mutar el filtro para contar tambien las
+    no-`rest` sobrevive con la suite en verde, y es lo esperable: hoy los dos caminos
+    comparten esta funcion, asi que contar de mas no desincroniza nada, solo
+    agrandaria el perfil.)
 
     Lo usan los DOS caminos -listar y leer- y a proposito: el traste maximo entra en
     la clave del perfil a medida (`_clave_de_la_afinacion`), asi que si cada camino

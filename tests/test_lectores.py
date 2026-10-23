@@ -54,6 +54,29 @@ def test_el_rechazo_de_un_guitar_pro_moderno_dice_que_hacer(tmp_path, extension)
         importar(ruta, 1)
 
 
+def test_el_rechazo_de_un_formato_que_no_es_de_guitar_pro_no_habla_de_guitar_pro(
+    monkeypatch,
+):
+    """La frase sale de la TABLA, no esta escrita en la funcion.
+
+    Decia «la librería con la que leemos Guitar Pro no sabe abrirlos» y mandaba a
+    exportar desde Guitar Pro para CUALQUIER entrada de `NO_LEIBLES`. Hoy las dos
+    son de Guitar Pro y es verdad; una tercera habria dado una frase falsa y una
+    salida imposible. Se prueba con una tercera inventada, que es el unico modo de
+    distinguir «la frase viene del dato» de «el dato coincide con la frase».
+    """
+    monkeypatch.setitem(
+        NO_LEIBLES, ".ptb", ("Power Tab", "Vuelve a escribir la tablatura a mano.")
+    )
+    mensaje = mensaje_extension_no_valida(".ptb")
+    assert "Power Tab" in mensaje
+    assert "Vuelve a escribir la tablatura a mano." in mensaje
+    assert "Guitar Pro" not in mensaje
+    assert "TuxGuitar" not in mensaje
+    # Y los formatos que valen siguen estando: es lo accionable del mensaje.
+    assert ".gp5" in mensaje
+
+
 def test_una_extension_desconocida_se_rechaza_diciendo_cuales_valen(tmp_path):
     ruta = tmp_path / "cancion.pdf"
     ruta.write_text("x")
