@@ -12,5 +12,6 @@ config_local.json
 
 # La biblioteca de canciones del usuario. Son archivos de terceros -partituras y
 # tablaturas con derechos de autor- y no se distribuyen con el codigo: el programa
-# es software libre, su contenido no es nuestro. La carpeta se crea sola al arrancar.
+# es software libre, su contenido no es nuestro. La carpeta la crea el servidor al
+# guardar la primera cancion; antes de eso no existe.
 canciones/

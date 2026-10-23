@@ -5,16 +5,30 @@ dispositivo de audio real. Y la carpeta de canciones apunta a `tmp_path`, porque
 carpeta ES la base de datos y una prueba no debe ensuciar la del proyecto.
 """
 
+import io
+import os
+
+import mido
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
 from nucleo.captura import NOMBRE_ROCKSMITH, DispositivoAudio
 from servidor.app import crear_app
-from servidor.canciones import TAMANO_MAXIMO_BYTES, Biblioteca
+from servidor.canciones import (
+    MARGEN_MULTIPART_BYTES,
+    TAMANO_MAXIMO_BYTES,
+    Biblioteca,
+)
 from servidor.configuracion import Configuracion
 from servidor.piezas import SesionCarril
 from servidor.sesion import Sesion
+
+# El servidor solo atiende peticiones dirigidas a localhost (ver
+# `guardia_de_peticiones`), asi que las pruebas llaman por localhost y no por el
+# "testserver" que pone TestClient de serie: probar contra un anfitrion que el
+# servidor de verdad rechazaria seria probar otro servidor.
+BASE_LOCAL = "http://127.0.0.1:8420"
 
 CABLE = DispositivoAudio(3, NOMBRE_ROCKSMITH, 1, 48000.0)
 FS = 48000
@@ -59,7 +73,7 @@ def cliente(tmp_path):
     carril = SesionCarril(sesion)
     app = crear_app(sesion, carril=carril, carpeta_canciones=tmp_path / "canciones")
     app.state.ruta_config = tmp_path / "config.json"
-    with TestClient(app) as cliente:
+    with TestClient(app, base_url=BASE_LOCAL) as cliente:
         yield cliente
     carril.detener()
     sesion.detener()
@@ -127,7 +141,7 @@ def test_las_pistas_se_leen_sin_importar_la_cancion(cliente, tmp_path):
 
 def test_importar_devuelve_una_pieza_lista_para_el_carril(cliente):
     cliente.post("/api/canciones", files={"archivo": ("x.txt", TABLATURA)})
-    respuesta = cliente.post("/api/canciones/x.txt/importar", json={"pista": 0})
+    respuesta = cliente.post("/api/canciones/x.txt/importar", json={"pista": 1})
     assert respuesta.status_code == 200
     pieza = respuesta.json()
     assert pieza["notas"]
@@ -173,22 +187,47 @@ def test_una_tablatura_en_drop_d_no_coincide_y_dice_a_que_afinarse(cliente):
     assert pistas["afinacion"]["nombre"]
 
 
-def test_cada_pista_trae_el_indice_con_el_que_se_importa(cliente):
-    """`/importar` recibe el ÍNDICE (base 0), no el número que ve el usuario."""
+def test_la_pista_se_pide_con_el_numero_que_publica_pistas(cliente):
+    """Una sola numeración, la del núcleo: base 1 y ningún `indice` al lado."""
     cliente.post("/api/canciones", files={"archivo": ("x.txt", TABLATURA)})
     pista = cliente.get("/api/canciones/x.txt/pistas").json()["pistas"][0]
-    assert pista["indice"] == 0
     assert pista["numero"] == 1
+    assert "indice" not in pista
     respuesta = cliente.post(
-        "/api/canciones/x.txt/importar", json={"pista": pista["indice"]}
+        "/api/canciones/x.txt/importar", json={"pista": pista["numero"]}
     )
     assert respuesta.status_code == 200
+
+
+def test_la_pista_cero_no_existe_y_lo_dice(cliente):
+    cliente.post("/api/canciones", files={"archivo": ("x.txt", TABLATURA)})
+    respuesta = cliente.post("/api/canciones/x.txt/importar", json={"pista": 0})
+    assert respuesta.status_code == 400
+    assert "desde 1" in respuesta.json()["detail"]
+
+
+def test_el_error_de_la_pista_nombra_la_pista_que_se_pidio(cliente):
+    """Con el `+1` por medio, pedir la 99 contestaba «la pista 100 no existe»."""
+    cliente.post("/api/canciones", files={"archivo": ("x.txt", TABLATURA)})
+    detalle = cliente.post(
+        "/api/canciones/x.txt/importar", json={"pista": 99}
+    ).json()["detail"]
+    assert "99" in detalle
+    assert "100" not in detalle
+
+
+@pytest.mark.parametrize("valor", [1.9, True, "1", None, [1]])
+def test_un_numero_de_pista_que_no_es_entero_se_rechaza(cliente, valor):
+    """`int()` truncaba `1.9` y `true` a la primera pista sin avisar."""
+    cliente.post("/api/canciones", files={"archivo": ("x.txt", TABLATURA)})
+    respuesta = cliente.post("/api/canciones/x.txt/importar", json={"pista": valor})
+    assert respuesta.status_code == 400
 
 
 def test_importar_deja_abierto_el_camino_de_los_avisos(cliente):
     """Los avisos viajan junto a la pieza: hoy el ritmo aproximado, mañana más."""
     cliente.post("/api/canciones", files={"archivo": ("x.txt", TABLATURA)})
-    pieza = cliente.post("/api/canciones/x.txt/importar", json={"pista": 0}).json()
+    pieza = cliente.post("/api/canciones/x.txt/importar", json={"pista": 1}).json()
     assert any("aproximado" in aviso.lower() for aviso in pieza["avisos"])
 
 
@@ -218,7 +257,7 @@ def test_el_selector_de_afinaciones_no_se_llena_de_afinaciones_importadas(client
         b"C|-----|\n"
     )
     cliente.post("/api/canciones", files={"archivo": ("raro.txt", raro)})
-    cliente.post("/api/canciones/raro.txt/importar", json={"pista": 0})
+    cliente.post("/api/canciones/raro.txt/importar", json={"pista": 1})
     assert {p["clave"] for p in cliente.get("/api/perfiles").json()} == antes
 
 
@@ -286,11 +325,48 @@ def test_la_biblioteca_rechaza_todas_las_formas_de_salirse(tmp_path, nombre):
         biblioteca.guardar(nombre, TABLATURA)
 
 
-def test_ningun_nombre_sale_de_la_carpeta_al_leer(cliente):
-    """El `{id}` de la URL pasa por el mismo tamiz que el nombre que se sube."""
-    for nombre in ("..%2F..%2Fetc%2Fpasswd", "..%5Cfuera.txt", "%2Fetc%2Fpasswd"):
+def test_los_nombres_codificados_de_la_url_no_leen_nada(cliente, tmp_path):
+    """Ninguno de estos llega a leer un archivo, y se dice por qué cada uno.
+
+    Esta prueba NO fija el guardia: los dos primeros ni llegan al handler -el
+    enrutador ve las barras ya decodificadas y no encuentra la ruta-, así que darían
+    404 aunque `Biblioteca.ruta_de` no comprobara nada. La que sí fija el guardia es
+    `test_el_id_de_la_url_pasa_por_el_guardia`, que usa un nombre que llega entero.
+    Se queda porque el 404 del enrutador también hay que no perderlo de vista.
+    """
+    centinela = tmp_path / "centinela.txt"
+    centinela.write_bytes(TABLATURA)
+    for nombre in ("..%2F..%2Fetc%2Fpasswd", "%2Fetc%2Fpasswd", "..%5Cfuera.txt"):
         respuesta = cliente.get(f"/api/canciones/{nombre}/pistas")
         assert respuesta.status_code in (400, 404), nombre
+        assert "pistas" not in respuesta.json(), nombre
+
+
+def test_el_id_de_la_url_pasa_por_el_guardia(cliente, tmp_path):
+    """El `{id}` que SÍ llega al handler y que sin guardia leería fuera.
+
+    Es un enlace simbólico dentro de la carpeta apuntando a un centinela de fuera:
+    el nombre (`centinela.txt`) es impecable, llega al handler tal cual y el router
+    no tiene nada que objetar. Lo único que lo para es el `resolve()` +
+    `is_relative_to` de `Biblioteca.ruta_de`.
+
+    Comprobado por mutación: sustituyendo el cuerpo de `ruta_de` por
+    `return self.carpeta / identificador` -sin guardia ninguno- esta prueba falla
+    con 200 y el contenido del centinela en la respuesta, mientras las pruebas de
+    nombres codificados siguen pasando.
+    """
+    carpeta = tmp_path / "canciones"
+    carpeta.mkdir(exist_ok=True)
+    (tmp_path / "centinela.txt").write_bytes(TABLATURA)
+    (carpeta / "centinela.txt").symlink_to(tmp_path / "centinela.txt")
+
+    respuesta = cliente.get("/api/canciones/centinela.txt/pistas")
+    assert respuesta.status_code == 400
+    assert "pistas" not in respuesta.json()
+
+    assert cliente.post(
+        "/api/canciones/centinela.txt/importar", json={"pista": 1}
+    ).status_code == 400
 
 
 def test_un_enlace_simbolico_que_apunta_fuera_no_se_lee(cliente, tmp_path):
@@ -345,3 +421,241 @@ def test_la_biblioteca_cuenta_lo_que_guarda(tmp_path):
     assert entrada["id"] == "x.txt"
     assert entrada["bytes"] == len(TABLATURA)
     assert entrada["formato"] == "Tablatura de texto"
+
+
+# ---------------------------------------------------------------------------
+# Lo que el disco puede contestar: permisos, tamaño y lo que no se cuenta
+# ---------------------------------------------------------------------------
+
+
+def test_un_archivo_sin_permiso_de_lectura_no_es_un_500(cliente, tmp_path):
+    """Copiar la carpeta de canciones de otro disco deja archivos así.
+
+    `PermissionError` es hijo de `OSError` y no de `ValueError`: con una lista de
+    nombres en el `except` se escapaba como un 500, «el servidor se ha roto», que es
+    mentira y no le dice al usuario que lo que tiene que arreglar son los permisos.
+    """
+    if os.geteuid() == 0:
+        pytest.skip("root lee hasta lo que no tiene permiso")
+    cliente.post("/api/canciones", files={"archivo": ("x.txt", TABLATURA)})
+    (tmp_path / "canciones" / "x.txt").chmod(0o000)
+    try:
+        respuesta = cliente.get("/api/canciones/x.txt/pistas")
+        assert respuesta.status_code == 400
+        assert "ermis" in respuesta.json()["detail"]  # Permission / permiso
+    finally:
+        (tmp_path / "canciones" / "x.txt").chmod(0o600)
+
+
+def test_el_detalle_no_cuenta_donde_vive_la_carpeta(cliente, tmp_path):
+    """El navegador no tiene por qué saber el nombre del usuario de la máquina."""
+    if os.geteuid() == 0:
+        pytest.skip("root lee hasta lo que no tiene permiso")
+    cliente.post("/api/canciones", files={"archivo": ("x.txt", TABLATURA)})
+    (tmp_path / "canciones" / "x.txt").chmod(0o000)
+    try:
+        detalle = cliente.get("/api/canciones/x.txt/pistas").json()["detail"]
+        assert str(tmp_path) not in detalle
+        assert "x.txt" in detalle
+    finally:
+        (tmp_path / "canciones" / "x.txt").chmod(0o600)
+
+
+def test_el_tamano_que_se_rechaza_es_el_de_verdad(cliente):
+    """`archivo.size` ya lo sabe antes de leer: el mensaje no dice «al menos»."""
+    grande = b"x" * (TAMANO_MAXIMO_BYTES + 1024)
+    respuesta = cliente.post("/api/canciones", files={"archivo": ("x.mid", grande)})
+    assert respuesta.status_code == 400
+    assert str(TAMANO_MAXIMO_BYTES + 1024) in respuesta.json()["detail"]
+
+
+def test_una_peticion_que_se_declara_enorme_no_se_parsea(cliente, tmp_path):
+    """La puerta de `Content-Length`: lo único que corta antes del multipart.
+
+    Starlette recibe el cuerpo entero y lo vuelca a un temporal ANTES de que el
+    handler empiece, así que el techo del handler no evita recibir nada. Esto sí:
+    con el tamaño ya declarado en la cabecera, se contesta sin parsear el cuerpo.
+    """
+    cuerpo = b"x" * (TAMANO_MAXIMO_BYTES + MARGEN_MULTIPART_BYTES + 1)
+    respuesta = cliente.post(
+        "/api/canciones",
+        content=cuerpo,
+        headers={"content-type": "multipart/form-data; boundary=abc"},
+    )
+    assert respuesta.status_code == 400
+    assert "No la leo" in respuesta.json()["detail"]
+    assert _vacia(tmp_path / "canciones")
+
+
+# ---------------------------------------------------------------------------
+# La afinación que el archivo no declara, y el selector que la ofrece
+# ---------------------------------------------------------------------------
+
+
+def _midi_de_una_nota() -> bytes:
+    pista = mido.MidiTrack()
+    pista.append(mido.Message("program_change", program=27, time=0))
+    pista.append(mido.Message("note_on", note=52, velocity=80, time=0))
+    pista.append(mido.Message("note_off", note=52, velocity=0, time=480))
+    archivo = mido.MidiFile()
+    archivo.tracks.append(pista)
+    memoria = io.BytesIO()
+    archivo.save(file=memoria)
+    return memoria.getvalue()
+
+
+def test_un_midi_no_declara_afinacion_y_coincide_no_es_false(cliente):
+    """`False` decía «no cuadra, aféinate a null» sin que hubiera nada que arreglar.
+
+    Y la prueba de que no había nada que arreglar: la misma canción se importa y
+    sale en el perfil ACTIVO, que es justo el que el carril acepta.
+    """
+    cliente.post("/api/canciones", files={"archivo": ("x.mid", _midi_de_una_nota())})
+    pistas = cliente.get("/api/canciones/x.mid/pistas").json()
+    assert pistas["afinacion"]["declarada"] is False
+    assert pistas["afinacion"]["clave"] is None
+    assert pistas["coincide"] is None
+
+    pieza = cliente.post("/api/canciones/x.mid/importar", json={"pista": 1}).json()
+    assert pieza["perfil"] == pistas["perfil_activo"]
+
+
+def test_una_tablatura_declara_su_afinacion(cliente):
+    cliente.post("/api/canciones", files={"archivo": ("x.txt", TABLATURA)})
+    assert cliente.get("/api/canciones/x.txt/pistas").json()["afinacion"]["declarada"]
+
+
+def test_el_selector_ofrece_el_perfil_activo_aunque_no_sea_de_fabrica(cliente):
+    """Nunca se deja al usuario con una afinación que no puede elegir.
+
+    `/pistas` propone la clave de la afinación rara, `PUT /api/config` la acepta, y
+    entonces el selector tenía que poder mostrarla: si no, el afinador queda con un
+    perfil que la lista no incluye y sin forma de volver.
+    """
+    raro = (
+        b"e|--0--|\n"
+        b"B|-----|\n"
+        b"G|-----|\n"
+        b"F|-----|\n"
+        b"C|-----|\n"
+        b"C|-----|\n"
+    )
+    cliente.post("/api/canciones", files={"archivo": ("raro.txt", raro)})
+    clave = cliente.get("/api/canciones/raro.txt/pistas").json()["afinacion"]["clave"]
+    assert clave is not None and clave.startswith("a_medida_")
+
+    # Antes de elegirla, no está en el selector: no crece con cada importación.
+    assert clave not in {p["clave"] for p in cliente.get("/api/perfiles").json()}
+
+    assert cliente.put("/api/config", json={"perfil": clave}).status_code == 200
+    perfiles = cliente.get("/api/perfiles").json()
+    assert clave in {p["clave"] for p in perfiles}
+    assert "guitarra_estandar" in {p["clave"] for p in perfiles}
+
+
+# ---------------------------------------------------------------------------
+# El guardia de peticiones: CSRF y rebinding de DNS
+# ---------------------------------------------------------------------------
+
+
+def test_una_web_ajena_no_puede_subir_nada(cliente, tmp_path):
+    respuesta = cliente.post(
+        "/api/canciones",
+        files={"archivo": ("x.txt", TABLATURA)},
+        headers={"origin": "https://sitio.ajeno.example"},
+    )
+    assert respuesta.status_code == 403
+    assert _vacia(tmp_path / "canciones")
+
+
+def test_el_origen_propio_si_puede_subir(cliente):
+    respuesta = cliente.post(
+        "/api/canciones",
+        files={"archivo": ("x.txt", TABLATURA)},
+        headers={"origin": "http://127.0.0.1:8420"},
+    )
+    assert respuesta.status_code == 200
+
+
+def test_sin_origen_se_deja_pasar_porque_es_curl(cliente):
+    """`curl` y los scripts no mandan `Origin`; un navegador no puede omitirla."""
+    respuesta = cliente.post("/api/canciones", files={"archivo": ("x.txt", TABLATURA)})
+    assert respuesta.status_code == 200
+    assert "origin" not in {k.lower() for k in respuesta.request.headers}
+
+
+def test_una_web_ajena_tampoco_puede_cambiar_la_afinacion(cliente):
+    """La guarda es de TODOS los métodos que cambian estado, no solo de la subida."""
+    respuesta = cliente.put(
+        "/api/config",
+        json={"perfil": "guitarra_drop_d"},
+        headers={"origin": "https://sitio.ajeno.example"},
+    )
+    assert respuesta.status_code == 403
+
+
+def test_un_host_que_no_es_el_nuestro_no_se_atiende(cliente):
+    """Rebinding de DNS: el `Host` es lo único que lo delata, también en los GET."""
+    assert cliente.get("/api/canciones", headers={"host": "ajeno.example"}).status_code == 400
+    assert cliente.get("/api/canciones", headers={"host": "localhost:8420"}).status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Nombres equivalentes, un solo destino
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("nombre", ["x.txt ", " x.txt", "  x.txt  "])
+def test_los_espacios_del_nombre_no_cambian_el_destino(cliente, nombre):
+    """Antes `'x.txt '` daba 400 y `' x.txt'` se guardaba como `'x.txt'`, pisando.
+
+    El tabulador no se prueba por HTTP: el cliente lo manda porcentajeado
+    (`x.txt%09`), que es otro nombre. Va en la prueba de `Biblioteca`.
+    """
+    respuesta = cliente.post("/api/canciones", files={"archivo": (nombre, TABLATURA)})
+    assert respuesta.status_code == 200
+    assert respuesta.json()["id"] == "x.txt"
+
+
+@pytest.mark.parametrize("nombre", ["x.txt ", " x.txt", "x.txt\t", "\nx.txt"])
+def test_la_biblioteca_guarda_los_nombres_con_espacios_en_un_solo_sitio(
+    tmp_path, nombre
+):
+    biblioteca = Biblioteca(tmp_path / "canciones")
+    assert biblioteca.guardar(nombre, TABLATURA)["id"] == "x.txt"
+
+
+def test_subir_el_mismo_nombre_con_otras_mayusculas_no_pisa_nada(cliente, tmp_path):
+    """En macOS `X.TXT` y `x.txt` son el mismo archivo: pisarlo es perder datos."""
+    cliente.post("/api/canciones", files={"archivo": ("x.txt", TABLATURA)})
+    respuesta = cliente.post(
+        "/api/canciones", files={"archivo": ("X.TXT", b"basura que no es tablatura")}
+    )
+    assert respuesta.status_code == 400
+    assert "x.txt" in respuesta.json()["detail"]
+    assert (tmp_path / "canciones" / "x.txt").read_bytes() == TABLATURA
+
+
+def test_subir_el_mismo_nombre_exacto_si_reemplaza(cliente, tmp_path):
+    """Es lo que el usuario pide cuando vuelve a subir la canción corregida."""
+    cliente.post("/api/canciones", files={"archivo": ("x.txt", TABLATURA)})
+    otra = TABLATURA.replace(b"--0--2--", b"--3--5--")
+    assert (
+        cliente.post("/api/canciones", files={"archivo": ("x.txt", otra)}).status_code
+        == 200
+    )
+    assert (tmp_path / "canciones" / "x.txt").read_bytes() == otra
+
+
+def test_el_servidor_de_desarrollo_de_la_interfaz_puede_subir(cliente):
+    """Vite sirve la interfaz en `localhost:5173` y hace de proxy al 8420.
+
+    Se compara el nombre y no el puerto: exigir el puerto exacto habría roto el modo
+    en que se desarrolla esto, y no defendería de nada.
+    """
+    respuesta = cliente.post(
+        "/api/canciones",
+        files={"archivo": ("x.txt", TABLATURA)},
+        headers={"origin": "http://localhost:5173"},
+    )
+    assert respuesta.status_code == 200

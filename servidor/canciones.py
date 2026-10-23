@@ -26,15 +26,27 @@ from nucleo.piezas.lectores import FORMATOS
 #
 # No es un límite de disco, es un límite de confianza: una partitura de Guitar Pro
 # de una canción entera ocupa decenas de kilobytes y un MIDI algo menos, así que
-# diez megas ya son dos órdenes de magnitud de margen. Lo que para de verdad es que
-# el cuerpo de una petición no se coma la memoria del servidor: se cuenta mientras
-# se lee y se corta en cuanto se pasa, sin esperar a tener el archivo entero.
+# diez megas ya son dos órdenes de magnitud de margen.
+#
+# Qué limita de verdad y qué no, medido y sin adornos: cuando el handler empieza a
+# correr, Starlette YA ha recibido el cuerpo entero y el `SpooledTemporaryFile` del
+# `UploadFile` ya está volcado a disco. Así que este techo no evita recibir el
+# archivo; evita leerlo a memoria y dejarlo en la biblioteca. Lo que sí corta antes
+# de parsear nada es la puerta de `Content-Length` del guardia de peticiones
+# (`servidor/app.py`), y aun esa no impide que el cuerpo viaje por el cable.
 TAMANO_MAXIMO_BYTES = 10 * 1024 * 1024
 
 # Cuánto se lee de golpe al recibir una subida. Un megabyte es bastante para que la
 # lectura no sea un ir y venir de trozos pequeños y poco para que el techo de arriba
 # se note en la memoria.
 TROZO_BYTES = 1024 * 1024
+
+# Lo que se le perdona a una petición de subida por encima del propio archivo: las
+# cabeceras de la parte multipart, el separador y el nombre. Doscientos bytes bastan
+# de sobra; 64 KiB es para no rechazar nunca un archivo bueno por la cuenta de los
+# bytes del sobre, que es un error peor que admitir una petición un pelo más grande
+# (al archivo lo mide después, exactamente, `comprobar_tamano`).
+MARGEN_MULTIPART_BYTES = 64 * 1024
 
 # La carpeta de producción: `canciones/` junto al código, igual que `interfaz/dist`
 # (ver `servidor/arranque.py`), y no relativa al directorio de trabajo. Si dependiera
@@ -198,21 +210,45 @@ class Biblioteca:
         """
         ruta = self.ruta_de(nombre)
         formato = formato_de(ruta.name)
-        if len(datos) > TAMANO_MAXIMO_BYTES:
-            raise ValueError(_mensaje_demasiado_grande(len(datos)))
+        comprobar_tamano(len(datos))
         if not datos:
             raise ValueError(f"'{ruta.name}' llegó vacío.")
+        self._comprobar_colision_de_mayusculas(ruta.name)
         self.carpeta.mkdir(parents=True, exist_ok=True)
         ruta.write_bytes(datos)
         return self._entrada(ruta.name, formato, ruta)
+
+    def _comprobar_colision_de_mayusculas(self, nombre: str) -> None:
+        """Rechaza `X.TXT` cuando ya hay un `x.txt`, en vez de pisarlo.
+
+        En macOS -y en Windows- el sistema de archivos no distingue mayúsculas, así
+        que `X.TXT` y `x.txt` son el MISMO archivo y guardar uno borra el otro sin
+        decir nada. Eso es pérdida de datos silenciosa: el usuario ve dos canciones
+        en su escritorio, sube las dos y en la biblioteca solo queda la segunda.
+        Reemplazar el mismo nombre exacto sí se permite; es lo que el usuario pide
+        cuando vuelve a subir una canción corregida.
+        """
+        if not self.carpeta.is_dir():
+            return
+        for existente in self.carpeta.iterdir():
+            if existente.name.lower() == nombre.lower() and existente.name != nombre:
+                raise ValueError(
+                    f"Ya tengo una canción llamada '{existente.name}', que en este "
+                    f"disco es el mismo archivo que '{nombre}'. Si quieres "
+                    f"reemplazarla, súbela con su nombre exacto; si son dos "
+                    f"canciones distintas, cámbiale el nombre a una."
+                )
+
+
 
 
 async def leer_subida(leer) -> bytes:
     """El cuerpo de una subida, cortando en cuanto pasa del techo.
 
-    `leer` es la lectura por trozos del archivo subido (`UploadFile.read`). Se cuenta
-    mientras se lee en vez de pedir el archivo entero y medirlo después: así un
-    archivo de un giga se rechaza con un mega en memoria, y no con un giga.
+    `leer` es la lectura por trozos del archivo subido (`UploadFile.read`). Es la
+    SEGUNDA red: la primera es `comprobar_tamano(archivo.size)`, que ya sabe el
+    tamaño exacto antes de leer nada. Esta queda para cuando no hay tamaño declarado,
+    y cuenta mientras lee para no traer a memoria más de un trozo de más.
     """
     trozos: list[bytes] = []
     total = 0
@@ -221,8 +257,7 @@ async def leer_subida(leer) -> bytes:
         if not trozo:
             return b"".join(trozos)
         total += len(trozo)
-        if total > TAMANO_MAXIMO_BYTES:
-            raise ValueError(_mensaje_demasiado_grande(total))
+        comprobar_tamano(total)
         trozos.append(trozo)
 
 
@@ -246,6 +281,12 @@ def afinacion_de(cuerdas_midi) -> dict:
     notas. None es la respuesta honesta: no hay perfil al que afinarse todavía, y
     fabricar uno aquí ensuciaría el registro con afinaciones que nadie ha importado.
 
+    `declarada` dice si el ARCHIVO trae afinación. MIDI y MusicXML sin tablatura no
+    la traen (`cuerdas_midi` vacío), y entonces no hay nada a lo que afinarse: la
+    pieza se importará en el perfil activo y el carril la aceptará. Quien pregunte
+    tiene que poder distinguir "pide otra afinación" de "no pide ninguna", porque si
+    no la pantalla acaba diciendo «no cuadra, aféinate a null».
+
     El ORDEN del archivo no se usa para identificar la afinación: los lectores
     entregan las cuerdas como las trae el archivo, y una afinación es el juego de
     cuerdas, no su orden. Se comparan ordenadas de grave a aguda.
@@ -257,7 +298,12 @@ def afinacion_de(cuerdas_midi) -> dict:
 
     midis = tuple(sorted(cuerdas_midi))
     if not midis:
-        return {"clave": None, "nombre": "Afinación desconocida", "cuerdas_midi": []}
+        return {
+            "clave": None,
+            "nombre": "El archivo no dice en qué afinación está",
+            "cuerdas_midi": [],
+            "declarada": False,
+        }
     clave = clave_de_perfil(perfil_desde_midis("De la canción", midis))
     if clave is None:
         clave = _clave_en_registro(PERFILES, midis, midi_de_nombre)
@@ -265,7 +311,12 @@ def afinacion_de(cuerdas_midi) -> dict:
         nombre = PERFILES[clave].nombre
     else:
         nombre = "Afinación " + " ".join(nombre_de_midi(midi) for midi in midis)
-    return {"clave": clave, "nombre": nombre, "cuerdas_midi": list(midis)}
+    return {
+        "clave": clave,
+        "nombre": nombre,
+        "cuerdas_midi": list(midis),
+        "declarada": True,
+    }
 
 
 def _clave_en_registro(perfiles: dict, midis: tuple[int, ...], midi_de_nombre) -> str | None:
@@ -281,10 +332,16 @@ def _clave_en_registro(perfiles: dict, midis: tuple[int, ...], midi_de_nombre) -
     return None
 
 
+def comprobar_tamano(medidos: int) -> None:
+    """Lanza `ValueError` si `medidos` pasa del techo, con el número de verdad."""
+    if medidos > TAMANO_MAXIMO_BYTES:
+        raise ValueError(_mensaje_demasiado_grande(medidos))
+
+
 def _mensaje_demasiado_grande(medidos: int) -> str:
     megas = TAMANO_MAXIMO_BYTES // (1024 * 1024)
     return (
         f"El archivo pasa de {megas} MB ({TAMANO_MAXIMO_BYTES} bytes) y no lo acepto; "
-        f"este trae al menos {medidos} bytes. Una partitura de una canción entera "
-        f"ocupa muchísimo menos."
+        f"este trae {medidos} bytes. Una partitura de una canción entera ocupa "
+        f"muchísimo menos."
     )

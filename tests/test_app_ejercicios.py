@@ -9,6 +9,12 @@ from servidor.configuracion import Configuracion
 from servidor.ejercicios import SesionPractica
 from servidor.sesion import Sesion
 
+# El servidor solo atiende peticiones dirigidas a localhost (ver
+# `guardia_de_peticiones`), asi que las pruebas llaman por localhost y no por el
+# "testserver" que pone TestClient de serie: probar contra un anfitrion que el
+# servidor de verdad rechazaria seria probar otro servidor.
+BASE_LOCAL = "http://127.0.0.1:8420"
+
 CABLE = DispositivoAudio(3, NOMBRE_ROCKSMITH, 1, 48000.0)
 FS = 48000
 
@@ -58,7 +64,7 @@ def cliente(tmp_path):
     )
     app = crear_app(sesion, practica=practica)
     app.state.ruta_config = tmp_path / "config.json"
-    with TestClient(app) as cliente:
+    with TestClient(app, base_url=BASE_LOCAL) as cliente:
         yield cliente
     practica.detener()
     sesion.detener()

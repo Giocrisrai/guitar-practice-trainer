@@ -10,6 +10,12 @@ from servidor.app import crear_app
 from servidor.configuracion import Configuracion
 from servidor.sesion import Sesion
 
+# El servidor solo atiende peticiones dirigidas a localhost (ver
+# `guardia_de_peticiones`), asi que las pruebas llaman por localhost y no por el
+# "testserver" que pone TestClient de serie: probar contra un anfitrion que el
+# servidor de verdad rechazaria seria probar otro servidor.
+BASE_LOCAL = "http://127.0.0.1:8420"
+
 CABLE = DispositivoAudio(3, NOMBRE_ROCKSMITH, 1, 48000.0)
 FS = 48000
 
@@ -49,7 +55,7 @@ def cliente(tmp_path):
     sesion.iniciar()
     app = crear_app(sesion)
     app.state.ruta_config = tmp_path / "config.json"
-    with TestClient(app) as cliente:
+    with TestClient(app, base_url=BASE_LOCAL) as cliente:
         yield cliente
     sesion.detener()
 
@@ -159,7 +165,7 @@ def test_el_mensaje_de_silencio_tiene_la_misma_forma_que_el_del_analisis(tmp_pat
         estado="silencio", frecuencia=0.0, confianza=0.0, nivel_db=-120.0
     ).a_dict()
 
-    with TestClient(app) as cliente:
+    with TestClient(app, base_url=BASE_LOCAL) as cliente:
         with cliente.websocket_connect("/ws/notas") as socket:
             mensaje = socket.receive_json()
 

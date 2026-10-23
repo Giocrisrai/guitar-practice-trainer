@@ -5,8 +5,19 @@ Capa fina. No calcula nada musical: solo publica lo que la sesión ya produce.
 
 import asyncio
 from pathlib import Path
+from urllib.parse import urlsplit
 
-from fastapi import Body, FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import (
+    Body,
+    FastAPI,
+    File,
+    HTTPException,
+    Request,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from nucleo.afinaciones import PERFILES, PERFILES_DE_FABRICA
@@ -15,7 +26,15 @@ from nucleo.ejercicios.teoria import ACORDES, ESCALAS, INTERVALOS
 from nucleo.piezas.desde_ejercicio import pieza_desde_ejercicio
 from nucleo.piezas.lectores import importar, pistas_de_archivo
 from servidor import configuracion as config_modulo
-from servidor.canciones import Biblioteca, afinacion_de, formato_de, leer_subida
+from servidor.canciones import (
+    MARGEN_MULTIPART_BYTES,
+    TAMANO_MAXIMO_BYTES,
+    Biblioteca,
+    afinacion_de,
+    comprobar_tamano,
+    formato_de,
+    leer_subida,
+)
 from servidor.ejercicios import SesionPractica
 from servidor.modulos import listar_modulos
 from servidor.piezas import SesionCarril
@@ -24,6 +43,65 @@ from servidor.sesion import Sesion
 # La pantalla no muestra más rápido que esto. Emitir más solo añadiría cola y, con
 # ella, retardo entre lo que se toca y lo que se ve.
 FRECUENCIA_EMISION = 30.0
+
+# Los nombres con los que se puede llamar a este servidor.
+#
+# Esto es lo que corta el **rebinding de DNS**: el servidor escucha en
+# 127.0.0.1:8420, y una web cualquiera no puede leer su respuesta por la política del
+# navegador... salvo que su dominio apunte a 127.0.0.1, y entonces el navegador cree
+# que sigue hablando con `evil.com` y le deja leerlo todo. Lo único que delata ese
+# ataque es la cabecera `Host`, que llega con el nombre del atacante y no con el
+# nuestro. Así que un `Host` que no sea uno de estos no se atiende.
+ANFITRIONES_LOCALES = frozenset(
+    {"localhost", "127.0.0.1", "::1", "[::1]", "0.0.0.0", ""}
+)
+
+# Los métodos que CAMBIAN algo y por tanto necesitan que el origen sea el nuestro.
+METODOS_QUE_CAMBIAN = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+
+def _solo_nombre(autoridad: str) -> str:
+    """El nombre de una autoridad `host:puerto`, en minúsculas y sin el puerto.
+
+    Los corchetes de una IPv6 se conservan (`[::1]:8420` -> `[::1]`) y una IPv6 sin
+    corchetes ni puerto se devuelve entera: cortar por el último `:` la partiría.
+    """
+    autoridad = autoridad.strip().lower()
+    if autoridad.startswith("["):
+        return autoridad.split("]")[0] + "]"
+    if autoridad.count(":") > 1:
+        return autoridad
+    return autoridad.rsplit(":", 1)[0] if ":" in autoridad else autoridad
+
+
+def _numero_de_pista(valor) -> int:
+    """`valor` como número de pista (base 1), o `ValueError` diciendo qué pasa.
+
+    Se exige un entero de verdad y no se convierte nada: `int()` aceptaba `1.9` y
+    `true` y los truncaba a 1 sin avisar, así que pedir la pista 1,9 -un error de
+    quien llama- importaba la primera como si lo hubiera pedido bien. Y un `"2"` de
+    texto se rechaza a propósito: en JSON un número se escribe sin comillas, y
+    adivinar lo que quiso decir quien no sigue el formato es cómo se acaba
+    adivinando mal.
+    """
+    if isinstance(valor, bool) or not isinstance(valor, int):
+        raise ValueError(
+            f"La pista se pide con un número entero, y me llegó {valor!r}."
+        )
+    if valor < 1:
+        raise ValueError(
+            f"Las pistas se numeran desde 1, así que la {valor} no existe."
+        )
+    return valor
+
+
+def _mensaje_peticion_enorme(declarados: int) -> str:
+    megas = TAMANO_MAXIMO_BYTES // (1024 * 1024)
+    return (
+        f"La petición declara {declarados} bytes y el máximo por archivo son "
+        f"{megas} MB ({TAMANO_MAXIMO_BYTES} bytes). No la leo."
+    )
+
 
 # Lo que se emite mientras el análisis todavía no ha producido nada.
 SILENCIO_INICIAL = ResultadoAnalisis(
@@ -37,11 +115,15 @@ def crear_app(
     practica: SesionPractica | None = None,
     carril: SesionCarril | None = None,
     carpeta_canciones: Path | None = None,
+    anfitriones: set[str] | None = None,
 ) -> FastAPI:
     """Construye la aplicación alrededor de una sesión ya creada.
 
     `carpeta_canciones` es la biblioteca: `canciones/` si no se dice otra cosa, y
     `tmp_path` en las pruebas, para que ninguna ensucie la carpeta del proyecto.
+
+    `anfitriones` son los nombres por los que se admite que llamen al servidor
+    (`ANFITRIONES_LOCALES` si no se dice otra cosa); ver `guardia_de_peticiones`.
     """
     app = FastAPI(title="proyecto_musica")
     app.state.sesion = sesion
@@ -51,6 +133,77 @@ def crear_app(
     app.state.biblioteca = (
         Biblioteca(carpeta_canciones) if carpeta_canciones is not None else Biblioteca()
     )
+    app.state.anfitriones = set(anfitriones or ANFITRIONES_LOCALES)
+
+    @app.middleware("http")
+    async def guardia_de_peticiones(peticion: Request, siguiente):
+        """Rechaza lo que no viene de esta máquina, antes de mirar qué pide.
+
+        El servidor escucha en localhost y no pide contraseña: cualquier web que el
+        usuario visite mientras practica puede mandarle un `POST` a
+        `127.0.0.1:8420` y cambiarle la afinación, detenerle la pieza o subirle un
+        archivo. Eso es CSRF, y aquí se corta en tres reglas:
+
+        1. **`Host` tiene que ser localhost.** Es lo único que delata el rebinding
+           de DNS (ver `ANFITRIONES_LOCALES`). Vale para TODOS los métodos, también
+           los `GET`: con el rebinding, un `GET` ya se lleva la lista de canciones.
+        2. **Si viene `Origin`, tiene que ser el nuestro.** El navegador la pone
+           siempre en las peticiones que cambian estado y NO deja que la página la
+           falsee, así que un `Origin: https://cualquier.sitio` es exactamente el
+           ataque y se rechaza con 403.
+        3. **Si no viene `Origin`, se deja pasar.** No es un descuido: `curl`, los
+           scripts y las herramientas de línea de comandos no la mandan, y son el
+           modo normal de usar este servidor desde la terminal. Un navegador no
+           puede omitirla en una petición que cambia estado, así que dejarla pasar
+           no abre la puerta que acabamos de cerrar.
+
+        Se compara el NOMBRE y no el puerto, a propósito: el servidor de desarrollo
+        de la interfaz vive en `localhost:5173` y hace de proxy hacia el 8420, así
+        que exigir el puerto exacto habría roto el modo en que se desarrolla esto.
+        Y distinguir puertos no defendería de nada: cualquier proceso de esta máquina
+        puede hablar con el servidor sin pasar por un navegador.
+
+        Lo que esto NO cubre: los WebSocket, que no pasan por el middleware `http`
+        y además no están sujetos a la política de orígenes del navegador. Solo
+        emiten estado, pero esa puerta sigue abierta y hay que cerrarla aparte.
+
+        De paso, la puerta de `Content-Length`: una subida que ya se declara más
+        grande que el techo se rechaza aquí, antes de que el parseador de multipart
+        reciba el cuerpo y lo vuelque a un archivo temporal.
+        """
+        anfitrion = _solo_nombre(peticion.headers.get("host", ""))
+        if anfitrion not in app.state.anfitriones:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "detail": (
+                        f"No atiendo peticiones dirigidas a '{anfitrion}'. Este "
+                        f"servidor es local: llámalo por localhost."
+                    )
+                },
+            )
+        origen = peticion.headers.get("origin")
+        if (
+            peticion.method in METODOS_QUE_CAMBIAN
+            and origen is not None
+            and _solo_nombre(urlsplit(origen).netloc) not in app.state.anfitriones
+        ):
+            return JSONResponse(
+                status_code=403,
+                content={
+                    "detail": (
+                        f"'{origen}' no es esta máquina y no puede cambiar nada aquí."
+                    )
+                },
+            )
+        declarado = peticion.headers.get("content-length")
+        if declarado is not None and declarado.isdigit():
+            if int(declarado) > TAMANO_MAXIMO_BYTES + MARGEN_MULTIPART_BYTES:
+                return JSONResponse(
+                    status_code=400,
+                    content={"detail": _mensaje_peticion_enorme(int(declarado))},
+                )
+        return await siguiente(peticion)
 
     @app.get("/api/modulos")
     def leer_modulos() -> list[dict]:
@@ -61,14 +214,25 @@ def crear_app(
     def leer_perfiles() -> list[dict]:
         """Perfiles de afinación con sus cuerdas, para dibujar el mástil.
 
-        Se publican los DE FÁBRICA, no el registro vivo `PERFILES`. El registro vivo
-        crece cada vez que se importa una canción en una afinación rara
-        (`registrar_perfil`), así que publicarlo entero llenaba el selector del
-        afinador de entradas como «Afinación C2 G2 C3 F3 A3 D4 (24 trastes)»: una
-        afinación que el usuario no eligió, que no sabe de dónde salió y a la que
-        nadie quiere afinarse. El registro vivo sigue existiendo para lo que es,
-        resolver la clave de la afinación que pide una canción (ver `afinacion_de`).
+        Se publican los DE FÁBRICA **más el perfil activo si no es de fábrica**, y no
+        el registro vivo `PERFILES` entero.
+
+        Por qué no el registro vivo: crece cada vez que se importa una canción en una
+        afinación rara (`registrar_perfil`), así que publicarlo entero llenaba el
+        selector del afinador de entradas como «Afinación C2 G2 C3 F3 A3 D4 (24
+        trastes)»: una afinación que el usuario no eligió y a la que nadie quiere
+        afinarse.
+
+        Por qué el activo además: `/pistas` propone la clave de la afinación que pide
+        la canción, `PUT /api/config` la acepta, y entonces el afinador se quedaba con
+        un perfil que esta lista no incluía. El usuario veía su mástil en Drop C y el
+        selector sin ninguna opción marcada, sin forma de volver: la lista de lo
+        elegible tiene que contener, como mínimo, lo que está elegido.
         """
+        activo = app.state.sesion.configuracion.perfil
+        perfiles = dict(PERFILES_DE_FABRICA)
+        if activo not in perfiles and activo in PERFILES:
+            perfiles[activo] = PERFILES[activo]
         return [
             {
                 "clave": clave,
@@ -79,7 +243,7 @@ def crear_app(
                     for c in perfil.cuerdas
                 ],
             }
-            for clave, perfil in PERFILES_DE_FABRICA.items()
+            for clave, perfil in perfiles.items()
         ]
 
     @app.get("/api/dispositivos")
@@ -354,24 +518,41 @@ def crear_app(
             )
         return ruta
 
+    def _sin_rutas(texto: str) -> str:
+        """El mensaje sin la ruta absoluta de la carpeta de canciones.
+
+        Los mensajes del sistema -y algunos de los lectores- traen la ruta entera
+        (`[Errno 13] Permission denied: '/Users/quien-sea/.../canciones/x.gp5'`).
+        Decirle al navegador dónde vive la carpeta y cómo se llama el usuario de la
+        máquina no le sirve de nada y se lo cuenta a cualquiera que mire la
+        respuesta. El nombre del archivo sí, que es lo que el usuario reconoce.
+        """
+        carpeta = str(app.state.biblioteca.carpeta.resolve())
+        return texto.replace(carpeta + "/", "").replace(carpeta, "")
+
     def _leer_o_400(accion):
         """Ejecuta una lectura de archivo y traduce sus fallos a un 400.
 
-        Se capturan tres excepciones y ninguna sobra:
+        Se capturan tres cosas y ninguna sobra:
 
         - `ValueError`: lo que lanzan los lectores cuando el archivo no sirve o la
           pista pedida no existe, ya con el mensaje escrito para el usuario.
         - `TypeError`: un parámetro con un tipo que no es el suyo sale de Python
           así, igual que en `_generar_o_400`. Es un pedido mal hecho, no una rotura.
-        - `FileNotFoundError`: los lectores de `.txt` y `.tab` leen el archivo
-          directamente y, si desaparece entre la comprobación y la lectura, lanzan
-          esto y no `ValueError` como los otros tres formatos. Capturar solo
-          `ValueError` dejaba ese único caso escapándose como un 500.
+        - `OSError`: **la clase, no una lista de nombres**. Los lectores de `.txt` y
+          `.tab` abren el archivo ellos mismos, así que de aquí sale todo lo que el
+          disco puede decir: `FileNotFoundError` si desapareció entre la
+          comprobación y la lectura, `PermissionError` si el archivo llegó de otro
+          disco sin permiso de lectura -que es de lo más normal al copiar una
+          carpeta de canciones-, `IsADirectoryError`, un error de entrada/salida.
+          Antes había una lista nominal con dos de esos nombres y `PermissionError`
+          se escapaba como un 500, es decir, «el servidor se ha roto»: mentira, y
+          no le decía al usuario que lo que tiene que arreglar son los permisos.
         """
         try:
             return accion()
-        except (ValueError, TypeError, FileNotFoundError) as error:
-            raise HTTPException(status_code=400, detail=str(error))
+        except (ValueError, TypeError, OSError) as error:
+            raise HTTPException(status_code=400, detail=_sin_rutas(str(error)))
 
     def _avisos_de(pieza) -> list[str]:
         """Lo que hay que advertir de una pieza recién importada, en frases.
@@ -399,20 +580,49 @@ def crear_app(
     async def subir_cancion(archivo: UploadFile = File(...)) -> dict:
         """Guarda un archivo en la carpeta y devuelve su ficha.
 
-        El nombre y el formato se validan ANTES de leer el cuerpo: un `.pdf` se
-        rechaza sin haber traído un solo byte a la memoria.
+        El nombre, el formato y el tamaño se comprueban antes de LEER el archivo, y
+        el tamaño se mira en `archivo.size`, que ya es el de verdad.
+
+        Lo que no hay que creerse: cuando esta función empieza, Starlette ya ha
+        recibido el cuerpo entero y el archivo temporal del `UploadFile` ya está
+        volcado al disco. Así que «rechazar antes de leer» significa antes de
+        traerlo a memoria y antes de dejarlo en la biblioteca, no antes de
+        recibirlo: un `.pdf` de 100 MB se rechaza con 400 cuando los 100 MB ya han
+        llegado. Lo único que corta antes es la puerta de `Content-Length` del
+        guardia de peticiones. Decirlo importa porque la versión anterior de este
+        docstring prometía que no se traía «un solo byte», y era falso.
+
+        El nombre que se usa es el SANEADO (`ruta.name`), el mismo con el que se va
+        a guardar, y no el que llegó. Antes el formato se comprobaba sobre el crudo
+        y el archivo se guardaba con el saneado, así que `'x.txt '` daba 400 por su
+        extensión `'.txt '` mientras `' x.txt'` pasaba y se guardaba como `'x.txt'`,
+        pisando lo que hubiera: dos nombres equivalentes, dos destinos distintos.
         """
-        nombre = archivo.filename or ""
         try:
-            app.state.biblioteca.ruta_de(nombre)
+            nombre = app.state.biblioteca.ruta_de(archivo.filename or "").name
             formato_de(nombre)
+            if archivo.size is not None:
+                comprobar_tamano(archivo.size)
         except ValueError as error:
-            raise HTTPException(status_code=400, detail=str(error))
+            raise HTTPException(status_code=400, detail=_sin_rutas(str(error)))
         try:
             datos = await leer_subida(archivo.read)
             return app.state.biblioteca.guardar(nombre, datos)
         except ValueError as error:
-            raise HTTPException(status_code=400, detail=str(error))
+            raise HTTPException(status_code=400, detail=_sin_rutas(str(error)))
+        except OSError as error:
+            # Escribir falló: disco lleno, permisos de la carpeta, un nombre que el
+            # sistema no acepta. No es culpa de quien subió el archivo, así que es un
+            # 500 y no un 400, pero con un mensaje que se pueda leer.
+            raise HTTPException(
+                status_code=500,
+                detail=_sin_rutas(f"No pude guardar '{nombre}': {error}"),
+            )
+        finally:
+            # Cierra el archivo temporal del `UploadFile`. Sin esto, cada subida deja
+            # un descriptor abierto -y un archivo en /tmp- hasta que el recolector
+            # pase, que en un servidor que no se reinicia es «nunca a tiempo».
+            await archivo.close()
 
     @app.get("/api/canciones/{identificador}/pistas")
     def leer_pistas(identificador: str) -> dict:
@@ -428,9 +638,16 @@ def crear_app(
         por su cuenta -que es la decisión del núcleo que esta interfaz ya ha
         duplicado siete veces- y acabar diciendo «algo no cuadra».
 
-        `indice` de cada pista es lo que espera `/importar`, y va en base 0; `numero`
-        es el que ve el usuario, y va en base 1 como en todo el núcleo. Van los dos
-        porque son dos cosas distintas y confundirlas importaba una pista.
+        `coincide` es `True`, `False` o **`None`**, y los tres significan cosas
+        distintas. `None` es «el archivo no dice en qué afinación está», que es lo
+        que pasa con MIDI y con MusicXML sin tablatura: ahí no hay nada a lo que
+        afinarse -la pieza se importa en el perfil activo y el carril la acepta-, y
+        responder `False` hacía que la pantalla dijera «no cuadra, aféinate a null»
+        cuando no había ningún problema que resolver.
+
+        `numero` es el único campo de la pista que identifica una pista, va en base 1
+        como en todo el núcleo, y es lo que espera `/importar`. Hubo un `indice` en
+        base 0 al lado; publicar los dos era servir la trampa en bandeja.
         """
         ruta = _ruta_de_cancion(identificador)
         pistas = _leer_o_400(lambda: pistas_de_archivo(ruta))
@@ -443,16 +660,16 @@ def crear_app(
         return {
             **app.state.biblioteca.entrada_de(identificador),
             "pistas": [
-                {
-                    **pista.a_dict(),
-                    "indice": indice,
-                    "afinacion": afinacion_de(pista.cuerdas_midi),
-                }
-                for indice, pista in enumerate(pistas)
+                {**pista.a_dict(), "afinacion": afinacion_de(pista.cuerdas_midi)}
+                for pista in pistas
             ],
             "afinacion": afinacion,
             "perfil_activo": perfil_activo,
-            "coincide": afinacion["clave"] == perfil_activo,
+            "coincide": (
+                afinacion["clave"] == perfil_activo
+                if afinacion["declarada"]
+                else None
+            ),
         }
 
     @app.post("/api/canciones/{identificador}/importar")
@@ -464,8 +681,12 @@ def crear_app(
         deja previsualizar una canción en otra afinación sin que el carril la
         rechace, que es justo cuando el usuario necesita ver a qué afinarse.
 
-        `pista` es el ÍNDICE que trae `/pistas` (base 0) y aquí se traduce al número
-        de pista del núcleo (base 1), que es el que entiende `importar`.
+        `pista` es el NÚMERO de pista, en base 1, el mismo que publica `/pistas` y el
+        mismo que entiende el núcleo. Empezó en base 0 y se traducía aquí con un
+        `+1`: la traducción no se notaba cuando funcionaba y se notaba mal cuando no
+        -pedir la pista 99 contestaba «la pista 100 no existe»-, y una interfaz que
+        mandara el `numero` en vez del índice importaba la pista SIGUIENTE sin dar
+        ningún error. Una sola numeración, la del núcleo, y nadie tiene que traducir.
 
         `perfil` es opcional y solo cuenta donde el archivo no trae afinación (MIDI,
         MusicXML sin tablatura, texto). Si no se da, manda lo que diga el archivo:
@@ -473,9 +694,9 @@ def crear_app(
         que la canción no toca.
         """
         ruta = _ruta_de_cancion(identificador)
-        indice = _leer_o_400(lambda: int(datos.get("pista", 0)))
+        numero = _leer_o_400(lambda: _numero_de_pista(datos.get("pista", 1)))
         perfil = datos.get("perfil")
-        pieza = _leer_o_400(lambda: importar(ruta, indice + 1, perfil))
+        pieza = _leer_o_400(lambda: importar(ruta, numero, perfil))
         return {**pieza.a_dict(), "avisos": _avisos_de(pieza)}
 
     if ruta_interfaz is not None and ruta_interfaz.exists():
