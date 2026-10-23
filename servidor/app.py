@@ -758,8 +758,8 @@ def crear_app(
     def _avisos_de(pieza) -> list[str]:
         """Lo que hay que advertir de una pieza recién importada, en frases.
 
-        Tres, y los tres son cosas que la pieza ya sabe de sí misma y que nadie le
-        estaba contando al usuario:
+        Cuatro, y los cuatro son cosas que la pieza ya sabe de sí misma y que nadie
+        le estaba contando al usuario:
 
         - El ritmo aproximado de la tablatura de texto.
         - El tempo variable. `Pieza` se queda con el primero, así que una canción
@@ -768,16 +768,17 @@ def crear_app(
           compás equivocado **la vista escrita trocea la pieza con uno solo**
           (`interfaz/src/vistaEscrita.ts`): con un 3/4 en medio, las barras caen en
           el sitio equivocado desde ahí hasta el final.
+        - Las casillas de primera y segunda vez de Guitar Pro, que producen un
+          compás de más. Este era el que faltaba, y faltaba solo porque el lector no
+          las detectaba: aquí ya estaba el sitio, dicho en este mismo docstring.
+          Ahora las detecta (`_tiene_casillas_de_repeticion`), y el compás de más
+          sigue sonando: lo que cambia es que el usuario sepa por qué. Arreglar el
+          expansor es la etapa 3c.
 
-        Los dos últimos se detectaban, se guardaban en la pieza y no llegaban a
-        ninguna parte: el campo estaba puesto y esta función no lo miraba. La
-        pantalla pinta estas frases tal cual, así que añadirlas no toca la interfaz
-        ni la forma de la respuesta.
-
-        El aviso que sigue sin estar es el de las casillas de primera y segunda vez
-        de Guitar Pro, que producen un compás de más en silencio: el lector todavía
-        no lo detecta, así que aquí no hay nada que mirar. Cuando lo detecte, su
-        frase va aquí y nada más cambia.
+        El tempo y el compás variables se detectaban, se guardaban en la pieza y no
+        llegaban a ninguna parte: el campo estaba puesto y esta función no lo
+        miraba. La pantalla pinta estas frases tal cual, así que añadirlas no toca
+        la interfaz ni la forma de la respuesta.
         """
         avisos = []
         if pieza.ritmo_aproximado:
@@ -796,6 +797,14 @@ def crear_app(
                 f"{pieza.compas[0]}/{pieza.compas[1]}, el primero que trae el "
                 f"archivo. En la vista escrita, las barras de compás caerán fuera de "
                 f"sitio a partir del cambio."
+            )
+        if pieza.casillas_de_repeticion:
+            avisos.append(
+                "La canción trae CASILLAS DE PRIMERA Y SEGUNDA VEZ y aquí suenan "
+                "TODAS: en la repetición vuelve a sonar la casilla de primera vez, "
+                "que solo debería sonar una, así que la pieza lleva un trozo de más. "
+                "Con «|: A | B(1ª vez) :|» y C de segunda vez suena A B A B C, "
+                "cuando lo correcto es A B A C."
             )
         return avisos
 

@@ -703,3 +703,38 @@ def test_un_acorde_va_con_la_grave_primero_como_en_los_demas_lectores(tmp_path):
 
     assert [n.cuerda for n in pieza.notas] == [6, 5, 4, 3, 2, 1]
     assert [n.midi for n in pieza.notas] == sorted(n.midi for n in pieza.notas)
+
+
+def test_las_casillas_de_primera_y_segunda_vez_se_detectan(tmp_path):
+    """Detectarlas es leer `repeatAlternative`, y sobrevive al disco.
+
+    El expansor no las entiende y toca un trozo de mas -arreglarlo es la etapa 3c-,
+    asi que la pieza lo DECLARA y el servidor lo avisa. La prueba afirma las dos
+    cosas a la vez: que se detecta y que el compas de mas sigue ahi, porque avisar
+    no es tocarlo bien.
+    """
+    song = con_notas([(0, 6, 0), (4, 6, 1), (8, 6, 2)])
+    song.measureHeaders[0].isRepeatOpen = True
+    song.measureHeaders[1].repeatClose = 1  # en gp5, 1 pasada de mas = "x2"
+    song.measureHeaders[1].repeatAlternative = 1
+    song.measureHeaders[2].repeatAlternative = 2
+    pieza = pieza_desde_guitarpro(escribir(song, tmp_path, "casillas.gp5"), 1)
+
+    assert pieza.casillas_de_repeticion is True
+    # A B A B C, que es lo que suena hoy; lo correcto seria A B A C.
+    assert [nota.traste for nota in pieza.notas] == [0, 1, 0, 1, 2]
+
+
+def test_una_repeticion_normal_no_es_una_casilla(tmp_path):
+    """Si todo trajera casillas, el aviso no querria decir nada.
+
+    Una repeticion corriente -sin casillas- se expande bien y no hay nada que
+    avisar: `repeatAlternative` vale 0 en todas las cabeceras.
+    """
+    song = con_notas([(0, 6, 0), (4, 6, 1)])
+    song.measureHeaders[0].isRepeatOpen = True
+    song.measureHeaders[1].repeatClose = 1
+    pieza = pieza_desde_guitarpro(escribir(song, tmp_path, "normal.gp5"), 1)
+
+    assert pieza.casillas_de_repeticion is False
+    assert [nota.traste for nota in pieza.notas] == [0, 1, 0, 1]

@@ -238,6 +238,26 @@ def _tempo_variable(cancion: guitarpro.Song) -> bool:
     return False
 
 
+def _tiene_casillas_de_repeticion(cancion: guitarpro.Song) -> bool:
+    """Si el archivo trae casillas de primera y segunda vez.
+
+    `MeasureHeader.repeatAlternative` vale 0 cuando el compas no esta en ninguna
+    casilla, y distinto de 0 cuando esta en una (en gp5 es una mascara de bits, un
+    bit por numero de casilla, y aqui solo importa que no sea 0). Sobrevive al viaje
+    por el disco: se comprueba escribiendo y releyendo un archivo, que es como se
+    midio.
+
+    Esto DETECTA, no arregla. `_orden_de_compases` no entiende las casillas y toca
+    un trozo de mas -`|: A | B(1a) :|` + C suena A B A B C cuando lo correcto es
+    A B A C-, y arreglarlo es la etapa 3c. Lo que cambia es que el usuario sepa por
+    que su cancion dura un compas mas de lo que escribio el autor, que es el
+    estandar que esta rama se puso: si se detecta, se avisa.
+    """
+    return any(
+        cabecera.repeatAlternative for cabecera in cancion.measureHeaders
+    )
+
+
 def _convertir(
     pista: guitarpro.Track, orden: tuple[int, ...]
 ) -> tuple[tuple[NotaEnPieza, ...], tuple[Seccion, ...]]:
@@ -454,4 +474,5 @@ def pieza_desde_guitarpro(ruta: Path | str, numero_pista: int) -> Pieza:
         compas_variable=any(
             _compas(cabecera) != compas for cabecera in cancion.measureHeaders
         ),
+        casillas_de_repeticion=_tiene_casillas_de_repeticion(cancion),
     )

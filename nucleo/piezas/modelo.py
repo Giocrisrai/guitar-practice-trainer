@@ -108,6 +108,11 @@ class Pieza:
     # (`interfaz/src/vistaEscrita.ts`): con un 3/4 en medio, las barras caen en el
     # sitio equivocado desde ahi hasta el final y nada avisa.
     compas_variable: bool = False
+    # La cancion traia casillas de primera y segunda vez y el expansor de
+    # repeticiones no las entiende: se toca un trozo de mas. Detectarlo y arreglarlo
+    # son dos cosas distintas -arreglarlo es la etapa 3c- y esta es la primera, que
+    # es la que cumple el estandar de la rama: si se detecta, se avisa.
+    casillas_de_repeticion: bool = False
 
     def __post_init__(self) -> None:
         if self.perfil not in PERFILES:
@@ -182,4 +187,5 @@ class Pieza:
             "ritmo_aproximado": self.ritmo_aproximado,
             "tempo_variable": self.tempo_variable,
             "compas_variable": self.compas_variable,
+            "casillas_de_repeticion": self.casillas_de_repeticion,
         }

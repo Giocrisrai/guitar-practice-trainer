@@ -1522,6 +1522,70 @@ def test_un_cambio_de_compas_se_avisa_y_menciona_la_vista_escrita(cliente):
     assert any("4/4" in aviso for aviso in pieza["avisos"])
 
 
+def _guitarpro_con_casillas() -> bytes:
+    """Un gp5 de `|: A | B(1a vez) :|` mas C: tres compases, una nota en cada uno."""
+    import io
+
+    import guitarpro
+
+    song = guitarpro.Song()
+    song.tempo = 90
+    song.title = "Con casillas"
+    pista = song.tracks[0]
+    pista.name = "Guitarra"
+    pista.strings = [
+        guitarpro.GuitarString(number=i + 1, value=v)
+        for i, v in enumerate((64, 59, 55, 50, 45, 40))
+    ]
+    while len(pista.measures) < 3:
+        song.addMeasureHeader(guitarpro.MeasureHeader())
+        pista.measures.append(guitarpro.Measure(pista, song.measureHeaders[-1]))
+    for traste, compas in enumerate(pista.measures):
+        voz = compas.voices[0]
+        beat = guitarpro.Beat(
+            voice=voz,
+            start=compas.header.start,
+            duration=guitarpro.Duration(value=4),
+            status=guitarpro.BeatStatus.normal,
+        )
+        beat.notes = [
+            guitarpro.Note(
+                beat=beat, value=traste, string=6, type=guitarpro.NoteType.normal
+            )
+        ]
+        voz.beats.append(beat)
+    song.measureHeaders[0].isRepeatOpen = True
+    # En gp5 la memoria cuenta PASADAS DE MAS, asi que 1 es el "x2" del disco.
+    song.measureHeaders[1].repeatClose = 1
+    song.measureHeaders[1].repeatAlternative = 1  # casilla de PRIMERA vez
+    song.measureHeaders[2].repeatAlternative = 2  # casilla de SEGUNDA vez
+    memoria = io.BytesIO()
+    guitarpro.write(song, memoria)
+    return memoria.getvalue()
+
+
+def test_las_casillas_de_primera_y_segunda_vez_se_avisan(cliente):
+    """El unico punto donde la rama incumplia su propio estandar: si se detecta,
+    se avisa. Y no se detectaba, que es lo unico que faltaba.
+
+    El expansor de repeticiones sigue sin entender las casillas -arreglarlo es la
+    etapa 3c-, asi que el compas de mas sigue sonando: la prueba lo afirma a la vez
+    que el aviso, porque avisar no es tocarlo bien. Medido: `|: A | B(1a) :|` + C
+    suena A B A B C cuando lo correcto es A B A C.
+    """
+    cliente.post(
+        "/api/canciones", files={"archivo": ("casillas.gp5", _guitarpro_con_casillas())}
+    )
+    pieza = cliente.post(
+        "/api/canciones/casillas.gp5/importar", json={"pista": 1}
+    ).json()
+
+    assert pieza["casillas_de_repeticion"] is True
+    assert any("CASILLAS" in aviso for aviso in pieza["avisos"])
+    # Y lo que sigue pasando, dicho por el dato: suena A B A B C y no A B A C.
+    assert [nota["traste"] for nota in pieza["notas"]] == [0, 1, 0, 1, 2]
+
+
 def test_una_cancion_sin_sorpresas_no_trae_ningun_aviso(cliente):
     """Si todo avisara de algo, el aviso no querria decir nada."""
     cliente.post(

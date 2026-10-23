@@ -336,10 +336,12 @@ partitura de una canción entera ocupa decenas de kilobytes: diez megas son dos
   paréntesis se tiran: `5h7` son dos ataques, un 5 y un 7, y la `x` no existe.
 - **Las repeticiones se expanden**, que es lo correcto: una repetición corriente
   suena dos veces y la pieza dura lo que suena. Pero **las casillas de primera y
-  segunda vez producen un compás de más, en silencio**: con `|: A | B(1ª vez) :|`
-  y `C` como segunda vez, lo que debería sonar es A B A C y lo que suena es
-  A B A B C. El lector no mira las casillas, nada avisa, y la pieza queda un
-  compás más larga de lo que el autor escribió.
+  segunda vez producen un compás de más**: con `|: A | B(1ª vez) :|` y `C` como
+  segunda vez, lo que debería sonar es A B A C y lo que suena es A B A B C. El
+  compás de más sigue ahí —arreglar el expansor es la etapa 3c—, pero **ya no es
+  en silencio**: el lector lee las casillas (`repeatAlternative` de las cabeceras)
+  y la pantalla lo avisa antes de empezar, con el ejemplo de lo que suena y de lo
+  que debería sonar. Es el estándar de esta etapa: si se detecta, se avisa.
 - **Las secciones se importan y todavía no las usa nada.** Los marcadores de
   Guitar Pro, las marcas de ensayo de MusicXML y los marcadores de texto de MIDI
   entran en la pieza porque reconstruirlos después sería imposible, pero ninguna
