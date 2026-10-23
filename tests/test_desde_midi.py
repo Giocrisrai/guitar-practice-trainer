@@ -3,8 +3,8 @@ import numpy as np
 import pytest
 
 from nucleo.afinaciones import PERFILES
-from nucleo.piezas.desde_midi import pieza_desde_midi, pistas_de_midi
 from nucleo.musica import Posicion, posiciones_en_mastil
+from nucleo.piezas.desde_midi import pieza_desde_midi, pistas_de_midi
 from nucleo.piezas.digitacion import coste_total, digitar
 
 TICKS = 480
