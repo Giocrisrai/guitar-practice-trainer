@@ -71,6 +71,14 @@ def _notas_de(pista: mido.MidiTrack, ticks_por_pulso: int) -> list[tuple[int, fl
     Cada (canal, nota) lleva una cola de inicios abiertos: un fin cierra el MAS
     ANTIGUO, que es lo que hace cualquier reproductor cuando una nota se repite
     sin soltarse. Lo que quede abierto al final se cierra con la pista.
+
+    La ALTURA desempata, y ascendente: las notas de un acorde salen con la GRAVE
+    PRIMERO, como en los otros tres lectores. No es cosmetica —`indice_actual`
+    señala la ultima nota del acorde (`seguimiento._indice_en_curso`), asi que el
+    orden decide cual resalta el carril y cual lleva el aro en la vista escrita— y
+    es un invariante entre los cuatro: lo vigila
+    `test_un_acorde_va_con_la_grave_primero_como_en_los_demas_lectores`, que existe
+    en los cuatro archivos de pruebas.
     """
     abiertas: dict[tuple[int, int], deque[int]] = defaultdict(deque)
     cerradas: list[tuple[int, int, int]] = []

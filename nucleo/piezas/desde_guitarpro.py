@@ -288,7 +288,14 @@ def _convertir(
         desplazamiento += compas.length / TICKS_NEGRA
 
     # `Pieza` exige las notas en orden de inicio; la cuerda desempata para que un
-    # acorde salga siempre igual, de la mas grave a la mas aguda.
+    # acorde salga siempre igual, de la mas grave a la mas aguda. No es cosmetica:
+    # `indice_actual` señala la ultima nota del acorde
+    # (`seguimiento._indice_en_curso`), asi que el orden decide cual resalta el
+    # carril y cual lleva el aro en la vista escrita, y es un invariante entre los
+    # cuatro lectores (`test_un_acorde_va_con_la_grave_primero_como_en_los_demas_lectores`,
+    # en los cuatro archivos de pruebas). El archivo las guarda al contrario -de la
+    # mas aguda a la mas grave, que es como se escribe la mascara de cuerdas-, asi
+    # que leerlas en su orden da justo el equivocado.
     en_obra.sort(key=lambda nota: (nota.inicio_pulsos, -nota.cuerda))
     notas = tuple(
         NotaEnPieza(

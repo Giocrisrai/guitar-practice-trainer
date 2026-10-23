@@ -184,3 +184,30 @@ def test_una_repeticion_mal_formada_es_un_value_error(tmp_path):
     ruta = escribir(nueva, tmp_path)
     with pytest.raises(ValueError, match="repeticiones"):
         pieza_desde_musicxml(ruta, 1)
+
+
+def test_un_acorde_va_con_la_grave_primero_como_en_los_demas_lectores(tmp_path):
+    """El mismo invariante que vigila `tests/test_desde_ascii.py`, aqui.
+
+    `EstadoCarril.indice_actual` señala la ULTIMA nota del acorde
+    (`seguimiento._indice_en_curso`), asi que el orden decide que nota resalta el
+    carril y cual lleva el aro en la vista escrita: tiene que ser la aguda. El
+    invariante es entre los CUATRO lectores y hasta ahora solo lo vigilaba el de
+    ASCII, asi que invertir el desempate aqui -el `(t[1], t[0].pitch.midi)` de
+    `_crudas`- no rompia ninguna prueba.
+    """
+    from music21 import chord
+
+    parte = stream.Part()
+    parte.partName = "Guitarra"
+    parte.append(tempo.MetronomeMark(number=80))
+    # El acorde se escribe de la mas aguda a la mas grave: el orden tiene que salir
+    # del lector y no del archivo.
+    acorde = chord.Chord([64, 59, 55, 52])
+    acorde.quarterLength = 2.0
+    parte.append(acorde)
+    obra = stream.Score()
+    obra.append(parte)
+
+    notas = pieza_desde_musicxml(escribir(obra, tmp_path, "acorde.xml"), 1).notas
+    assert [n.midi for n in notas] == [52, 55, 59, 64]

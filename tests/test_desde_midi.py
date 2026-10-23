@@ -260,3 +260,22 @@ def test_un_acorde_imposible_se_rechaza_nombrandolo(tmp_path):
     midi_de([(m, 0, TICKS) for m in (40, 45, 50, 55, 59, 64, 67)]).save(str(ruta))
     with pytest.raises(ValueError, match="acorde"):
         pieza_desde_midi(ruta, 1)
+
+
+def test_un_acorde_va_con_la_grave_primero_como_en_los_demas_lectores(tmp_path):
+    """El mismo invariante que vigila `tests/test_desde_ascii.py`, aqui.
+
+    `EstadoCarril.indice_actual` señala la ULTIMA nota del acorde
+    (`seguimiento._indice_en_curso`), asi que el orden decide que nota resalta el
+    carril y cual lleva el aro en la vista escrita: tiene que ser la aguda. El
+    invariante es entre los CUATRO lectores y hasta ahora solo lo vigilaba el de
+    ASCII, asi que invertir el desempate aqui -el `(nota[1], nota[0])` de
+    `_notas_de`- no rompia ninguna prueba.
+
+    Las notas se mandan al archivo en orden descendente a proposito: el orden tiene
+    que salir del lector y no del archivo.
+    """
+    ruta = tmp_path / "x.mid"
+    midi_de([(m, 0, TICKS) for m in (64, 59, 52, 55)]).save(str(ruta))
+    notas = pieza_desde_midi(ruta, 1).notas
+    assert [n.midi for n in notas] == [52, 55, 59, 64]

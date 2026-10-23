@@ -672,3 +672,34 @@ def test_una_pista_sin_afinacion_que_declarar_no_publica_clave(tmp_path):
     assert pistas_de(percusion)[0].perfil_clave is None
     assert pistas_de(sin_cuerdas)[0].perfil_clave is None
 
+def test_un_acorde_va_con_la_grave_primero_como_en_los_demas_lectores(tmp_path):
+    """El mismo invariante que vigila `tests/test_desde_ascii.py`, aqui.
+
+    `EstadoCarril.indice_actual` señala la ULTIMA nota del acorde
+    (`seguimiento._indice_en_curso`), asi que el orden decide que nota resalta el
+    carril y cual lleva el aro en la vista escrita: tiene que ser la aguda. El
+    invariante es entre los cuatro lectores y hasta ahora solo lo vigilaba uno, asi
+    que invertir el desempate en los otros tres no rompia nada.
+
+    El archivo guarda las notas de la MAS AGUDA a la mas grave -asi se escribe la
+    mascara de cuerdas de gp5-, de modo que leerlas en el orden del archivo da justo
+    el orden equivocado.
+    """
+    song = _cancion_vacia()
+    compas, tick = _pulso(song, 0)
+    voz = compas.voices[0]
+    beat = guitarpro.Beat(
+        voice=voz,
+        start=tick,
+        duration=guitarpro.Duration(value=4),
+        status=guitarpro.BeatStatus.normal,
+    )
+    beat.notes = [
+        guitarpro.Note(beat=beat, value=0, string=cuerda, type=guitarpro.NoteType.normal)
+        for cuerda in (1, 2, 3, 4, 5, 6)
+    ]
+    voz.beats.append(beat)
+    pieza = pieza_desde_guitarpro(escribir(song, tmp_path, "acorde.gp5"), 1)
+
+    assert [n.cuerda for n in pieza.notas] == [6, 5, 4, 3, 2, 1]
+    assert [n.midi for n in pieza.notas] == sorted(n.midi for n in pieza.notas)

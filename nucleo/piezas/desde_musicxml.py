@@ -111,7 +111,16 @@ def _tablatura(nota) -> tuple[int, int] | None:
 
 
 def _crudas(parte) -> list[dict]:
-    """Los ataques de la parte como dicts por inicio, con las ligaduras fundidas."""
+    """Los ataques de la parte como dicts por inicio, con las ligaduras fundidas.
+
+    La ALTURA desempata, y ascendente: las notas de un acorde salen con la GRAVE
+    PRIMERO, como en los otros tres lectores. No es cosmetica —`indice_actual`
+    señala la ultima nota del acorde (`seguimiento._indice_en_curso`), asi que el
+    orden decide cual resalta el carril y cual lleva el aro en la vista escrita— y
+    es un invariante entre los cuatro: lo vigila
+    `test_un_acorde_va_con_la_grave_primero_como_en_los_demas_lectores`, que existe
+    en los cuatro archivos de pruebas.
+    """
     crudas: list[dict] = []
     abiertas: dict[int, dict] = {}  # midi -> ataque que una ligadura puede alargar
     ordenadas = sorted(_atomos(parte), key=lambda t: (t[1], t[0].pitch.midi))
