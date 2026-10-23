@@ -263,12 +263,67 @@ def test_un_acorde_que_ninguna_mano_toca_se_rechaza(tmp_path):
         pieza_desde_musicxml(ruta, 1)
 
 
-def test_una_tablatura_que_no_choca_con_nadie_se_queda_quieta(tmp_path):
-    """El reparto cambia lo minimo, asi que la tablatura del archivo sobrevive.
+def _acorde_con_una_tablatura(midis, midi_con_tablatura, cuerda, traste):
+    """Un acorde en el que UNA nota trae su cuerda y su traste del archivo.
 
-    Es el limite declarado por el otro lado: una posicion dada por el archivo se
-    mueve SI choca con otra nota del mismo acorde, y no se mueve si no choca.
+    El acorde va como notas SIMULTANEAS y no como un `<chord/>`, y es por una
+    limitacion de music21 al escribir, medida: las articulaciones de las notas de un
+    `chord.Chord` no llegan al archivo (sale con cero etiquetas `<string>`), asi que
+    con un `<chord/>` no habria tablatura que respetar y la prueba no probaria nada.
+    Escritas asi salen en voces distintas con el mismo `offset`, que es lo que el
+    lector lee y lo que cuenta aqui: `_crudas` les da el mismo `inicio`, y dos notas
+    con el mismo inicio SON un acorde (`Pieza`, nucleo/piezas/modelo.py), que es
+    exactamente lo que agrupa `separar_cuerdas_de_acordes`.
     """
-    ruta = escribir(partitura([(45, 1.0)], con_tablatura=True), tmp_path, "tab.xml")
-    nota = pieza_desde_musicxml(ruta, 1).notas[0]
-    assert (nota.cuerda, nota.traste) == (6, 5)
+    parte = stream.Part()
+    parte.partName = "Guitarra"
+    parte.append(tempo.MetronomeMark(number=80))
+    for midi in midis:
+        n = note.Note(midi)
+        n.quarterLength = 2.0
+        if midi == midi_con_tablatura:
+            indicacion = articulations.StringIndication()
+            indicacion.number = cuerda
+            indicacion_traste = articulations.FretIndication()
+            indicacion_traste.number = traste
+            n.articulations.extend([indicacion, indicacion_traste])
+        parte.insert(0.0, n)
+    obra = stream.Score()
+    obra.insert(0, parte)
+    return obra
+
+
+def test_la_tablatura_de_un_acorde_que_no_choca_no_la_mueve_el_reparto(tmp_path):
+    """El reparto cambia LO MINIMO: la tablatura que puede quedarse, se queda.
+
+    Es la propiedad que declara `separar_cuerdas_de_acordes` y la que sostiene su
+    limite por el otro lado -una posicion dada por el archivo se mueve SI choca, y
+    no se mueve si no choca-. Hacia falta un ACORDE que choque de verdad: con una
+    nota sola no hay grupo, no se ejecuta nada del reparto y la prueba no puede
+    fallar (la que habia aqui era eso, y encima un duplicado literal de
+    `test_si_el_archivo_trae_tablatura_se_respeta`).
+
+    El caso, medido: Mi menor (52, 55, 59, 64) con el 52 escrito en la cuerda 6,
+    traste 12 -que es donde vive ese Mi-. Las posiciones de partida son
+    6/12 (del archivo), 4/5, 2/0 y 2/5 (de `digitar`): el 59 y el 64 chocan en la
+    segunda. El minimo mueve SOLO el 64, a 3/9, y deja el 6/12 del archivo donde
+    estaba.
+
+    Lo que mata esta prueba, comprobado: aplanar la matriz de coste a 0.0 -con lo
+    que el reparto deja de preferir quedarse quieto- manda el 52 a 4/2; y tirar la
+    tablatura del archivo en `_posiciones` tambien, a 4/2. Con una sola nota ninguna
+    de las dos la rompia.
+    """
+    ruta = escribir(
+        _acorde_con_una_tablatura((52, 55, 59, 64), 52, cuerda=6, traste=12),
+        tmp_path,
+        "acorde_con_tab.xml",
+    )
+    notas = pieza_desde_musicxml(ruta, 1).notas
+    por_midi = {n.midi: (n.cuerda, n.traste) for n in notas}
+
+    # La tablatura del archivo, intacta: es la propiedad.
+    assert por_midi[52] == (6, 12)
+    # Y el acorde quedo tocable, que es para lo que se reparte.
+    assert len({n.cuerda for n in notas}) == 4
+    assert all(n.inicio_pulsos == 0.0 for n in notas)

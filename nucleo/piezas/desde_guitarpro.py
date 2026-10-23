@@ -238,8 +238,10 @@ def _tempo_variable(cancion: guitarpro.Song) -> bool:
     return False
 
 
-def _tiene_casillas_de_repeticion(cancion: guitarpro.Song) -> bool:
-    """Si el archivo trae casillas de primera y segunda vez.
+def _tiene_casillas_de_repeticion(
+    cancion: guitarpro.Song, normalizado: bool
+) -> bool:
+    """Si el archivo trae casillas de primera y segunda vez QUE SE LLEGAN A TOCAR.
 
     `MeasureHeader.repeatAlternative` vale 0 cuando el compas no esta en ninguna
     casilla, y distinto de 0 cuando esta en una (en gp5 es una mascara de bits, un
@@ -247,15 +249,33 @@ def _tiene_casillas_de_repeticion(cancion: guitarpro.Song) -> bool:
     por el disco: se comprueba escribiendo y releyendo un archivo, que es como se
     midio.
 
+    Y se exige, ademas, que algo se repita de verdad. Sin eso esto avisaba de mas, y
+    medido: un archivo con casillas y SIN cierre de repeticion sale
+    `casillas_de_repeticion=True` y suena `[0, 1, 2]`, tres compases y ningun compas
+    de mas. El aviso decia «la pieza lleva un trozo de mas» y era FALSO, y es una
+    frase que el usuario lee. Cuantas veces se toca un compas lo dice
+    `_veces_que_se_toca`, la misma funcion que usa el expansor: si se preguntara
+    aqui por `repeatClose` a pelo habria dos reglas para lo mismo y una se quedaria
+    vieja (el byte no significa lo mismo en gp3/gp4 que en gp5).
+
+    Lo que todavia avisa de mas, dicho sin adornos: la comprobacion es del ARCHIVO,
+    no de cada grupo de repeticion. Un archivo con las casillas en un trozo sin
+    cierre y una repeticion corriente en otro trozo distinto avisaria igual.
+    Emparejar cada casilla con el cierre de SU grupo es entender las casillas, que
+    es justo el trabajo de la 3c.
+
     Esto DETECTA, no arregla. `_orden_de_compases` no entiende las casillas y toca
     un trozo de mas -`|: A | B(1a) :|` + C suena A B A B C cuando lo correcto es
-    A B A C-, y arreglarlo es la etapa 3c. Lo que cambia es que el usuario sepa por
-    que su cancion dura un compas mas de lo que escribio el autor, que es el
-    estandar que esta rama se puso: si se detecta, se avisa.
+    A B A C-. Lo que cambia es que el usuario sepa por que su cancion dura un compas
+    mas de lo que escribio el autor, que es el estandar que esta rama se puso: si se
+    detecta, se avisa.
     """
-    return any(
-        cabecera.repeatAlternative for cabecera in cancion.measureHeaders
+    cabeceras = cancion.measureHeaders
+    hay_casillas = any(cabecera.repeatAlternative for cabecera in cabeceras)
+    se_repite = any(
+        _veces_que_se_toca(cabecera, normalizado) > 1 for cabecera in cabeceras
     )
+    return hay_casillas and se_repite
 
 
 def _convertir(
@@ -485,5 +505,5 @@ def pieza_desde_guitarpro(ruta: Path | str, numero_pista: int) -> Pieza:
         compas_variable=any(
             _compas(cabecera) != compas for cabecera in cancion.measureHeaders
         ),
-        casillas_de_repeticion=_tiene_casillas_de_repeticion(cancion),
+        casillas_de_repeticion=_tiene_casillas_de_repeticion(cancion, normalizado),
     )

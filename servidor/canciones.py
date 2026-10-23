@@ -305,10 +305,17 @@ def afinacion_de(cuerdas_midi, perfil_clave: str | None = None) -> dict:
 
     Si no llega clave del lector se cae a `clave_de_perfil`, que reconoce las
     afinaciones DE FÁBRICA y nada más: una canción en Drop D dice `guitarra_drop_d`
-    y no una clave inventada. Es el caso de un formato que declare cuerdas y cuyo
-    lector no las dé de alta, que hoy no existe -Guitar Pro y la tablatura de texto
-    las dan de alta, y MIDI y MusicXML no declaran afinación-; el registro vivo no se
-    vuelve a recorrer por nota, que es justo la cuenta que se ha quitado.
+    y no una clave inventada. El registro vivo no se vuelve a recorrer por nota, que
+    es justo la cuenta que se ha quitado.
+
+    Ese caso de respaldo SÍ se da hoy, y en uno solo: **una pista de percusión de
+    Guitar Pro**. El formato le pone seis cuerdas igual (gp5 las guarda siempre), así
+    que llega con `cuerdas_midi` y sin clave -el lector no da de alta la "afinación"
+    de una batería, porque `Note.string` ahí no significa nada-, y esta función
+    contesta `declarada: True`, `clave: None` y por tanto `coincide: False`. No tiene
+    efecto para el usuario: una pista no usable sale deshabilitada en la pantalla y
+    nunca puede ser la elegida, así que ese `coincide` no decide nada. Lo que se
+    publica de esa pista y sí se lee es su `motivo_no_usable`.
 
     Si no hay ninguna de las dos, `clave` es None y el nombre se deriva de las notas.
 

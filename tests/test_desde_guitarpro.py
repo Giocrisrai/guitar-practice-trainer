@@ -738,3 +738,20 @@ def test_una_repeticion_normal_no_es_una_casilla(tmp_path):
 
     assert pieza.casillas_de_repeticion is False
     assert [nota.traste for nota in pieza.notas] == [0, 1, 0, 1]
+
+
+def test_unas_casillas_que_no_se_repiten_no_se_avisan(tmp_path):
+    """Medido: con casillas y SIN cierre de repeticion no sobra ningun compas.
+
+    El aviso dice «la pieza lleva un trozo de mas», y aqui seria falso: la pieza
+    suena A B C, sus tres compases y nada mas, porque sin cierre no se vuelve atras.
+    Avisar de mas tiene el mismo coste que avisar mal cuando la frase que el usuario
+    lee no es verdad.
+    """
+    song = con_notas([(0, 6, 0), (4, 6, 1), (8, 6, 2)])
+    song.measureHeaders[1].repeatAlternative = 1
+    song.measureHeaders[2].repeatAlternative = 2
+    pieza = pieza_desde_guitarpro(escribir(song, tmp_path, "sin_cierre.gp5"), 1)
+
+    assert pieza.casillas_de_repeticion is False
+    assert [nota.traste for nota in pieza.notas] == [0, 1, 2]
