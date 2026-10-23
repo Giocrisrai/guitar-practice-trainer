@@ -193,7 +193,7 @@ class SeguidorPieza:
     que es donde tienen sentido.
 
     La altura DESEMPATA ENTRE VECINAS, con su propia ventana y simetrica
-    (`VENTANA_ALTURA_S`, un cuarto de segundo): una nota de la misma altura mas
+    (`VENTANA_ALTURA_S`, un cuarto de segundo AL TEMPO ESCRITO): una nota de la misma altura mas
     lejos que eso no es la que el alumno estaba intentando, es otra nota de la
     pieza que se llama igual, y adjudicarsela deja sin marca la que de verdad
     fallo. Es un tope de DISTANCIA, no de direccion: adelantarse es tan normal
@@ -207,7 +207,7 @@ class SeguidorPieza:
     sola vez, acertada o no: una segunda pulsacion busca otra nota. Y todo esto tiene
     un limite: cada nota solo se puede reclamar desde su ventana de reclamo, que
     es ASIMETRICA -llegando tarde, su duracion escrita mas la ventana de "a
-    tiempo", con un piso de `VENTANA_RECLAMO_MINIMA_S` (`_ventanas_reclamo_s`);
+    tiempo", con un piso de `VENTANA_RECLAMO_MINIMA_S` AL TEMPO ESCRITO (`_ventanas_reclamo_s`);
     llegando pronto, solo ese piso (`_ventana_reclamo_pronto_s`)-, y una pulsacion
     que no alcanza a ninguna no se anota ni cuenta como fallo. Sin ese limite,
     una nota que el alumno nunca toco acababa en el informe como tocada -y
@@ -221,6 +221,20 @@ class SeguidorPieza:
     como no tocadas. Para seguir acordes hace falta deteccion polifonica, que no
     existe en este proyecto, asi que una pieza con acordes se puede pintar pero
     no se puede evaluar de forma justa.
+
+    TEMPO AJUSTABLE (`factor_tempo`, 1.0 es el tempo escrito, 0.5 la mitad). Las
+    tres ventanas y TODOS los instantes -los de las notas, los que toma
+    `avanzar_a`, los de `estado`- estan en segundos DE LA PASADA, es decir ya
+    estirados por el factor. Las constantes del modulo (`VENTANA_A_TIEMPO_S`,
+    `VENTANA_RECLAMO_MINIMA_S`, `VENTANA_ALTURA_S`) son la referencia AL TEMPO
+    ESCRITO: los numeros de arriba (80 ms, medio segundo, un cuarto de segundo)
+    son ciertos solo con factor 1.0; al 50 % se duplican. Lo que se lee de la
+    instancia son los atributos estirados, no las constantes.
+
+    - `factor_tempo`: el factor, de solo lectura; se fija al construir.
+    - `duracion_s`: duracion de la pieza en segundos de la pasada.
+    - `olvidar_tramo(desde_s, hasta_s)`: deja sin cobrar las notas de ese tramo
+      y borra sus anotaciones, para poder repetir un bucle.
 
     Candado: este seguidor lleva el suyo (`_candado`) y protege tambien al
     `DetectorPulsaciones`, que no lleva ninguno. `procesar` y `avanzar_a` corren
@@ -239,21 +253,22 @@ class SeguidorPieza:
         ventana_altura_s: float = VENTANA_ALTURA_S,
         factor_tempo: float = 1.0,
     ) -> None:
-        if factor_tempo <= 0:
+        # `not > 0` y no `<= 0`: con NaN la segunda comparacion da False y lo dejaria pasar.
+        if not factor_tempo > 0:
             raise ValueError(
                 f"El factor de tempo es {factor_tempo}: tiene que ser mayor que cero"
             )
         self.pieza = pieza
         self._detector = detector or DetectorPulsaciones()
-        self.factor_tempo = float(factor_tempo)
+        self._factor_tempo = float(factor_tempo)
         # Las tres ventanas se ESTIRAN con el factor, y es una decision de la
         # etapa 3c, no un efecto secundario: practicando al 50 % lo que se juzga
         # es la colocacion dentro del compas, con la misma indulgencia a
         # cualquier velocidad, y al subir el tempo la ventana se cierra sola. Las
         # constantes siguen siendo la referencia AL TEMPO ESCRITO.
-        self.ventana_a_tiempo_s = ventana_a_tiempo_s / self.factor_tempo
-        self.ventana_reclamo_minima_s = ventana_reclamo_minima_s / self.factor_tempo
-        self.ventana_altura_s = ventana_altura_s / self.factor_tempo
+        self.ventana_a_tiempo_s = ventana_a_tiempo_s / self._factor_tempo
+        self.ventana_reclamo_minima_s = ventana_reclamo_minima_s / self._factor_tempo
+        self.ventana_altura_s = ventana_altura_s / self._factor_tempo
 
         def segundos(pulsos: float) -> float:
             """Pulsos a segundos DE LA PASADA: el factor estira el reloj entero.
@@ -261,7 +276,7 @@ class SeguidorPieza:
             El factor divide el resultado y NO multiplica el tempo: `tempo` es un
             entero validado por `pulsos_a_segundos`, y 0,7 x 100 no es un tempo.
             """
-            return pulsos_a_segundos(pulsos, pieza.tempo) / self.factor_tempo
+            return pulsos_a_segundos(pulsos, pieza.tempo) / self._factor_tempo
 
         # Los instantes escritos, ya en segundos: se consultan en cada cuadro
         # (buscar la nota en curso y la mas cercana) y no cambian nunca.
@@ -319,7 +334,7 @@ class SeguidorPieza:
         self._ventana_reclamo_pronto_s = max(self.ventana_a_tiempo_s, self.ventana_reclamo_minima_s)
         # Las alturas escritas, para adjudicar por nombre y no solo por cercania.
         self._midis = np.array([nota.midi for nota in pieza.notas], dtype=int)
-        self._duracion_s = pieza.duracion_s / self.factor_tempo
+        self._duracion_s = pieza.duracion_s / self._factor_tempo
         self._candado = threading.RLock()
         self.reiniciar()
 
@@ -337,6 +352,11 @@ class SeguidorPieza:
             self._analisis_desde: float | None = None
             self._tocadas: list[NotaTocada] = []
             self._cobradas = np.zeros(len(self._inicios_s), dtype=bool)
+
+    @property
+    def factor_tempo(self) -> float:
+        """Factor de tempo (1.0 = el escrito); se fija al construir y no cambia."""
+        return self._factor_tempo
 
     def olvidar_tramo(self, desde_s: float, hasta_s: float) -> None:
         """Deja sin cobrar las notas de [desde_s, hasta_s) y borra sus anotaciones.

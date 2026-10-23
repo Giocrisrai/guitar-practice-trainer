@@ -711,3 +711,16 @@ def test_olvidar_un_tramo_no_incluye_su_extremo_final():
     tocar(seguidor, "A2", en=1.0)
     seguidor.olvidar_tramo(0.0, 1.0)
     assert [t.indice for t in seguidor.estado.tocadas] == [1]
+
+
+@pytest.mark.parametrize("factor", [float("nan"), -1.0])
+def test_un_factor_nan_o_negativo_se_rechaza(factor):
+    with pytest.raises(ValueError, match="factor"):
+        SeguidorPieza(pieza_de([40]), factor_tempo=factor)
+
+
+def test_el_factor_es_de_solo_lectura():
+    seguidor = SeguidorPieza(pieza_de([40]), factor_tempo=0.5)
+    assert seguidor.factor_tempo == 0.5
+    with pytest.raises(AttributeError):
+        seguidor.factor_tempo = 0.7
