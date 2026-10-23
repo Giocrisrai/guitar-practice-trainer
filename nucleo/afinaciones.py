@@ -8,6 +8,8 @@ bajo sea simplemente otra entrada del diccionario en lugar de una rama especial.
 import math
 from dataclasses import dataclass
 
+import numpy as np
+
 
 @dataclass(frozen=True)
 class Cuerda:
@@ -100,3 +102,48 @@ PERFILES: dict[str, PerfilAfinacion] = {
         trastes=24,
     ),
 }
+
+
+def perfil_desde_midis(
+    nombre: str, midis: list[int] | tuple[int, ...], trastes: int = 22
+) -> PerfilAfinacion:
+    """Construye un perfil a medida desde las notas MIDI de las cuerdas al aire.
+
+    `midis` va de la cuerda más grave a la más aguda, como en `PERFILES`: la primera
+    es la de número más alto (en una guitarra de 6, la sexta). El nombre de cada nota
+    sale de `nombre_de_midi` y su frecuencia de `midi_a_frecuencia`:
+
+        f = f_A4 · 2^((midi - 69) / 12)
+    """
+    if len(midis) == 0:
+        raise ValueError("un perfil necesita al menos una cuerda")
+    # Importación diferida: musica.py importa este módulo al cargarse.
+    from nucleo.musica import midi_a_frecuencia, nombre_de_midi
+
+    total = len(midis)
+    cuerdas = tuple(
+        Cuerda(total - indice, nombre_de_midi(midi), midi_a_frecuencia(midi))
+        for indice, midi in enumerate(midis)
+    )
+    return PerfilAfinacion(nombre=nombre, cuerdas=cuerdas, trastes=trastes)
+
+
+def clave_de_perfil(
+    perfil: PerfilAfinacion, tolerancia_cents: float = 1.0
+) -> str | None:
+    """Clave de `PERFILES` cuyo juego de cuerdas coincide con el perfil, o None.
+
+    Compara por frecuencia, no por igualdad de flotantes: dos cuerdas coinciden si
+
+        |1200 · log2(f / f_conocida)| <= tolerancia_cents
+    """
+    frecuencias = np.array([cuerda.frecuencia for cuerda in perfil.cuerdas])
+    for clave, conocido in PERFILES.items():
+        if len(conocido.cuerdas) != len(frecuencias):
+            continue
+        conocidas = np.array([cuerda.frecuencia for cuerda in conocido.cuerdas])
+        if np.all(
+            np.abs(1200.0 * np.log2(frecuencias / conocidas)) <= tolerancia_cents
+        ):
+            return clave
+    return None
