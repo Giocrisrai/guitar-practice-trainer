@@ -29,15 +29,20 @@ El ritmo, la parte que falla:
     HEURISTICA, no un dato.
 
 Funciona en tablaturas bien alineadas con un espaciado proporcional al tiempo.
-Falla, y no avisa, en las que no: una sola columna de desajuste en una nota
-encoge la unidad y alarga todas las demas duraciones; un espaciado uniforme
+Falla, y no avisa, en las que no: una columna de desajuste que acorte la distancia
+MINIMA encoge la unidad y alarga todas las demas duraciones (si no la acorta, solo
+falsea esa nota); entre sistemas la distancia incluye los guiones finales del primero
+y los iniciales del segundo, asi que dos notas contiguas en sistemas distintos salen
+mas separadas de lo que estan; un espaciado uniforme
 -todas las notas a la misma distancia aunque unas sean corcheas y otras negras-
 da todas las notas iguales; un acorde cuyos numeros no estan en la misma columna
 se lee como notas sucesivas. La ultima nota dura una negra, porque no hay otra
 despues contra la que medir. El compas se supone 4/4 y el tempo lo da quien llama,
 porque el texto no lo trae.
 
-Los dos numeros de una misma columna son un acorde: el modelo de `Pieza` los admite.
+Los numeros de una misma columna son un acorde: el modelo de `Pieza` los admite, y
+sus notas van con la GRAVE PRIMERO, como en los demas lectores (el seguimiento senala
+la ultima nota de un acorde, y debe ser la aguda).
 """
 
 import re
@@ -82,7 +87,12 @@ def _bloques(texto: str) -> list[list[tuple[int, str, str]]]:
     actual: list[tuple[int, str, str]] = []
     for numero, linea in enumerate(texto.splitlines(), start=1):
         coincide = _LINEA.match(linea)
-        if coincide and _parece_de_tablatura(coincide.group(2)):
+        # Una linea de solo guiones, sin letra, sin barra y sin numeros, es un
+        # separador entre sistemas y no una cuerda vacia.
+        con_marca = coincide and (
+            coincide.group(1) or "|" in linea or any(c.isdigit() for c in linea)
+        )
+        if con_marca and _parece_de_tablatura(coincide.group(2)):
             actual.append((numero, coincide.group(1), coincide.group(2)))
         elif actual:
             bloques.append(actual)
@@ -161,9 +171,11 @@ def _midis_de_las_etiquetas(etiquetas: list[str], lineas: int) -> tuple[int, ...
 def _clase(etiqueta: str) -> int:
     """'E' -> 4, 'Bb' -> 10, 'f#' -> 6."""
     clase = NOMBRES_NOTAS.index(etiqueta[0].upper())
-    if etiqueta.endswith("#"):
+    # Solo con dos caracteres: la 'b' sola es la nota si, la convencion de los foros
+    # para la segunda cuerda ("e|b|g|d|a|e"), y no un bemol de nada.
+    if len(etiqueta) == 2 and etiqueta[1] == "#":
         clase += 1
-    elif etiqueta.endswith("b"):
+    elif len(etiqueta) == 2 and etiqueta[1] == "b":
         clase -= 1
     return clase % 12
 
@@ -271,7 +283,7 @@ def pieza_desde_ascii(
             inicio_pulsos=por_columna[columna][0],
             duracion_pulsos=por_columna[columna][1],
         )
-        for columna, linea, traste in sorted(ataques)
+        for columna, linea, traste in sorted(ataques, key=lambda ataque: (ataque[0], -ataque[1]))
     )
     return Pieza(
         nombre=nombre,

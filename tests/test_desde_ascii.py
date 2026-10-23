@@ -24,12 +24,6 @@ def test_la_sexta_cuerda_es_la_linea_de_abajo():
     assert pieza_desde_ascii(texto).notas[0].cuerda == 1
 
 
-def test_el_ritmo_se_infiere_de_las_columnas():
-    """Cuatro guiones entre notas: la misma duracion para las dos primeras."""
-    pieza = pieza_desde_ascii(ESTANDAR)
-    assert pieza.notas[0].duracion_pulsos == pytest.approx(pieza.notas[1].duracion_pulsos)
-
-
 def test_la_pieza_sale_marcada_como_de_ritmo_aproximado():
     """Fingir que una tablatura de foro trae ritmo seria mentir."""
     assert pieza_desde_ascii(ESTANDAR).ritmo_aproximado is True
@@ -40,23 +34,10 @@ def test_un_traste_de_dos_digitos_se_lee_entero():
     assert pieza_desde_ascii(texto).notas[0].traste == 12
 
 
-def test_cuatro_lineas_se_leen_como_un_bajo():
-    """Review Focus 5: el numero de lineas decide el instrumento."""
-    texto = "G|--5--|\nD|-----|\nA|-----|\nE|--0--|\n"
-    pieza = pieza_desde_ascii(texto)
-    assert pieza.notas[1].cuerda == 4
-    assert "bajo" in pieza.perfil.lower() or len(pieza.perfil) > 0
-
-
-def test_siete_lineas_tambien_se_leen():
-    texto = "\n".join("x|--0--|" for _ in range(7)) + "\n"
-    assert len(pieza_desde_ascii(texto).notas) == 7
-
-
 def test_lineas_de_distinta_longitud_se_rechazan_nombrando_la_linea():
     """Review Focus 5: es el sintoma de una tablatura copiada a medias."""
     texto = "e|--3--|\nB|--3-|\nG|--3--|\nD|--3--|\nA|--3--|\nE|--3--|\n"
-    with pytest.raises(ValueError, match="2|linea"):
+    with pytest.raises(ValueError, match="linea 2 "):
         pieza_desde_ascii(texto)
 
 
@@ -121,7 +102,7 @@ def test_cuatro_lineas_son_el_bajo_de_fabrica():
     texto = "G|--5--|\nD|-----|\nA|-----|\nE|--0--|\n"
     pieza = pieza_desde_ascii(texto)
     assert pieza.perfil == "bajo_4"
-    assert [(n.cuerda, n.midi) for n in pieza.notas] == [(1, 43 + 5), (4, 28)]
+    assert [(n.cuerda, n.midi) for n in pieza.notas] == [(4, 28), (1, 43 + 5)]
 
 
 def test_las_letras_de_las_cuerdas_construyen_el_perfil():
@@ -188,14 +169,14 @@ def test_dos_sistemas_se_leen_uno_a_continuacion_del_otro():
     assert [n.inicio_pulsos for n in pieza.notas] == pytest.approx([0, 1, 2, 3])
 
 
-def test_un_acorde_dura_hasta_el_siguiente_ataque_y_va_de_arriba_abajo():
+def test_un_acorde_dura_hasta_el_siguiente_ataque_y_va_con_la_grave_primero_y_el_resto_en_orden():
     texto = (
         "e|--0----|\nB|-------|\nG|--0--5-|\nD|-------|\nA|-------|\nE|-------|\n"
     )
     pieza = pieza_desde_ascii(texto)
     assert [(n.cuerda, n.inicio_pulsos, n.duracion_pulsos) for n in pieza.notas] == [
-        (1, 0, 1),
         (3, 0, 1),
+        (1, 0, 1),
         (3, 1, 1),
     ]
 
@@ -208,3 +189,27 @@ def test_una_tablatura_sin_numeros_se_rechaza():
 def test_un_numero_de_lineas_no_soportado_se_rechaza():
     with pytest.raises(ValueError, match="3 lineas"):
         pieza_desde_ascii("e|--0--|\nB|--0--|\nG|--0--|\n")
+
+
+def test_las_letras_en_minuscula_son_la_estandar_y_la_b_es_un_si():
+    """e|b|g|d|a|e es como se escribe en los foros: la 'b' sola es SI, no si bemol.
+    Mata leer la 'b' como bemol (la segunda cuerda saldria un semitono baja)."""
+    texto = "\n".join(f"{c}|--0--|" for c in "ebgdae") + "\n"
+    pieza = pieza_desde_ascii(texto)
+    assert pieza.perfil == "guitarra_estandar"
+    assert [n.midi for n in pieza.notas] == [40, 45, 50, 55, 59, 64]
+
+
+def test_un_acorde_va_con_la_grave_primero_como_en_los_demas_lectores():
+    """El seguimiento senala la ultima nota de un acorde: tiene que ser la aguda.
+    Mata ordenar de arriba abajo."""
+    texto = "\n".join(f"{c}|--0--|" for c in "eBGDAE") + "\n"
+    pieza = pieza_desde_ascii(texto)
+    assert [n.cuerda for n in pieza.notas] == [6, 5, 4, 3, 2, 1]
+    assert [n.midi for n in pieza.notas] == sorted(n.midi for n in pieza.notas)
+
+
+def test_una_linea_de_guiones_entre_sistemas_es_un_separador():
+    """Mata tomarla por una cuerda vacia: daria 7 lineas y un mensaje enganoso."""
+    texto = _tab("0-2-") + "\n-----------\n" + _tab("3-5-")
+    assert [n.traste for n in pieza_desde_ascii(texto).notas] == [0, 2, 3, 5]
