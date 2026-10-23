@@ -960,3 +960,7 @@ según el diseño:
 
 2b. Ejercicios de acordes
 4. Grabación de sesiones, medición de progreso, entrenamiento de oído y efectos
+
+## Licencia
+
+MIT — ver [`LICENSE`](LICENSE).

@@ -1,10 +1,11 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "proyecto-musica"
 version = "0.1.0"
+license = "MIT"
 description = "Software libre para practicar guitarra con el cable Rocksmith"
 requires-python = ">=3.13"
 dependencies = [
