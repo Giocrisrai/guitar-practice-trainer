@@ -1,4 +1,11 @@
-# proyecto_musica
+# guitar-practice-trainer
+
+![License: MIT](https://img.shields.io/badge/license-MIT-green?style=flat-square)
+![Python 3.13](https://img.shields.io/badge/python-3.13-3670A0?style=flat-square&logo=python&logoColor=white)
+![React 19](https://img.shields.io/badge/React-19-61DAFB?style=flat-square&logo=react&logoColor=black)
+![macOS](https://img.shields.io/badge/platform-macOS-lightgrey?style=flat-square&logo=apple)
+
+> **English:** Free software to practice guitar on macOS with the Rocksmith Real Tone USB cable. Real-time pitch detection drives a tuner and fretboard monitor, monophonic exercises (scales, arpeggios, intervals, sight-reading) graded on note, intonation and tempo, and a play-along lane for full pieces. Python audio core + React 19 interface. Not affiliated with Ubisoft. Documentation below is in Spanish.
 
 Software libre para practicar guitarra en macOS con el cable Rocksmith Real Tone.
 Etapa 1: afinador y monitor de notas en el mástil. Etapa 2a: ejercicios
