@@ -24,6 +24,7 @@ from nucleo.ejercicios.pulsaciones import DetectorPulsaciones
 from nucleo.piezas.compases import (
     compas_en,
     pulsos_del_compas,
+    pulsos_por_compas,
     total_de_compases,
 )
 from nucleo.piezas.modelo import Pieza, pulsos_a_segundos, segundos_a_pulsos
@@ -249,6 +250,7 @@ class EstadoEstudio:
     en_pausa: bool
     compas_variable: bool
     ritmo_aproximado: bool
+    tramo_terminado: bool
 
     def a_dict(self) -> dict:
         return {
@@ -266,6 +268,11 @@ class EstadoEstudio:
             "en_pausa": self.en_pausa,
             "compas_variable": self.compas_variable,
             "ritmo_aproximado": self.ritmo_aproximado,
+            "tramo_terminado": self.tramo_terminado,
+            # `completado` del carril es "se acabo la PIEZA"; para quien practica
+            # un tramo, lo que se acabo es el tramo. Se publica con el mismo
+            # nombre porque es lo que la interfaz de la etapa 3a ya lee.
+            "completado": self.tramo_terminado or self.carril.completado,
         }
 
 
@@ -299,6 +306,13 @@ class SesionDeEstudio:
             for numero, indices in self._reparto.items()
             for indice in indices
         }
+        self._tramo_terminado = False
+        # El informe de la ultima vuelta del bucle que se cerro, o None si
+        # todavia no se cerro ninguna. Lo lee el servidor para el historial.
+        self._ultima_vuelta: InformeDePasada | None = None
+        # El ultimo instante del reloj del ANALISIS que vimos, solo para sacar
+        # el delta de la cuenta atras cuando el tiempo viene en cuadros.
+        self._ultimo_analisis: float | None = None
         self._seguidor = self._nuevo_seguidor()
         self._seguidor.avanzar_a(self._inicio_s())
 
@@ -366,40 +380,190 @@ class SesionDeEstudio:
             en_pausa=self._en_pausa,
             compas_variable=self.pieza.compas_variable,
             ritmo_aproximado=self.pieza.ritmo_aproximado,
+            tramo_terminado=self._tramo_terminado,
         )
 
-    def colocar_en(self, instante_pasada_s: float) -> EstadoEstudio:
-        """Pone el cabezal en ese instante de la pasada. No consume audio.
+    @property
+    def ultima_vuelta(self) -> InformeDePasada | None:
+        """El informe de la ultima vuelta del bucle cerrada, o None si no hubo."""
+        return self._ultima_vuelta
 
-        Es la puerta ABSOLUTA del reloj. La relativa es `avanzar`, y la
-        diferencia importa: con una sola puerta absoluta, el llamador sigue
-        contando tiempo durante la pausa y al reanudar el cabezal saltaria el
-        tamano de la pausa.
+    def _segundos_de_cuenta_atras(self) -> float:
+        if self._plan.compases_de_cuenta_atras == 0:
+            return 0.0
+        return self._segundos(
+            pulsos_por_compas(self.pieza) * self._plan.compases_de_cuenta_atras
+        )
+
+    def _delta_del_analisis(self, instante_analisis: float) -> float:
+        """Cuanto tiempo paso entre dos cuadros, nunca negativo.
+
+        Solo lo necesita la cuenta atras: el reloj de la pieza lo mueve
+        `procesar` del seguidor por su correspondencia, no esta resta.
+        """
+        anterior = self._ultimo_analisis
+        self._ultimo_analisis = instante_analisis
+        if anterior is None:
+            return 0.0
+        return max(0.0, instante_analisis - anterior)
+
+    def _dar_la_vuelta(self) -> None:
+        """Los cuatro pasos del bucle, en este orden y no en otro.
+
+        El informe de la vuelta que acaba se guarda en `_ultima_vuelta`, porque
+        quien lo necesita -el historial- se entera de la vuelta mirando
+        `repeticion` DESPUES de que esto haya pasado, y entonces ya no podria
+        pedirlo.
+        """
+        self._ultima_vuelta = self.cerrar_repeticion()
+        inicio, fin = self._inicio_s(), self._fin_s()
+        self._seguidor.olvidar_tramo(inicio, fin)
+        self._seguidor.avanzar_a(inicio)
+        self._repeticion += 1
+        self._cuenta_atras_restante_s = self._segundos_de_cuenta_atras()
+
+    def _al_dia(self) -> None:
+        """Lo que hay que mirar tras mover el reloj: la cuenta atras y el final.
+
+        La llaman los dos caminos -con audio y sin audio-, porque el bucle tiene
+        que dar la vuelta igual cuando el cable esta desenchufado.
+        """
+        # Una pieza sin compases no tiene tramo que acabar ni que repetir.
+        if total_de_compases(self.pieza) == 0:
+            return
+        if self._cuenta_atras_restante_s > 0:
+            return
+        if self._seguidor.estado.instante_s < self._fin_s():
+            return
+        if self._plan.en_bucle:
+            self._dar_la_vuelta()
+        else:
+            self._tramo_terminado = True
+            self._seguidor.avanzar_a(self._fin_s())
+
+    def colocar_en(self, instante_pasada_s: float) -> EstadoEstudio:
+        """Puerta ABSOLUTA: pon el cabezal aqui. CANCELA la cuenta atras.
+
+        Cancelarla es deliberado: colocar el cabezal es una orden sobre donde
+        esta ahora, y hacerla esperar a una cuenta atras que ya no viene al caso
+        seria desobedecerla a medias. Quien quiere que el tiempo pase respetando
+        la pausa y la cuenta usa `avanzar`.
 
         Mueve el reloj y NADA MAS: no descobra las notas del tramo abandonado
         (`olvidar_tramo`), y si se retrocede eso le toca a quien llama.
         """
+        self._cuenta_atras_restante_s = 0.0
         self._seguidor.avanzar_a(instante_pasada_s)
+        self._al_dia()
         return self.estado
 
     def avanzar(self, delta_s: float) -> EstadoEstudio:
-        """Ha pasado `delta_s` de tiempo. Puerta RELATIVA del reloj.
+        """Puerta RELATIVA: ha pasado `delta_s`. Respeta la pausa y la cuenta atras.
 
-        Por ahora solo suma; la pausa y la cuenta atras entran despues, que es
-        donde existen.
+        Es la que usa el servidor, con su tramo ya acotado por `TECHO_TRAMO_S`.
+        En pausa no pasa nada de nada: el tiempo que no se cuenta no se suma, y
+        por eso reanudar no mueve el cabezal ni un milimetro.
+
+        Un delta negativo se acota a 0 en vez de lanzar: el llamador es el
+        servidor con un reloj monotono, asi que un negativo es un hueco raro y no
+        una orden de retroceder (para eso esta `colocar_en`).
         """
-        # Un delta negativo se acota a 0 en vez de lanzar: el llamador es el
-        # servidor con un reloj monotono, asi que un negativo es un hueco raro
-        # y no una orden de retroceder (para eso esta `colocar_en`).
-        self._seguidor.avanzar_a(self._seguidor.estado.instante_s + max(0.0, delta_s))
+        paso = max(0.0, delta_s)
+        if self._en_pausa:
+            return self.estado
+        if self._cuenta_atras_restante_s > 0:
+            self._cuenta_atras_restante_s = max(0.0, self._cuenta_atras_restante_s - paso)
+            # Colocar el reloj del seguidor en el inicio en cada mirada es lo que
+            # lo congela, y ademas descarta las pulsaciones en vuelo: durante la
+            # cuenta atras no se puede cobrar nada.
+            self._seguidor.avanzar_a(self._inicio_s())
+            return self.estado
+        self._seguidor.avanzar_a(self._seguidor.estado.instante_s + paso)
+        self._al_dia()
         return self.estado
 
     def procesar(
         self, resultado: ResultadoAnalisis, instante_analisis: float
     ) -> EstadoEstudio:
-        """Consume un cuadro de analisis."""
+        """Camino CON audio: el cuadro mueve el reloj por su correspondencia.
+
+        Aqui NO se llama `avanzar_a` cuando la pasada corre: invalidaria la
+        correspondencia entre el reloj de la pieza y el del analisis, y
+        `_adjudicar` descarta los onsets anteriores al primer cuadro posterior a
+        un salto, asi que ningun ataque se anotaria nunca.
+        """
+        delta = self._delta_del_analisis(instante_analisis)
+        if self._en_pausa:
+            self._seguidor.avanzar_a(self._seguidor.estado.instante_s)
+            return self.estado
+        if self._cuenta_atras_restante_s > 0:
+            self._cuenta_atras_restante_s = max(0.0, self._cuenta_atras_restante_s - delta)
+            self._seguidor.avanzar_a(self._inicio_s())
+            return self.estado
         self._seguidor.procesar(resultado, instante_analisis)
+        self._al_dia()
         return self.estado
+
+    def cambiar_plan(self, plan: PlanDePasada) -> EstadoEstudio:
+        """Cambia tempo, bucle, click o rango SIN reiniciar la pasada.
+
+        Un factor nuevo obliga a reconstruir el seguidor, porque sus instantes se
+        calculan una vez y no cambian nunca. Antes de tirarlo se vuelca lo
+        tocado al informe, SIN contarlo como vuelta del bucle: mover el
+        deslizador del tempo no es dar una vuelta, y contarlo inflaria el
+        denominador de `proporcion_limpia`.
+
+        El cabezal se queda en el MISMO PULSO, no en el mismo segundo: cambiar de
+        tempo no mueve a nadie de sitio dentro de la musica.
+        """
+        nuevo = validar_plan(self.pieza, plan)
+        pulsos = self._pulsos(self._seguidor.estado.instante_s)
+        self.cerrar_repeticion(cuenta_como_vuelta=False)
+        cambia_el_factor = nuevo.factor_tempo != self._plan.factor_tempo
+        self._plan = nuevo
+        if cambia_el_factor:
+            self._seguidor = self._nuevo_seguidor()
+        self._tramo_terminado = False
+        self._cuenta_atras_restante_s = 0.0
+        dentro = nuevo.primer_compas <= compas_en(self.pieza, pulsos) <= nuevo.ultimo_compas
+        destino = self._segundos(pulsos) if dentro else self._inicio_s()
+        return self.colocar_en(destino)
+
+    def saltar_al_compas(self, numero: int) -> EstadoEstudio:
+        """Coloca el cabezal al principio del compas `numero`.
+
+        No borra el informe: lo que ya tocaste sigue contando, pero no como una
+        vuelta nueva. Descobra las notas del compas de destino hasta el final del
+        tramo, porque si saltas atras a algo que ya tocaste, volver a tocarlo
+        tiene que contar. Cancela la cuenta atras, porque la cuenta atras es para
+        empezar donde ya estabas.
+        """
+        desde, _ = pulsos_del_compas(self.pieza, numero)
+        destino = self._segundos(desde)
+        self.cerrar_repeticion(cuenta_como_vuelta=False)
+        self._tramo_terminado = False
+        # Primero se olvida y despues se coloca: colocar acaba en `avanzar_a`, que
+        # es quien descarta las pulsaciones en vuelo del tramo abandonado.
+        self._seguidor.olvidar_tramo(destino, self._fin_s())
+        return self.colocar_en(destino)
+
+    def reiniciar_pasada(self) -> EstadoEstudio:
+        """Vuelve al principio del tramo y olvida el informe. Empieza otra pasada."""
+        self._acumulado = {}
+        self._vueltas_cerradas = 0
+        self._repeticion = 1
+        self._tramo_terminado = False
+        self._cuenta_atras_restante_s = 0.0
+        self._seguidor = self._nuevo_seguidor()
+        self._ultimo_analisis = None
+        return self.colocar_en(self._inicio_s())
+
+    def pausar(self) -> None:
+        """Pausa a voluntad del usuario. No es lo mismo que perder la senal."""
+        self._en_pausa = True
+
+    def reanudar(self) -> None:
+        self._en_pausa = False
 
     # -- el informe --------------------------------------------------------
 
@@ -494,7 +658,7 @@ class SesionDeEstudio:
             en_vuelo, self._acumulado, self._vueltas_cerradas + 1
         )
 
-    def cerrar_repeticion(self) -> InformeDePasada:
+    def cerrar_repeticion(self, cuenta_como_vuelta: bool = True) -> InformeDePasada:
         """Vuelca lo que el seguidor lleva anotado al acumulador y lo deja limpio.
 
         **Devuelve el informe de SOLO esa repeticion**, sin lo acumulado, y eso es
@@ -503,9 +667,14 @@ class SesionDeEstudio:
         las ocho anteriores. El informe acumulado sigue disponible en `informe`.
 
         Se llama al dar la vuelta el bucle y antes de reconstruir el seguidor por
-        un cambio de tempo: en los dos casos las `NotaTocada` del seguidor estan a
-        punto de desaparecer, y sin este volcado el informe perderia la
-        repeticion entera.
+        un cambio de tempo o un salto: en todos los casos las `NotaTocada` del
+        seguidor estan a punto de desaparecer, y sin este volcado el informe
+        perderia lo tocado.
+
+        `cuenta_como_vuelta=False` vuelca igual pero no suma una vuelta: es lo que
+        usan `cambiar_plan` y `saltar_al_compas`, que no son una vuelta del
+        bucle. Contarlas inflaria `repeticiones` y hundiria `proporcion_limpia`
+        cada vez que el usuario moviera el deslizador del tempo.
 
         Vaciar el seguidor despues es lo que impide contar dos veces: el informe
         suma lo acumulado MAS lo que el seguidor tenga.
@@ -517,7 +686,8 @@ class SesionDeEstudio:
         """
         cuenta = self._contar(self._seguidor.estado.tocadas)
         solo_esta_vuelta = self._armar_informe(cuenta, {}, 1)
-        self._vueltas_cerradas += 1
+        if cuenta_como_vuelta:
+            self._vueltas_cerradas += 1
         for numero, fila in cuenta.items():
             destino = self._acumulado.setdefault(numero, self._contadores())
             for clave, valor in fila.items():
