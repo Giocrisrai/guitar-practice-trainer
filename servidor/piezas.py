@@ -644,6 +644,18 @@ class SesionCarril:
         `SesionPractica._ajustar_metronomo`: un click marcando el compas con el
         cable desenchufado es lo contrario de lo que pide la spec.
 
+        Coste de parar, medido: `_parar_click` corre bajo `_candado` y suma el
+        `join` de `Metronomo.detener()` (menos de 1 ms, el hilo espera en un
+        Event) y `SalidaAudio.cerrar()`, que toma el candado de escritura y espera
+        al `stream.write()` en vuelo: con audio real es un click de unos 30 ms.
+        Son decenas de ms, solo en transiciones (arrancar, vuelta, tempo, fin de
+        tramo, detener) y acotados por la duracion del click, no por el timeout
+        de un segundo. Pero `_observar` toma este mismo candado, asi que un hilo
+        HTTP parado ahi dentro ciega la deteccion de ataques lo mismo que ajustar
+        el click desde el observador, solo un salto mas alla. Si algun dia eso
+        importa, la salida es quedarse el metronomo viejo en una variable local,
+        soltar el candado y pararlo (y cerrar la salida) fuera de el.
+
         Un tempo que el metronomo no acepta -por encima de TEMPO_MAXIMO_PPM o
         menor que 1- deja la pasada sin click y en pie: tumbarla por el metronomo
         seria cambiar un lujo por lo esencial.
@@ -653,6 +665,10 @@ class SesionCarril:
         if estudio is None or pieza is None or not estudio.plan.con_click:
             self._parar_click()
             return
+        # `and not estado.en_bucle` es DEFENSIVO: el nucleo solo pone
+        # `tramo_terminado` en la rama sin bucle (con bucle da la vuelta), asi que
+        # con bucle la condicion es inalcanzable hoy. Se queda para que un cambio
+        # futuro del nucleo no pare el click de un bucle que sigue girando.
         if estado.tramo_terminado and not estado.en_bucle:
             # La pasada se acabo y no hay nada que marcar: el click seguiria solo
             # como ruido mientras el usuario mira el informe. Aqui si se detiene
@@ -668,9 +684,14 @@ class SesionCarril:
             try:
                 metronomo = Metronomo(tempo, pieza.compas[0], self._salida)
             except ValueError:
+                # Se acaba de parar el click anterior sin cerrar la salida (para
+                # no reabrirla cada vuelta): sin metronomo nuevo no se queda
+                # abierta, que seria retener los altavoces sin usarlos.
+                self._salida.cerrar()
                 return
             # Abrir es idempotente. Si no se puede, el estado dice que no suena.
             if not self._salida.abrir() or not metronomo.iniciar():
+                self._salida.cerrar()
                 return
             self._metronomo = metronomo
         if self._metronomo is not None:

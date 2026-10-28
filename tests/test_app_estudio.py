@@ -184,8 +184,9 @@ def test_iniciar_con_plan_arranca_en_el_compas_pedido(cliente):
     datos = iniciar(cliente, primer_compas=5, ultimo_compas=8, en_bucle=True)
     assert datos["compas_en_curso"] == 5
     assert datos["en_bucle"] is True
-    # Y el cabezal no arranca en cero: el compas 5 de 4/4 a 60 ppm son 16 s.
-    assert datos["instante_s"] == pytest.approx(16.0, abs=0.001)
+    # (Que el cabezal arranque en el compas 5 y no en cero se mide con el reloj
+    # inyectado, en `test_con_un_plan_que_empieza_en_el_compas_cinco_el_cabezal_no_arranca_en_cero`:
+    # con el reloj de pared el instante depende de cuanto tarde la prueba.)
 
 
 def test_el_plan_del_cuerpo_llega_al_carril(cliente):
@@ -1310,6 +1311,68 @@ def test_con_bucle_el_click_no_se_para_al_llegar_al_final_del_tramo(espia):
         carril.iniciar(pieza_de_doce_compases(), PlanDePasada(**PLAN_DE_BUCLE_CON_CLICK))
         estado = mirar_hasta(carril, reloj, lambda e: e["repeticion"] == 2)
         assert estado["click_sonando"] is True
+        # OJO: esto es un TESTIGO de frontera y NO cubre la guarda `and not
+        # estado.en_bucle` de `_ajustar_click`: con bucle el nucleo nunca pone
+        # `tramo_terminado`, asi que esta prueba pasaria igual sin la guarda.
+    finally:
+        carril.detener()
+        sesion.detener()
+
+
+def test_con_un_plan_que_empieza_en_el_compas_cinco_el_cabezal_no_arranca_en_cero():
+    """El compas 5 de 4/4 a 60 ppm son 16 s. Con el reloj inyectado no hay carrera."""
+    carril, sesion, _ = carril_a_mano()
+    try:
+        datos = carril.iniciar(
+            pieza_de_doce_compases(),
+            PlanDePasada(primer_compas=5, ultimo_compas=8, en_bucle=True),
+        )
+        assert datos["compas_en_curso"] == 5
+        assert datos["instante_s"] == pytest.approx(16.0, abs=0.001)
+    finally:
+        carril.detener()
+        sesion.detener()
+
+
+def test_un_tempo_rechazado_a_mitad_de_pasada_no_deja_la_salida_abierta(espia):
+    """Suena a 1 ppm; el factor minimo lo deja en round(0,4) = 0, que el metronomo
+    rechaza, y el click se para. La salida tiene que cerrarse con el: abierta y
+    sin nada que suene retendria el dispositivo del usuario."""
+    salida, streams = salida_falsa()
+    carril, sesion, reloj = carril_a_mano(salida)
+    try:
+        carril.iniciar(replace(pieza_de_doce_compases(), tempo=1), PlanDePasada(con_click=True))
+        assert len(streams) == 1 and streams[0].cerrado is False
+        estado = carril.cambiar_plan(PlanDePasada(con_click=True, factor_tempo=FACTOR_MINIMO))
+        assert estado["click_sonando"] is False
+        assert len(streams) == 1
+        assert streams[0].cerrado is True
+        assert salida.activa is False
+        # Y no se reabre en cada consulta mientras el tempo siga rechazado.
+        for _ in range(5):
+            reloj.avanzar(1 / 30.0)
+            carril.estado()
+        assert len(streams) == 1
+    finally:
+        carril.detener()
+        sesion.detener()
+
+
+def test_un_metronomo_que_no_arranca_con_la_salida_abierta_la_cierra(monkeypatch):
+    """`abrir()` salio bien pero `iniciar()` dice que no: la salida no se queda
+    abierta sin nada que suene."""
+
+    class MetronomoQueNoArranca(MetronomoEspia):
+        def iniciar(self) -> bool:
+            return False
+
+    monkeypatch.setattr(modulo_piezas, "Metronomo", MetronomoQueNoArranca)
+    salida, streams = salida_falsa()
+    carril, sesion, _ = carril_a_mano(salida)
+    try:
+        estado = carril.iniciar(pieza_de_doce_compases(), PlanDePasada(con_click=True))
+        assert estado["click_sonando"] is False
+        assert len(streams) == 1 and streams[0].cerrado is True
     finally:
         carril.detener()
         sesion.detener()
