@@ -1235,3 +1235,81 @@ def test_el_observador_no_toca_el_click(espia):
     finally:
         carril.detener()
         sesion.detener()
+
+
+def test_el_click_se_pausa_con_la_pausa_del_usuario_y_se_reanuda(espia):
+    salida, _ = salida_falsa()
+    carril, sesion, reloj = carril_a_mano(salida)
+    try:
+        carril.iniciar(pieza_de_doce_compases(), PlanDePasada(con_click=True))
+        assert espia[0].pausado is False
+        carril.pausa(True)
+        assert espia[0].pausado is True
+        assert carril.estado()["click_sonando"] is True  # pausado no es parado
+        carril.pausa(False)
+        assert espia[0].pausado is False
+        assert len(espia) == 1  # sin rearrancar: pausar no paga el join
+    finally:
+        carril.detener()
+        sesion.detener()
+
+
+def test_la_pausa_del_usuario_y_la_de_senal_no_se_pisan_el_click(espia):
+    salida, _ = salida_falsa()
+    carril, sesion, reloj = carril_a_mano(salida)
+    try:
+        carril.iniciar(pieza_de_doce_compases(), PlanDePasada(con_click=True))
+        carril.pausa(True)
+        sesion.senal_ausente = True
+        reloj.avanzar(1 / 30.0)
+        carril.estado()
+        sesion.senal_ausente = False
+        reloj.avanzar(1 / 30.0)
+        carril.estado()
+        # Vuelve la señal pero el usuario sigue en pausa: el click sigue callado.
+        assert espia[0].pausado is True
+    finally:
+        carril.detener()
+        sesion.detener()
+
+
+def test_al_acabar_el_tramo_sin_bucle_el_click_se_para_y_la_pasada_siguiente_lo_arranca(espia):
+    salida, streams = salida_falsa()
+    carril, sesion, reloj = carril_a_mano(salida)
+    try:
+        carril.iniciar(
+            pieza_de_doce_compases(),
+            PlanDePasada(
+                primer_compas=1, ultimo_compas=1, compases_de_cuenta_atras=0, con_click=True
+            ),
+        )
+        assert carril.estado()["click_sonando"] is True
+        estado = mirar_hasta(carril, reloj, lambda e: e["tramo_terminado"])
+        assert estado["tramo_terminado"] is True
+        estado = carril.estado()
+        assert estado["click_sonando"] is False
+        assert espia[0].vivo is False
+        assert streams[0].cerrado is True
+        # Mirar el informe cien veces no lo vuelve a arrancar.
+        for _ in range(5):
+            reloj.avanzar(1 / 30.0)
+            assert carril.estado()["click_sonando"] is False
+        assert len(espia) == 1
+        # La pasada siguiente (saltar al principio) lo arranca de nuevo.
+        assert carril.saltar(1)["click_sonando"] is True
+        assert len(espia) == 2
+    finally:
+        carril.detener()
+        sesion.detener()
+
+
+def test_con_bucle_el_click_no_se_para_al_llegar_al_final_del_tramo(espia):
+    salida, _ = salida_falsa()
+    carril, sesion, reloj = carril_a_mano(salida)
+    try:
+        carril.iniciar(pieza_de_doce_compases(), PlanDePasada(**PLAN_DE_BUCLE_CON_CLICK))
+        estado = mirar_hasta(carril, reloj, lambda e: e["repeticion"] == 2)
+        assert estado["click_sonando"] is True
+    finally:
+        carril.detener()
+        sesion.detener()

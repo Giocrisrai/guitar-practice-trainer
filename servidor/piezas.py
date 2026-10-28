@@ -639,9 +639,10 @@ class SesionCarril:
         rearranque borra la deriva acumulada respecto al carril. Tambien rearranca
         si cambia el tempo (otro factor, a mano o automatico).
 
-        Se pausa mientras falta la señal, como `SesionPractica._ajustar_metronomo`:
-        un click marcando el compas con el cable desenchufado es lo contrario de
-        lo que pide la spec.
+        Se pausa mientras falta la señal o el usuario tiene la pausa puesta, y se
+        para del todo al acabar el tramo sin bucle. La pausa por señal es la de
+        `SesionPractica._ajustar_metronomo`: un click marcando el compas con el
+        cable desenchufado es lo contrario de lo que pide la spec.
 
         Un tempo que el metronomo no acepta -por encima de TEMPO_MAXIMO_PPM o
         menor que 1- deja la pasada sin click y en pie: tumbarla por el metronomo
@@ -650,6 +651,13 @@ class SesionCarril:
         estudio = self._estudio
         pieza = self._pieza
         if estudio is None or pieza is None or not estudio.plan.con_click:
+            self._parar_click()
+            return
+        if estado.tramo_terminado and not estado.en_bucle:
+            # La pasada se acabo y no hay nada que marcar: el click seguiria solo
+            # como ruido mientras el usuario mira el informe. Aqui si se detiene
+            # del todo, porque no hace falta hasta la pasada siguiente, que al
+            # empezar (`iniciar` o `saltar`) lo arranca de nuevo.
             self._parar_click()
             return
         tempo = round(pieza.tempo * estudio.plan.factor_tempo)
@@ -666,7 +674,12 @@ class SesionCarril:
                 return
             self._metronomo = metronomo
         if self._metronomo is not None:
-            if self._pausado:
+            # Se pausa si falta la señal (decide el servidor) o si el usuario
+            # tiene el carril en pausa (`en_pausa`, la decide el): en los dos
+            # casos la musica no avanza y un click marcando el compas sobra. Con
+            # `pausar()` y no con `detener()`, para no pagar el `join` en cada
+            # pulsacion del boton de pausa.
+            if self._pausado or estado.en_pausa:
                 self._metronomo.pausar()
             else:
                 self._metronomo.reanudar()
