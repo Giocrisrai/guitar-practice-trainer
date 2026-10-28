@@ -42,6 +42,7 @@ from nucleo.piezas.estudio import (
 )
 from nucleo.piezas.modelo import Pieza
 from nucleo.piezas.seguimiento import EstadoCarril
+from nucleo.sintesis import Metronomo, SalidaAudio
 from servidor.configuracion import Configuracion
 
 # Cuanto puede llevar el seguidor sin recibir un cuadro de audio para que sea
@@ -186,8 +187,19 @@ class SesionCarril:
         sesion_audio,
         reloj: Callable[[], float] = time.monotonic,
         perfil_activo: Callable[[], str] | None = None,
+        salida: SalidaAudio | None = None,
     ) -> None:
         self._sesion_audio = sesion_audio
+        # La salida de audio del click, inyectable como en `SesionPractica`. Crear
+        # una `SalidaAudio` no abre ningun dispositivo: eso lo hace `abrir()`, y
+        # solo cuando un plan pide click.
+        self._salida = salida or SalidaAudio()
+        self._metronomo: Metronomo | None = None
+        # (tempo, repeticion) del ultimo intento de arrancar el click, haya salido
+        # bien o no. Es lo que decide si hay que rearrancar, y que un intento
+        # fallido tambien se anote evita reabrir el dispositivo 30 veces por
+        # segundo con el cable de los altavoces desenchufado.
+        self._clave_del_click: tuple[int, int] | None = None
         self._reloj = reloj
         self._perfil_activo_inyectado = perfil_activo
         self._pieza: Pieza | None = None
@@ -307,6 +319,7 @@ class SesionCarril:
                 self._ultima_mirada = ahora
                 self._ultimo_cuadro = None
                 self._pausado = False
+            # (`detener()` de arriba ya paro el click de la pieza anterior.)
             # El observador se registra AL FINAL, con el estudio ya en su sitio:
             # si se registrara antes, el primer cuadro podria entrar con
             # `_estudio` a None y el audio de ese instante se perderia sin que
@@ -335,6 +348,7 @@ class SesionCarril:
         with self._candado_arranque:
             self._sesion_audio.quitar_observador(self._observar)
             with self._candado:
+                self._parar_click()
                 self._estudio = None
                 self._pieza = None
                 self._instante = 0.0
@@ -533,14 +547,21 @@ class SesionCarril:
             return {
                 **_ESTUDIO_APAGADO.a_dict(),
                 "pausado": False,
+                "click_sonando": False,
                 "factor_sugerido": None,
                 "arranque": ARRANQUE_NINGUNO,
             }
         estado = estudio.estado
         self._cerrar_lo_que_termino(estado)
+        self._ajustar_click(estado)
         return {
             **estado.a_dict(),
             "pausado": self._pausado,
+            # Lo que SUENA y no lo que se pidio: sin salida de audio, o con un
+            # tempo que el metronomo rechaza, el plan dice con_click y esto dice
+            # False, para que la interfaz escriba "sin click" en vez de mostrar un
+            # interruptor encendido que no hace nada.
+            "click_sonando": self._metronomo is not None and self._metronomo.sonando,
             "factor_sugerido": self._factor_sugerido,
             "arranque": self._arranque,
         }
@@ -602,6 +623,66 @@ class SesionCarril:
             ).carril.instante_s
         else:
             self._factor_sugerido = sugerido
+
+    def _ajustar_click(self, estado: EstadoEstudio) -> None:
+        """Arranca, para o rearranca el click segun el plan y la señal. BAJO candado.
+
+        Se llama desde la instantanea y NO desde `_observar`: `_observar` corre en
+        el hilo de analisis, y `Metronomo.detener()` hace `join(timeout=1.0)`.
+        Bloquear ahi hasta un segundo cegaria la deteccion de ataques, que es lo
+        que explica el docstring de `Metronomo.pausar`. La instantanea la llama el
+        hilo HTTP/WS a 30 Hz, donde esto puede costar tiempo sin romper nada.
+
+        Rearranca en cada repeticion (`estado.repeticion`) por dos razones: la
+        cuenta atras tiene que oirse desde su primer pulso, y el hilo del
+        metronomo lleva su propio reloj con esperas de 60/tempo, asi que cada
+        rearranque borra la deriva acumulada respecto al carril. Tambien rearranca
+        si cambia el tempo (otro factor, a mano o automatico).
+
+        Se pausa mientras falta la señal, como `SesionPractica._ajustar_metronomo`:
+        un click marcando el compas con el cable desenchufado es lo contrario de
+        lo que pide la spec.
+
+        Un tempo que el metronomo no acepta -por encima de TEMPO_MAXIMO_PPM o
+        menor que 1- deja la pasada sin click y en pie: tumbarla por el metronomo
+        seria cambiar un lujo por lo esencial.
+        """
+        estudio = self._estudio
+        pieza = self._pieza
+        if estudio is None or pieza is None or not estudio.plan.con_click:
+            self._parar_click()
+            return
+        tempo = round(pieza.tempo * estudio.plan.factor_tempo)
+        clave = (tempo, estado.repeticion)
+        if clave != self._clave_del_click:
+            self._parar_click(cerrar_salida=False)
+            self._clave_del_click = clave
+            try:
+                metronomo = Metronomo(tempo, pieza.compas[0], self._salida)
+            except ValueError:
+                return
+            # Abrir es idempotente. Si no se puede, el estado dice que no suena.
+            if not self._salida.abrir() or not metronomo.iniciar():
+                return
+            self._metronomo = metronomo
+        if self._metronomo is not None:
+            if self._pausado:
+                self._metronomo.pausar()
+            else:
+                self._metronomo.reanudar()
+
+    def _parar_click(self, cerrar_salida: bool = True) -> None:
+        """Para el click y olvida el intento. Seguro de llamar sin click.
+
+        La salida se cierra salvo al rearrancar en la vuelta siguiente, donde
+        cerrarla y reabrirla cada compas seria gastar el dispositivo en balde.
+        """
+        if self._metronomo is not None:
+            self._metronomo.detener()
+        self._metronomo = None
+        self._clave_del_click = None
+        if cerrar_salida:
+            self._salida.cerrar()
 
     def _estudio_o_falla(self) -> SesionDeEstudio:
         """La sesion de estudio en marcha, o el `ValueError` que sale como 400.
