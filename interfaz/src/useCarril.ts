@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { crearReloj, type Reloj } from "./relojCarril";
-import type { EstadoCarril, Pieza, RespuestaIniciarPieza } from "./tiposPieza";
+import type {
+  EstadoEstudio,
+  Plan,
+  RespuestaIniciarEstudio,
+  SeccionEnCompases,
+} from "./tiposEstudio";
+import type { Pieza } from "./tiposPieza";
 
 /** Espera antes de reintentar la conexión. Desconectar el cable es habitual. */
 const ESPERA_RECONEXION_MS = 1000;
@@ -83,9 +89,12 @@ export type PeticionPieza = PeticionEjercicio | PeticionCancion;
 
 export interface SesionCarril {
   /** El último paquete del WebSocket. `null` mientras no llegó ninguno. */
-  estado: EstadoCarril | null;
+  estado: EstadoEstudio | null;
   /** La pieza en curso. Llega una sola vez, en la respuesta de `/iniciar`. */
   pieza: Pieza | null;
+  /** Las secciones de la pieza ya convertidas en compases, tal como las calcula el
+   * núcleo. Llegan con la respuesta de `/iniciar`; vacías mientras no hay pieza. */
+  secciones: SeccionEnCompases[];
   conectado: boolean;
   /** El motivo por el que no se pudo arrancar la pieza, tal y como lo dio el
    * servidor (afinación que no coincide, parámetros imposibles). */
@@ -103,6 +112,21 @@ export interface SesionCarril {
   instante(ahoraLocal: number): number;
   iniciar(peticion: PeticionPieza): Promise<void>;
   detener(): Promise<void>;
+  /**
+   * Cambia el plan de la pasada SIN reiniciarla. El plan es ENTERO, no un parche:
+   * lo que no se mande vuelve a su valor por defecto en el servidor.
+   *
+   * Ninguna de las tres acciones guarda el plan: el vigente lo dice el servidor y
+   * llega por el WebSocket. Una copia aquí se desincronizaría en cuanto el tempo
+   * automático lo moviera por su cuenta. Devuelven si el servidor las aceptó; si
+   * no, el motivo queda en `error`.
+   */
+  cambiarPlan(plan: Plan): Promise<boolean>;
+  /** Mueve el cabezal al principio de un compás DEL TRAMO (fuera de él, 400). */
+  saltar(compas: number): Promise<boolean>;
+  /** La pausa del usuario, explícita (`activa`) y no un interruptor. No es el
+   * `pausado` del estado, que es falta de señal. */
+  pausar(activa: boolean): Promise<boolean>;
 }
 
 /**
@@ -120,7 +144,8 @@ export interface SesionCarril {
  *   `requestAnimationFrame`, que es de la misma línea temporal.
  */
 export function useCarril(url = `ws://${window.location.host}/ws/piezas`): SesionCarril {
-  const [estado, setEstado] = useState<EstadoCarril | null>(null);
+  const [estado, setEstado] = useState<EstadoEstudio | null>(null);
+  const [secciones, setSecciones] = useState<SeccionEnCompases[]>([]);
   const [pieza, setPieza] = useState<Pieza | null>(null);
   const [conectado, setConectado] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -129,7 +154,7 @@ export function useCarril(url = `ws://${window.location.host}/ws/piezas`): Sesio
   const reloj = useRef<Reloj>(crearReloj());
   /** El último estado recibido, para que `instante` lo lea sin cambiar de
    * identidad en cada render. */
-  const ultimoEstado = useRef<EstadoCarril | null>(null);
+  const ultimoEstado = useRef<EstadoEstudio | null>(null);
   /**
    * El reloj actual ya no sirve y hay que hacer otro antes de sincronizarlo.
    *
@@ -161,7 +186,7 @@ export function useCarril(url = `ws://${window.location.host}/ws/piezas`): Sesio
    * aparta uno, el último, y al llegar la respuesta se decide con su etiqueta: si
    * es de esta pieza se adopta, y si no se olvida.
    */
-  const paqueteEnEspera = useRef<EstadoCarril | null>(null);
+  const paqueteEnEspera = useRef<EstadoEstudio | null>(null);
   /**
    * Si el SOCKET ya trajo un paquete de la pieza que tenemos.
    *
@@ -186,6 +211,7 @@ export function useCarril(url = `ws://${window.location.host}/ws/piezas`): Sesio
    * llega por el socket. */
   const soltarLaPieza = useCallback(() => {
     setPieza(null);
+    setSecciones([]);
     setEstado(null);
     ultimoEstado.current = null;
     relojCaduco.current = true;
@@ -218,7 +244,7 @@ export function useCarril(url = `ws://${window.location.host}/ws/piezas`): Sesio
    * de la anterior salía encima de la nueva.
    */
   const recibir = useCallback(
-    (nuevo: EstadoCarril, delSocket = false) => {
+    (nuevo: EstadoEstudio, delSocket = false) => {
       if (nuevo.arranque !== arranque.current) {
         // Salvo uno: el carril APAGADO que llega después de un paquete de
         // nuestra pieza no es un paquete ajeno, es el final de la nuestra,
@@ -300,13 +326,15 @@ export function useCarril(url = `ws://${window.location.host}/ws/piezas`): Sesio
           body: JSON.stringify(peticion),
         });
         const cuerpo = (await respuesta.json().catch(() => null)) as
-          | (RespuestaIniciarPieza & { detail?: string })
+          | (RespuestaIniciarEstudio & { detail?: string })
           | null;
         if (!respuesta.ok || cuerpo === null) {
           throw new Error(cuerpo?.detail ?? `El servidor respondio ${respuesta.status}`);
         }
-        const { pieza: piezaNueva, ...estadoInicial } = cuerpo;
+        const { pieza: piezaNueva, secciones_en_compases: seccionesNuevas, ...estadoInicial } =
+          cuerpo;
         setPieza(piezaNueva);
+        setSecciones(seccionesNuevas ?? []);
         // Reloj nuevo con cada pieza: el de la anterior tiene por suelo un
         // instante que en esta pieza está en el futuro, y el suelo solo sube.
         reloj.current = crearReloj();
@@ -346,6 +374,41 @@ export function useCarril(url = `ws://${window.location.host}/ws/piezas`): Sesio
     soltarLaPieza();
   }, [soltarLaPieza]);
 
+  /**
+   * El molde de las tres órdenes: un POST con cuerpo JSON y nada que guardar.
+   * El estado nuevo llega por el WebSocket. Un rechazo del servidor (400) no se
+   * pierde en la consola: queda en `error`, que la pantalla enseña.
+   */
+  const pedir = useCallback(async (ruta: string, cuerpo: unknown): Promise<boolean> => {
+    try {
+      const respuesta = await fetch(ruta, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(cuerpo),
+      });
+      if (!respuesta.ok) {
+        const datos = (await respuesta.json().catch(() => null)) as { detail?: string } | null;
+        setError(datos?.detail ?? `El servidor respondio ${respuesta.status}`);
+        return false;
+      }
+      setError(null);
+      return true;
+    } catch (excepcion) {
+      setError(excepcion instanceof Error ? excepcion.message : "No se pudo contactar al servidor");
+      return false;
+    }
+  }, []);
+
+  const cambiarPlan = useCallback((plan: Plan) => pedir("/api/piezas/plan", plan), [pedir]);
+  const saltar = useCallback(
+    (compas: number) => pedir("/api/piezas/saltar", { compas }),
+    [pedir]
+  );
+  const pausar = useCallback(
+    (activa: boolean) => pedir("/api/piezas/pausa", { activa }),
+    [pedir]
+  );
+
   useEffect(() => {
     let vivo = true;
     let socket: WebSocket | null = null;
@@ -358,7 +421,7 @@ export function useCarril(url = `ws://${window.location.host}/ws/piezas`): Sesio
 
       socket.onmessage = (evento) => {
         try {
-          recibir(JSON.parse(evento.data) as EstadoCarril, true);
+          recibir(JSON.parse(evento.data) as EstadoEstudio, true);
         } catch {
           // Un mensaje corrupto se descarta; el siguiente llega en 33 ms.
         }
@@ -381,5 +444,18 @@ export function useCarril(url = `ws://${window.location.host}/ws/piezas`): Sesio
     };
   }, [url, recibir]);
 
-  return { estado, pieza, conectado, error, iniciando, instante, iniciar, detener };
+  return {
+    estado,
+    pieza,
+    secciones,
+    conectado,
+    error,
+    iniciando,
+    instante,
+    iniciar,
+    detener,
+    cambiarPlan,
+    saltar,
+    pausar,
+  };
 }

@@ -8,10 +8,11 @@ import {
   yDeLaLineaDeAtaque,
   type LienzoCarril,
 } from "./geometriaCarril";
+import { ControlesEstudio } from "./ControlesEstudio";
 import type { PerfilAfinacion } from "./tipos";
 import type { FamiliaEjercicio } from "./tiposEjercicio";
 import type { EstadoEstudio } from "./tiposEstudio";
-import type { Clasificacion, EstadoCarril, NotaDePieza, NotaTocada, Pieza } from "./tiposPieza";
+import type { Clasificacion, NotaDePieza, NotaTocada, Pieza } from "./tiposPieza";
 import { useCarril, type PeticionPieza } from "./useCarril";
 import { VistaEscrita } from "./VistaEscritaPieza";
 
@@ -153,7 +154,7 @@ function pintarCuadro(
   contexto: CanvasRenderingContext2D,
   lienzo: LienzoCarril,
   pieza: Pieza,
-  estado: EstadoCarril | null,
+  estado: EstadoEstudio | null,
   instanteS: number,
   indices: Map<NotaDePieza, number>
 ): void {
@@ -225,13 +226,13 @@ function pintarCuadro(
  * no ha llegado un paquete que lo traiga -o llega el del carril apagado, que lo
  * manda a 0 y dividir entre él no dibuja nada- vale el de la pieza.
  */
-function tempoParaDibujar(pieza: Pieza, estado: EstadoCarril | null): number {
-  const efectivo = (estado as Partial<EstadoEstudio> | null)?.tempo_efectivo;
+function tempoParaDibujar(pieza: Pieza, estado: EstadoEstudio | null): number {
+  const efectivo = estado?.tempo_efectivo;
   return efectivo !== undefined && efectivo > 0 ? efectivo : pieza.tempo;
 }
 
 /** El resumen de la pieza terminada: cómo llegó cada nota que se pudo adjudicar. */
-function ResumenCarril({ pieza, estado }: { pieza: Pieza; estado: EstadoCarril }) {
+function ResumenCarril({ pieza, estado }: { pieza: Pieza; estado: EstadoEstudio }) {
   const acertadas = estado.tocadas.filter((tocada) => tocada.acertada).length;
   return (
     <div className="resumen-carril">
@@ -272,7 +273,20 @@ interface PropiedadesCarril {
 
 /** Pantalla del carril: elige la pieza, la toca y la resume. */
 export function Carril({ peticion = null }: PropiedadesCarril) {
-  const { estado, pieza, conectado, error, iniciando, instante, iniciar, detener } = useCarril();
+  const {
+    estado,
+    pieza,
+    secciones,
+    conectado,
+    error,
+    iniciando,
+    instante,
+    iniciar,
+    detener,
+    cambiarPlan,
+    saltar,
+    pausar,
+  } = useCarril();
   const [familias, setFamilias] = useState<FamiliaEjercicio[]>([]);
   const [perfiles, setPerfiles] = useState<PerfilAfinacion[]>([]);
   // La familia la elige el usuario de entre las que publica el servidor. Nunca
@@ -286,7 +300,7 @@ export function Carril({ peticion = null }: PropiedadesCarril) {
   const lienzoRef = useRef<HTMLCanvasElement | null>(null);
   /** El último estado, para que el bucle de dibujo lo lea sin reiniciarse en
    * cada paquete: treinta reinicios por segundo del bucle de animación. */
-  const estadoRef = useRef<EstadoCarril | null>(estado);
+  const estadoRef = useRef<EstadoEstudio | null>(estado);
 
   useEffect(() => {
     fetch("/api/ejercicios/familias")
@@ -464,6 +478,19 @@ export function Carril({ peticion = null }: PropiedadesCarril) {
         <p className="aviso-carril pausado">
           Carril pausado: no llega señal del cable. Se reanuda en cuanto vuelvas a tocar.
         </p>
+      )}
+
+      {/* Un rechazo del servidor a una orden (tempo, salto, pausa) no se pierde. */}
+      {error !== null && <p className="error-ejercicio">{error}</p>}
+
+      {estado !== null && (
+        <ControlesEstudio
+          estado={estado}
+          secciones={secciones}
+          alCambiarPlan={cambiarPlan}
+          alPausar={(activa) => void pausar(activa)}
+          alSaltar={(compas) => void saltar(compas)}
+        />
       )}
 
       <div className="conmutador-vista" role="group" aria-label="Vista">

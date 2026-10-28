@@ -253,3 +253,18 @@ body {
 .compas.marcando { border-style: dashed; border-color: var(--desviada); }
 .compas[aria-current="true"] { border-color: var(--afinada); border-width: 2px; font-weight: 600; }
 .aviso-compases { color: var(--desviada); font-size: 13px; margin: 0 0 8px; }
+
+/* Los controles de la pasada: tempo, bucle, click, pausa. */
+.controles-estudio { margin: 12px 0; }
+.control-estudio { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin: 8px 0; }
+.control-estudio button {
+  background: var(--panel); color: var(--texto); border: 1px solid var(--borde);
+  border-radius: 6px; padding: 6px 12px; cursor: pointer; font-size: 14px;
+}
+.control-estudio select {
+  background: var(--panel); color: var(--texto); border: 1px solid var(--borde);
+  border-radius: 6px; padding: 6px 10px;
+}
+.sugerencia-tempo { border-color: var(--afinada); }
+.aviso-click, .aviso-pausa-usuario { color: var(--desviada); font-size: 13px; }
+.cuenta-atras { font-size: 24px; font-weight: 600; font-variant-numeric: tabular-nums; }

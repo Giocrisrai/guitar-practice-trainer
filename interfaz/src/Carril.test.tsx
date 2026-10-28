@@ -3,7 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { Carril } from "./Carril";
 import { useCarril } from "./useCarril";
-import type { EstadoCarril, NotaTocada, Pieza, RespuestaIniciarPieza } from "./tiposPieza";
+import type { EstadoEstudio, RespuestaIniciarEstudio } from "./tiposEstudio";
+import type { EstadoCarril, NotaTocada, Pieza } from "./tiposPieza";
 
 /**
  * Qué se puede probar aquí y qué no.
@@ -79,8 +80,19 @@ const PIEZA: Pieza = {
 const ARRANQUE_EN_CURSO = 2;
 const ARRANQUE_ANTERIOR = 1;
 
+/** Lo que el estado de la pasada añade al del carril, en una pasada sin tocar:
+ * pieza entera, a tempo escrito, sin bucle, sin pausa (el plan por defecto). */
+const ESTUDIO_BASE = {
+  instante_pulsos: 0, compas_en_curso: 1, total_de_compases: 1, primer_compas: 1,
+  ultimo_compas: 1, repeticion: 1, cuenta_atras_restante_s: 0, factor_tempo: 1,
+  tempo_efectivo: 60, en_bucle: false, en_pausa: false, compas_variable: false,
+  ritmo_aproximado: false, tramo_terminado: false, click_sonando: false,
+  factor_sugerido: null,
+};
+
 /** El carril apagado: las mismas claves que con pieza (`_CARRIL_APAGADO`). */
-const ESTADO_APAGADO: EstadoCarril = {
+const ESTADO_APAGADO: EstadoEstudio = {
+  ...ESTUDIO_BASE,
   arranque: 0,
   instante_s: 0,
   indice_actual: 0,
@@ -91,7 +103,9 @@ const ESTADO_APAGADO: EstadoCarril = {
 };
 
 /** Lo que devuelve `POST /api/piezas/iniciar`: la pieza entera y el estado inicial. */
-const RESPUESTA_INICIAR: RespuestaIniciarPieza = {
+const RESPUESTA_INICIAR: RespuestaIniciarEstudio = {
+  ...ESTUDIO_BASE,
+  secciones_en_compases: [],
   pieza: PIEZA,
   arranque: ARRANQUE_EN_CURSO,
   instante_s: 0,
@@ -169,8 +183,9 @@ function enviarEstado(estado: PaqueteDePrueba) {
 }
 
 /** Un paquete de la pieza en curso, con lo que cada prueba quiera cambiar. */
-function enCurso(cambios: Partial<EstadoCarril> = {}): EstadoCarril {
+function enCurso(cambios: Partial<EstadoEstudio> = {}): EstadoEstudio {
   return {
+    ...ESTUDIO_BASE,
     arranque: ARRANQUE_EN_CURSO,
     instante_s: 0,
     indice_actual: 0,
@@ -874,12 +889,239 @@ describe("Carril: el dibujo sigue al tempo efectivo", () => {
 
   it("sin tempo efectivo en el paquete se usa el de la pieza", async () => {
     // El mismo instante, pero a 60: las notas de los pulsos 3 y 6 caen dentro.
-    const carriles = await carrilesPintados({});
+    // `undefined` no viaja en el JSON: el paquete llega SIN `tempo_efectivo`.
+    const carriles = await carrilesPintados({ tempo_efectivo: undefined });
     expect(carriles.map(([x]) => x)).toEqual([100, 200]);
   });
 
   it("un tempo efectivo de 0, el del carril apagado, no rompe el dibujo ni lo vacía", async () => {
     const carriles = await carrilesPintados({ tempo_efectivo: 0 });
     expect(carriles.map(([x]) => x)).toEqual([100, 200]);
+  });
+});
+
+describe("Carril: los controles de la pasada", () => {
+  const SECCIONES = [{ nombre: "Intro", primer_compas: 1, ultimo_compas: 2 }];
+
+  beforeEach(() => vi.stubGlobal("WebSocket", WebSocketFalso));
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  /** Un fetch que además contesta a las tres órdenes; `rechazo` hace que fallen. */
+  function fetchConOrdenes(rechazo: string | null = null) {
+    return vi.fn((url: string) => {
+      const direccion = String(url);
+      if (direccion.includes("/api/ejercicios/familias")) return responder(FAMILIAS);
+      if (direccion.includes("/api/perfiles")) return responder(PERFILES);
+      if (direccion.includes("/api/piezas/iniciar")) {
+        return responder({
+          ...RESPUESTA_INICIAR, total_de_compases: 4, ultimo_compas: 4,
+          secciones_en_compases: SECCIONES,
+        });
+      }
+      if (/\/api\/piezas\/(plan|saltar|pausa)$/.test(direccion)) {
+        return rechazo === null
+          ? responder(ESTADO_APAGADO)
+          : responder({ detail: rechazo }, false, 400);
+      }
+      return responder(ESTADO_APAGADO);
+    });
+  }
+
+  /** El cuerpo de la última orden enviada a esa ruta, ya parseado. */
+  function cuerpoDe(fetchFalso: ReturnType<typeof vi.fn>, ruta: string): unknown {
+    const llamadas = fetchFalso.mock.calls.filter(([url]) => url === ruta);
+    expect(llamadas.length).toBeGreaterThan(0);
+    return JSON.parse(String((llamadas[llamadas.length - 1][1] as RequestInit).body));
+  }
+
+  async function montarEnMarcha(fetchFalso: ReturnType<typeof vi.fn>) {
+    vi.stubGlobal("fetch", fetchFalso);
+    render(<Carril />);
+    await pulsarEmpezar();
+    await screen.findByRole("button", { name: "Pausar" });
+  }
+
+  it("las secciones de la respuesta de iniciar llegan a la lista", async () => {
+    await montarEnMarcha(fetchConOrdenes());
+    const lista = screen.getByLabelText("Sección") as HTMLSelectElement;
+    expect(Array.from(lista.options).map((o) => o.textContent)).toEqual([
+      "Elige una sección",
+      "Intro (compases 1-2)",
+    ]);
+  });
+
+  it("pausar manda la pausa explícita al servidor", async () => {
+    const fetchFalso = fetchConOrdenes();
+    await montarEnMarcha(fetchFalso);
+    await act(async () => {
+      screen.getByRole("button", { name: "Pausar" }).click();
+    });
+    expect(cuerpoDe(fetchFalso, "/api/piezas/pausa")).toEqual({ activa: true });
+  });
+
+  it("reanudar manda la pausa en falso", async () => {
+    const fetchFalso = fetchConOrdenes();
+    await montarEnMarcha(fetchFalso);
+    enviarEstado(enCurso({ en_pausa: true }));
+    await act(async () => {
+      screen.getByRole("button", { name: "Reanudar" }).click();
+    });
+    expect(cuerpoDe(fetchFalso, "/api/piezas/pausa")).toEqual({ activa: false });
+  });
+
+  it("el tempo que se mueve llega al servidor como plan entero", async () => {
+    const fetchFalso = fetchConOrdenes();
+    await montarEnMarcha(fetchFalso);
+    await act(async () => {
+      fireEvent.change(screen.getByLabelText("Tempo"), { target: { value: "70" } });
+    });
+    expect(cuerpoDe(fetchFalso, "/api/piezas/plan")).toEqual({
+      primer_compas: 1, ultimo_compas: 4, factor_tempo: 0.7, en_bucle: false,
+      compases_de_cuenta_atras: 1, con_click: false, tempo_automatico: false,
+    });
+  });
+
+  it("un clic fuera del tramo manda el plan y luego el salto, al servidor", async () => {
+    const fetchFalso = fetchConOrdenes();
+    await montarEnMarcha(fetchFalso);
+    // El tramo pasa a ser 1-2 (el servidor lo dice por el WebSocket).
+    enviarEstado(enCurso({ total_de_compases: 4, primer_compas: 1, ultimo_compas: 2 }));
+    await act(async () => {
+      screen.getByRole("button", { name: "Compás 4" }).click();
+    });
+    await waitFor(() =>
+      expect(fetchFalso.mock.calls.some(([url]) => url === "/api/piezas/saltar")).toBe(true),
+    );
+    const rutas = fetchFalso.mock.calls
+      .map(([url]) => url)
+      .filter((url) => /\/api\/piezas\/(plan|saltar)$/.test(String(url)));
+    expect(rutas).toEqual(["/api/piezas/plan", "/api/piezas/saltar"]);
+    expect(cuerpoDe(fetchFalso, "/api/piezas/plan")).toMatchObject({
+      primer_compas: 3, ultimo_compas: 4,
+    });
+    expect(cuerpoDe(fetchFalso, "/api/piezas/saltar")).toEqual({ compas: 4 });
+  });
+
+  it("si el servidor rechaza una orden, el motivo se ve y no hay salto", async () => {
+    const fetchFalso = fetchConOrdenes("El tempo tiene que estar entre el 40% y el 100%");
+    await montarEnMarcha(fetchFalso);
+    enviarEstado(enCurso({ total_de_compases: 4, primer_compas: 1, ultimo_compas: 2 }));
+    await act(async () => {
+      screen.getByRole("button", { name: "Compás 4" }).click();
+    });
+    expect((await screen.findByText(/El tempo tiene que estar/)).className).toBe("error-ejercicio");
+    expect(fetchFalso.mock.calls.some(([url]) => url === "/api/piezas/saltar")).toBe(false);
+  });
+
+  it("sin señal NO es pausa del usuario: el aviso es uno y el botón sigue en «Pausar»", async () => {
+    await montarEnMarcha(fetchConOrdenes());
+    enviarEstado(enCurso({ pausado: true, en_pausa: false }));
+    expect(screen.getByText(/no llega señal del cable/)).toBeDefined();
+    expect(screen.getByRole("button", { name: "Pausar" })).toBeDefined();
+    expect(screen.queryByText(/En pausa/)).toBeNull();
+  });
+
+  it("la pausa del usuario NO es falta de señal: no sale el aviso del cable", async () => {
+    await montarEnMarcha(fetchConOrdenes());
+    enviarEstado(enCurso({ pausado: false, en_pausa: true }));
+    expect(screen.getByRole("button", { name: "Reanudar" })).toBeDefined();
+    expect(screen.getByText(/En pausa/)).toBeDefined();
+    expect(screen.queryByText(/no llega señal del cable/)).toBeNull();
+  });
+});
+
+describe("useCarril: las órdenes de la pasada", () => {
+  beforeEach(() => vi.stubGlobal("WebSocket", WebSocketFalso));
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("cada orden va a su ruta con su cuerpo, y devuelve que fue aceptada", async () => {
+    const fetchFalso = vi.fn((_url: string, _opciones?: RequestInit) => responder({}));
+    vi.stubGlobal("fetch", fetchFalso);
+    const { result } = renderHook(() => useCarril());
+    let resultados: boolean[] = [];
+    await act(async () => {
+      resultados = [
+        await result.current.cambiarPlan({ factor_tempo: 0.5 }),
+        await result.current.saltar(3),
+        await result.current.pausar(false),
+      ];
+    });
+    expect(resultados).toEqual([true, true, true]);
+    expect(
+      fetchFalso.mock.calls.map(([url, opciones]) => [
+        url,
+        opciones?.method,
+        JSON.parse(String(opciones?.body)),
+      ]),
+    ).toEqual([
+      ["/api/piezas/plan", "POST", { factor_tempo: 0.5 }],
+      ["/api/piezas/saltar", "POST", { compas: 3 }],
+      ["/api/piezas/pausa", "POST", { activa: false }],
+    ]);
+    expect(result.current.error).toBeNull();
+  });
+
+  it("al detener la pieza las secciones se van con ella", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) =>
+        responder(
+          String(url).includes("/iniciar")
+            ? { ...RESPUESTA_INICIAR, secciones_en_compases: [{ nombre: "A", primer_compas: 1, ultimo_compas: 1 }] }
+            : {},
+        ),
+      ),
+    );
+    const { result } = renderHook(() => useCarril());
+    await act(async () => {
+      await result.current.iniciar({ familia: "escala", parametros: {} });
+    });
+    expect(result.current.secciones).toHaveLength(1);
+    await act(async () => {
+      await result.current.detener();
+    });
+    expect(result.current.secciones).toEqual([]);
+  });
+
+  it("un 400 devuelve false y deja el motivo del servidor en error", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => responder({ detail: "El compas 9 no esta" }, false, 400)));
+    const { result } = renderHook(() => useCarril());
+    let aceptada = true;
+    await act(async () => {
+      aceptada = await result.current.saltar(9);
+    });
+    expect(aceptada).toBe(false);
+    expect(result.current.error).toBe("El compas 9 no esta");
+  });
+
+  it("una orden aceptada limpia el error de la anterior", async () => {
+    const respuestas = [responder({ detail: "mal" }, false, 400), responder({})];
+    vi.stubGlobal("fetch", vi.fn(() => respuestas.shift()!));
+    const { result } = renderHook(() => useCarril());
+    await act(async () => {
+      await result.current.pausar(true);
+    });
+    expect(result.current.error).toBe("mal");
+    await act(async () => {
+      await result.current.pausar(false);
+    });
+    expect(result.current.error).toBeNull();
+  });
+
+  it("si no hay red devuelve false y lo dice en error, sin lanzar", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => Promise.reject(new Error("sin red"))));
+    const { result } = renderHook(() => useCarril());
+    let aceptada = true;
+    await act(async () => {
+      aceptada = await result.current.cambiarPlan({});
+    });
+    expect(aceptada).toBe(false);
+    expect(result.current.error).toBe("sin red");
   });
 });
