@@ -327,9 +327,36 @@ class SesionDeEstudio:
         """Pulsos de la pieza a segundos DE LA PASADA."""
         return pulsos_a_segundos(pulsos, self.pieza.tempo) / self._plan.factor_tempo
 
+    # Decimales de pulso a los que se redondea el viaje de vuelta (ver `_pulsos`).
+    # Nueve esta MUY por debajo de lo que cualquier figura musical distingue -la
+    # semifusa de un 4/4 es 0,0625 pulsos-, asi que redondear ahi no puede mover
+    # nada que se vea, y en cambio borra la clase entera de defecto que trae el
+    # binario.
+    DECIMALES_DE_PULSO = 9
+
     def _pulsos(self, segundos_de_pasada: float) -> float:
-        return segundos_a_pulsos(
-            segundos_de_pasada * self._plan.factor_tempo, self.pieza.tempo
+        """Segundos DE LA PASADA a pulsos de la pieza. Redondeado a proposito.
+
+        El redondeo esta AQUI, en el viaje de vuelta, porque aqui esta la causa:
+        `_segundos` divide por el factor y esto vuelve a multiplicar por el, y ese
+        ida y vuelta no es exacto en binario. Con `factor_tempo=0.95`, el inicio
+        del compas 2 -4 pulsos- sale de `_segundos` como 4,2105... y vuelve como
+        3,9999999999999996, que es un pulso MENOS de cuatro: `compas_en` lo lee
+        como compas 1 y el numero de compas de la pantalla se equivoca justo al
+        cruzar la barra, que es cuando el alumno mas lo mira.
+
+        Y NO esta en `compas_en` ni en ningun otro consumidor, aunque alli tambien
+        se taparia: `compas_en` recibe pulsos de muchos sitios -los lectores, el
+        informe, la rejilla- y la mayoria no vienen de este ida y vuelta, asi que
+        redondear alli seria disimular este defecto en un sitio que no lo causa y
+        dejarlo vivo para el siguiente consumidor que llegue. Arreglada la
+        conversion, todos los que la usan quedan arreglados a la vez.
+        """
+        return round(
+            segundos_a_pulsos(
+                segundos_de_pasada * self._plan.factor_tempo, self.pieza.tempo
+            ),
+            self.DECIMALES_DE_PULSO,
         )
 
     def _inicio_s(self) -> float:

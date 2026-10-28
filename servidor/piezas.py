@@ -646,6 +646,14 @@ class SesionCarril:
             self._instante = self._estudio_o_falla().saltar_al_compas(
                 numero
             ).carril.instante_s
+            # Y la sugerencia se va con el salto, igual que `tramo_terminado` se
+            # va dentro del nucleo: saltar es empezar a tocar otra vez, y la
+            # sugerencia era sobre la pasada que acabo. Si se quedara puesta, el
+            # usuario que la ignora y toca otra pasada que no mueve el factor
+            # seguiria viendo ofrecido un cambio que el historial ya no dice:
+            # `_cerrar_lo_que_termino` solo la escribe, nunca la borra, asi que
+            # borrarla es de quien empieza la pasada nueva.
+            self._factor_sugerido = None
         return self.estado()
 
     def pausa(self, activa: bool) -> dict:

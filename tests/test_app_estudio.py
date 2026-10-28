@@ -834,11 +834,11 @@ def test_el_tempo_automatico_con_bucle_aplica_el_factor_y_no_sugiere_nada():
         assert estado["factor_sugerido"] is None
         assert estado["pausado"] is True
         assert estado["instante_s"] == pytest.approx(4.0 / 0.95, abs=0.02)
-        # Y aqui NO se mira `compas_en_curso`: el cabezal esta clavado en la
-        # frontera del compas 2 y el viaje de segundos a pulsos por el factor
-        # (4 / 0,95 * 0,95 = 3,9999999999999996) lo deja un pelo por debajo, asi
-        # que el nucleo lee compas 1. Es cosa de `SesionDeEstudio.estado`, no de
-        # esta clase, y lo que esta prueba vigila es el reloj.
+        # El cabezal esta clavado en la frontera del compas 2, que es donde el
+        # viaje de segundos a pulsos por el factor se equivocaba de compas antes
+        # de que `_pulsos` redondeara (ver `test_el_compas_de_la_frontera_...` en
+        # `tests/test_estudio.py`).
+        assert estado["compas_en_curso"] == 2
     finally:
         carril.detener()
         sesion.detener()
@@ -874,6 +874,63 @@ def test_una_orden_del_usuario_no_se_pierde_si_la_senal_ya_se_fue():
             PlanDePasada(primer_compas=4, ultimo_compas=6)
         )["compas_en_curso"] == 4
         assert carril.estado()["compas_en_curso"] == 4
+    finally:
+        carril.detener()
+        sesion.detener()
+
+
+def test_la_sugerencia_no_sobrevive_a_empezar_otra_pasada_con_un_salto():
+    """Saltar es empezar a tocar otra vez, y la sugerencia era de la pasada vieja.
+
+    Medido: tras acabar un tramo sin bucle y saltar al compas de salida, el estado
+    daba `completado False` y `instante_s` en el inicio -o sea, pasada nueva- con
+    el `factor_sugerido` de la anterior todavia puesto. Si el usuario ignora la
+    sugerencia y toca una pasada cuyo resultado no mueve el factor, la pantalla
+    seguiria ofreciendo un cambio que el historial ya no dice: el detector solo
+    escribe la sugerencia, nunca la borra.
+    """
+    carril, sesion, reloj = carril_a_mano()
+    try:
+        carril.iniciar(
+            pieza_de_doce_compases(),
+            PlanDePasada(primer_compas=2, ultimo_compas=2, tempo_automatico=True),
+        )
+        mirar_hasta(carril, reloj, lambda e: e["completado"])
+        assert carril.estado()["factor_sugerido"] == pytest.approx(1.0 - PASO_DEL_FACTOR)
+
+        estado = carril.saltar(2)
+        assert estado["completado"] is False      # la pasada nueva ya ha empezado
+        assert estado["instante_s"] == pytest.approx(4.0, abs=0.001)
+        assert estado["factor_sugerido"] is None
+    finally:
+        carril.detener()
+        sesion.detener()
+
+
+def test_aplicar_la_sugerencia_con_un_plan_nuevo_la_deja_a_cero():
+    """Quien aplica la sugerencia manda un plan, y entonces ya no hay nada que ofrecer.
+
+    Sin esto, la interfaz aplicaria el factor sugerido y seguiria viendo la misma
+    sugerencia publicada, asi que ofreceria aplicar otra vez lo que acaba de hacer.
+    """
+    carril, sesion, reloj = carril_a_mano()
+    try:
+        carril.iniciar(
+            pieza_de_doce_compases(),
+            PlanDePasada(primer_compas=2, ultimo_compas=2, tempo_automatico=True),
+        )
+        mirar_hasta(carril, reloj, lambda e: e["completado"])
+        sugerido = carril.estado()["factor_sugerido"]
+        assert sugerido == pytest.approx(1.0 - PASO_DEL_FACTOR)
+
+        estado = carril.cambiar_plan(
+            PlanDePasada(
+                primer_compas=2, ultimo_compas=2, factor_tempo=sugerido,
+                tempo_automatico=True,
+            )
+        )
+        assert estado["factor_tempo"] == pytest.approx(sugerido)
+        assert estado["factor_sugerido"] is None
     finally:
         carril.detener()
         sesion.detener()

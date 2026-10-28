@@ -1275,3 +1275,35 @@ def test_primero_las_pasadas_falladas_y_luego_la_proporcion():
     historial.anotar(informe_de([(2, 4, 4, 4, 4, False)]))
     historial.anotar(informe_de([(2, 4, 4, 4, 4, False)]))
     assert historial.peores_compases(2) == ((2, 2, 4), (1, 1, 1))
+
+
+def test_el_compas_de_la_frontera_no_se_equivoca_con_un_factor_de_tempo():
+    """El viaje de segundos a pulsos y vuelta no puede perder un compas.
+
+    Con `factor_tempo=0.95`, el inicio del compas 2 son 4 pulsos, que salen como
+    4,2105... segundos de pasada y volvian como 3,9999999999999996 pulsos: un
+    pelo por debajo de cuatro, asi que `compas_en` leia compas 1. El numero de
+    compas de la pantalla se equivocaba justo al cruzar la barra.
+    """
+    sesion = SesionDeEstudio(pieza_de_doce_compases(), PlanDePasada(factor_tempo=0.95))
+    sesion.colocar_en(4.0 / 0.95)
+    assert sesion.estado.instante_pulsos == 4.0
+    assert sesion.estado.compas_en_curso == 2
+    # Y la frontera de cada compas del tramo, por si el 2 fuera suerte.
+    for numero in range(1, 13):
+        sesion.colocar_en((numero - 1) * 4.0 / 0.95)
+        assert sesion.estado.compas_en_curso == numero, numero
+
+
+def test_el_redondeo_de_los_pulsos_no_se_come_precision_que_se_vea():
+    """El arreglo de la frontera no puede pagarse con un cabezal a saltos.
+
+    Redondear el viaje de vuelta a pulsos arregla el compas de la frontera, pero
+    con pocos decimales seria otro defecto: el cabezal se iria al pulso redondo
+    mas cercano y la pantalla lo dibujaria a saltitos. Nueve decimales estan muy
+    por debajo de cualquier figura -la semifusa de un 4/4 es 0,0625 pulsos-, y
+    esta prueba lo fija por si alguien decide que con dos basta.
+    """
+    sesion = SesionDeEstudio(pieza_de_doce_compases())
+    sesion.colocar_en(1.2345678)
+    assert sesion.estado.instante_pulsos == pytest.approx(1.2345678, abs=1e-7)
