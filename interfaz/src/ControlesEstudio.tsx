@@ -9,51 +9,6 @@ const TEMPO_MINIMO_PORCIENTO = 40;
 const TEMPO_MAXIMO_PORCIENTO = 100;
 const PASO_TEMPO_PORCIENTO = 5;
 
-/** Los compases de cuenta atrás de todo plan que sale de aquí: no hay control para
- * cambiarlos, y es el valor por defecto del núcleo. */
-const COMPASES_DE_CUENTA_ATRAS = 1;
-
-/**
- * Lo que el usuario pidió y el servidor NO publica en el paquete.
- *
- * El plan viaja ENTERO (`_plan_pedido` en servidor/app.py: lo que el cuerpo no diga
- * vuelve a su valor por defecto), y el estado solo devuelve cuatro de sus siete
- * campos: el rango, el factor y el bucle. `con_click` y `tempo_automatico` no
- * viajan —`click_sonando` es lo que SUENA, no lo que se pidió—. Sin recordarlos,
- * mover el deslizador apagaría el click y el tempo automático sin que nadie lo
- * hubiera pedido.
- *
- * Es la única copia local del plan, y se tolera porque el servidor nunca mueve
- * estos dos por su cuenta (el tempo automático mueve el FACTOR, que sí se lee del
- * estado). El día que `a_dict()` publique el plan, esto sobra.
- */
-interface Interruptores {
-  con_click: boolean;
-  tempo_automatico: boolean;
-}
-
-const INTERRUPTORES_POR_DEFECTO: Interruptores = { con_click: false, tempo_automatico: false };
-
-/**
- * El plan entero que describe el estado, con lo que se quiera cambiar encima.
- * Todo sale del paquete recibido salvo los dos interruptores.
- */
-function planCompleto(
-  estado: EstadoEstudio,
-  interruptores: Interruptores,
-  cambios: Plan
-): Plan {
-  return {
-    primer_compas: estado.primer_compas,
-    ultimo_compas: estado.ultimo_compas,
-    factor_tempo: estado.factor_tempo,
-    en_bucle: estado.en_bucle,
-    compases_de_cuenta_atras: COMPASES_DE_CUENTA_ATRAS,
-    ...interruptores,
-    ...cambios,
-  };
-}
-
 function porciento(factor: number): number {
   return Math.round(factor * 100);
 }
@@ -81,7 +36,8 @@ function rangoQueIncluye(estado: EstadoEstudio, compas: number): [number, number
 interface PropiedadesControles {
   estado: EstadoEstudio;
   secciones: SeccionEnCompases[];
-  /** Manda el plan ENTERO. Devuelve si el servidor lo aceptó (`false` corta el
+  /** Manda SOLO lo que cambia: el servidor conserva el resto del plan vigente.
+   * Devuelve si el servidor lo aceptó (`false` corta el
    * salto que iba detrás); `void` se toma como aceptado. */
   alCambiarPlan: (plan: Plan) => Promise<boolean> | void;
   alPausar: (activa: boolean) => void;
@@ -94,13 +50,18 @@ interface PropiedadesControles {
  *
  * Se dibujan DESDE EL ESTADO RECIBIDO, no desde uno propio: el plan vigente lo dice
  * el servidor (el tempo automático lo mueve solo) y una copia aquí se
- * desincronizaría. La excepción, acotada, son los dos `Interruptores`.
+ * desincronizaría. Cada orden manda SOLO lo que cambia, porque
+ * `POST /api/piezas/plan` es un parche. Lo único local es el gesto del
+ * deslizador mientras se arrastra (ver `arrastre`).
  *
  * Las dos pausas son distintas y se dicen por separado: `pausado` (sin señal del
  * cable) lo avisa `Carril`; `en_pausa` (la del usuario) es lo que cambia el botón.
  *
- * La rejilla vive aquí y no en `Carril` porque pulsar un compás fuera del bucle
- * obliga a mandar antes un plan, y el plan necesita los interruptores.
+ * OJO: la rejilla de compases se monta AQUÍ y no en `Carril`, aunque el plan de la
+ * etapa la pone en `Carril`. Pulsar un compás fuera del bucle obliga a mandar antes
+ * un plan con un rango nuevo y después el salto (`pedirSalto`), y eso necesita el
+ * estado, `alCambiarPlan` y `alSaltar`, que ya están en este componente: sacarla
+ * obligaría a pasar la lógica de `rangoQueIncluye` a `Carril`.
  */
 export function ControlesEstudio({
   estado,
@@ -109,15 +70,25 @@ export function ControlesEstudio({
   alPausar,
   alSaltar,
 }: PropiedadesControles) {
-  const [interruptores, setInterruptores] = useState<Interruptores>(INTERRUPTORES_POR_DEFECTO);
+  /**
+   * El porcentaje que se VE mientras el deslizador está agarrado; `null` cuando no
+   * se está arrastrando.
+   *
+   * No es estado del plan, es el gesto en curso: el plan vigente sigue siendo el
+   * del servidor (`estado.factor_tempo`) y esto solo existe entre que se agarra el
+   * deslizador y se suelta. La orden se manda al soltar y no en cada paso, porque
+   * cada cambio de factor reconstruye el seguidor en el núcleo y un arrastre
+   * dispararía decenas de reconstrucciones y de peticiones.
+   */
+  const [arrastre, setArrastre] = useState<number | null>(null);
 
-  const mandar = (cambios: Plan) =>
-    alCambiarPlan(planCompleto(estado, interruptores, cambios));
+  /** Manda SOLO lo que cambia: el servidor conserva el resto del plan vigente. */
+  const mandar = (cambios: Plan) => alCambiarPlan(cambios);
 
-  const cambiarInterruptor = (cambios: Partial<Interruptores>) => {
-    const nuevos = { ...interruptores, ...cambios };
-    setInterruptores(nuevos);
-    void alCambiarPlan(planCompleto(estado, nuevos, {}));
+  const soltarTempo = () => {
+    if (arrastre === null) return;
+    setArrastre(null);
+    void mandar({ factor_tempo: arrastre / 100 });
   };
 
   /** Pedir un salto: si el compás cae fuera del tramo, primero se mueve el rango. */
@@ -159,12 +130,14 @@ export function ControlesEstudio({
           min={TEMPO_MINIMO_PORCIENTO}
           max={TEMPO_MAXIMO_PORCIENTO}
           step={PASO_TEMPO_PORCIENTO}
-          value={porciento(estado.factor_tempo)}
-          onChange={(evento) => void mandar({ factor_tempo: Number(evento.target.value) / 100 })}
+          value={arrastre ?? porciento(estado.factor_tempo)}
+          onChange={(evento) => setArrastre(Number(evento.target.value))}
+          onPointerUp={soltarTempo}
+          onKeyUp={soltarTempo}
         />
         {/* Un 70 % no le dice nada a nadie; «42 ppm» sí. */}
         <span className="lectura">
-          {porciento(estado.factor_tempo)} % · {Math.round(estado.tempo_efectivo)} ppm
+          {arrastre ?? porciento(estado.factor_tempo)} % · {Math.round(estado.tempo_efectivo)} ppm
         </span>
         {sugerido !== null && (
           <button
@@ -189,24 +162,22 @@ export function ControlesEstudio({
         <label>
           <input
             type="checkbox"
-            checked={interruptores.con_click}
-            onChange={(evento) => cambiarInterruptor({ con_click: evento.target.checked })}
+            checked={estado.con_click}
+            onChange={(evento) => void mandar({ con_click: evento.target.checked })}
           />
           Click
         </label>
         <label>
           <input
             type="checkbox"
-            checked={interruptores.tempo_automatico}
-            onChange={(evento) =>
-              cambiarInterruptor({ tempo_automatico: evento.target.checked })
-            }
+            checked={estado.tempo_automatico}
+            onChange={(evento) => void mandar({ tempo_automatico: evento.target.checked })}
           />
           Tempo automático
         </label>
         {/* El click pedido que no suena (sin salida de audio) se dice: un
             interruptor encendido que no hace nada sería mentir. */}
-        {interruptores.con_click && !estado.click_sonando && (
+        {estado.con_click && !estado.click_sonando && (
           <span className="aviso-click">Sin click: no hay salida de audio.</span>
         )}
       </div>

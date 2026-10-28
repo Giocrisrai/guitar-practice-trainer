@@ -10,7 +10,8 @@ const ESTADO: EstadoEstudio = {
   tocadas: [], pausado: false, instante_pulsos: 0, compas_en_curso: 1,
   total_de_compases: 12, primer_compas: 1, ultimo_compas: 12, repeticion: 1,
   cuenta_atras_restante_s: 0, factor_tempo: 1, tempo_efectivo: 60,
-  en_bucle: false, en_pausa: false, compas_variable: false,
+  en_bucle: false, con_click: false, tempo_automatico: false,
+  en_pausa: false, compas_variable: false,
   ritmo_aproximado: false, tramo_terminado: false, click_sonando: false,
   factor_sugerido: null,
 };
@@ -44,11 +45,11 @@ const casilla = (nombre: string) => screen.getByLabelText(nombre) as HTMLInputEl
 const deslizador = () => casilla("Tempo");
 const compas = (n: number) => screen.getByRole("button", { name: `Compás ${n}` });
 
-/** El plan que describe ESTADO, para no repetir los siete campos en cada prueba. */
-const PLAN_DE_ESTADO: Plan = {
-  primer_compas: 1, ultimo_compas: 12, factor_tempo: 1, en_bucle: false,
-  compases_de_cuenta_atras: 1, con_click: false, tempo_automatico: false,
-};
+/** Arrastra el deslizador por esos porcentajes y lo suelta. */
+function arrastrarTempo(...porcentajes: number[]) {
+  for (const valor of porcentajes) fireEvent.change(deslizador(), { target: { value: String(valor) } });
+  fireEvent.pointerUp(deslizador());
+}
 
 describe("el tempo", () => {
   it("el deslizador va del 40 % al 100 % en pasos del 5 % y marca lo que dice el estado", () => {
@@ -73,19 +74,60 @@ describe("el tempo", () => {
     expect(deslizador().value).toBe("85");
   });
 
-  it("mover el tempo manda el plan ENTERO con el factor, no el porcentaje", () => {
-    const { alCambiarPlan } = pintar();
-    fireEvent.change(deslizador(), { target: { value: "70" } });
+  it("al soltar manda el factor, no el porcentaje, y SOLO el factor", () => {
+    // Con rango, bucle y click puestos: el parche no lleva nada de eso.
+    const { alCambiarPlan } = pintar({
+      primer_compas: 3, ultimo_compas: 5, en_bucle: true, con_click: true,
+    });
+    arrastrarTempo(70);
     expect(alCambiarPlan).toHaveBeenCalledTimes(1);
-    expect(alCambiarPlan).toHaveBeenCalledWith({ ...PLAN_DE_ESTADO, factor_tempo: 0.7 });
+    const cuerpo = alCambiarPlan.mock.calls[0][0];
+    expect(cuerpo).toEqual({ factor_tempo: 0.7 });
+    expect(Object.keys(cuerpo)).toEqual(["factor_tempo"]);
   });
 
-  it("mover el tempo conserva el rango y el bucle que ya había (el plan no es un parche)", () => {
-    const { alCambiarPlan } = pintar({ primer_compas: 3, ultimo_compas: 5, en_bucle: true });
-    fireEvent.change(deslizador(), { target: { value: "60" } });
-    expect(alCambiarPlan).toHaveBeenCalledWith({
-      ...PLAN_DE_ESTADO, primer_compas: 3, ultimo_compas: 5, en_bucle: true, factor_tempo: 0.6,
-    });
+  it("mientras se arrastra no se manda nada, y se ve el valor que se lleva", () => {
+    const { alCambiarPlan } = pintar({ factor_tempo: 1 });
+    fireEvent.change(deslizador(), { target: { value: "55" } });
+    expect(alCambiarPlan).not.toHaveBeenCalled();
+    expect(deslizador().value).toBe("55");
+    expect(screen.getByText(/55 %/)).toBeDefined();
+  });
+
+  it("tres movimientos seguidos y un soltar mandan UNA petición, con el último valor", () => {
+    const { alCambiarPlan } = pintar();
+    arrastrarTempo(90, 80, 65);
+    expect(alCambiarPlan).toHaveBeenCalledTimes(1);
+    expect(alCambiarPlan).toHaveBeenCalledWith({ factor_tempo: 0.65 });
+  });
+
+  it("con el teclado también: las flechas mueven y al soltar la tecla se manda", () => {
+    const { alCambiarPlan } = pintar();
+    fireEvent.change(deslizador(), { target: { value: "95" } });
+    expect(alCambiarPlan).not.toHaveBeenCalled();
+    fireEvent.keyUp(deslizador(), { key: "ArrowLeft" });
+    expect(alCambiarPlan).toHaveBeenCalledTimes(1);
+    expect(alCambiarPlan).toHaveBeenCalledWith({ factor_tempo: 0.95 });
+  });
+
+  it("soltar sin haber movido nada no manda nada", () => {
+    const { alCambiarPlan } = pintar();
+    fireEvent.pointerUp(deslizador());
+    fireEvent.keyUp(deslizador(), { key: "Tab" });
+    expect(alCambiarPlan).not.toHaveBeenCalled();
+  });
+
+  it("soltar dos veces seguidas no repite la orden", () => {
+    const { alCambiarPlan } = pintar();
+    arrastrarTempo(70);
+    fireEvent.keyUp(deslizador(), { key: "ArrowLeft" });
+    expect(alCambiarPlan).toHaveBeenCalledTimes(1);
+  });
+
+  it("después de soltar, el deslizador vuelve a seguir al estado", () => {
+    pintar({ factor_tempo: 0.8 });
+    arrastrarTempo(60);
+    expect(deslizador().value).toBe("80");
   });
 
   it("los pulsos por minuto se redondean al entero", () => {
@@ -115,14 +157,12 @@ describe("la sugerencia de tempo", () => {
     expect(screen.getByRole("button", { name: "Subir el tempo al 57 %" })).toBeDefined();
   });
 
-  it("al aplicarla manda el plan entero con ese factor", () => {
+  it("al aplicarla manda solo ese factor", () => {
     const { alCambiarPlan } = pintar({
       primer_compas: 2, ultimo_compas: 6, en_bucle: true, factor_tempo: 0.7, factor_sugerido: 0.75,
     });
     fireEvent.click(screen.getByRole("button", { name: "Subir el tempo al 75 %" }));
-    expect(alCambiarPlan).toHaveBeenCalledWith({
-      ...PLAN_DE_ESTADO, primer_compas: 2, ultimo_compas: 6, en_bucle: true, factor_tempo: 0.75,
-    });
+    expect(alCambiarPlan.mock.calls).toEqual([[{ factor_tempo: 0.75 }]]);
   });
 
   it("sin sugerencia no ofrece nada", () => {
@@ -143,58 +183,53 @@ describe("el bucle, el click y el tempo automático", () => {
     const { alCambiarPlan } = pintar({ en_bucle: false });
     expect(casilla("Bucle").checked).toBe(false);
     fireEvent.click(casilla("Bucle"));
-    expect(alCambiarPlan).toHaveBeenCalledWith({ ...PLAN_DE_ESTADO, en_bucle: true });
+    expect(alCambiarPlan).toHaveBeenCalledWith({ en_bucle: true });
   });
 
   it("con el bucle en marcha, el interruptor lo APAGA", () => {
     const { alCambiarPlan } = pintar({ en_bucle: true });
     fireEvent.click(casilla("Bucle"));
-    expect(alCambiarPlan).toHaveBeenCalledWith({ ...PLAN_DE_ESTADO, en_bucle: false });
+    expect(alCambiarPlan).toHaveBeenCalledWith({ en_bucle: false });
   });
 
-  it("apagar el tempo automático manda tempo_automatico false", () => {
-    const { alCambiarPlan } = pintar();
-    fireEvent.click(casilla("Tempo automático"));
-    fireEvent.click(casilla("Tempo automático"));
-    expect(alCambiarPlan).toHaveBeenLastCalledWith({ ...PLAN_DE_ESTADO, tempo_automatico: false });
+  it("el interruptor del click refleja el estado sin que nadie lo haya pulsado", () => {
+    pintar({ con_click: true });
+    expect(casilla("Click").checked).toBe(true);
+    expect(casilla("Tempo automático").checked).toBe(false);
   });
 
-  it("el bucle marcado lo dice el estado, no una copia local", () => {
-    pintar({ en_bucle: true });
-    expect(casilla("Bucle").checked).toBe(true);
+  it("el interruptor del tempo automático refleja el estado", () => {
+    pintar({ tempo_automatico: true });
+    expect(casilla("Tempo automático").checked).toBe(true);
+    expect(casilla("Click").checked).toBe(false);
   });
 
-  it("el click manda con_click, y mover el tempo después no lo apaga", () => {
-    const { alCambiarPlan } = pintar();
-    fireEvent.click(casilla("Click"));
-    expect(alCambiarPlan).toHaveBeenLastCalledWith({ ...PLAN_DE_ESTADO, con_click: true });
-    fireEvent.change(deslizador(), { target: { value: "80" } });
-    expect(alCambiarPlan).toHaveBeenLastCalledWith({
-      ...PLAN_DE_ESTADO, con_click: true, factor_tempo: 0.8,
-    });
-  });
-
-  it("el tempo automático manda tempo_automatico, y el bucle después no lo apaga", () => {
-    const { alCambiarPlan } = pintar();
-    fireEvent.click(casilla("Tempo automático"));
-    expect(alCambiarPlan).toHaveBeenLastCalledWith({ ...PLAN_DE_ESTADO, tempo_automatico: true });
-    fireEvent.click(casilla("Bucle"));
-    expect(alCambiarPlan).toHaveBeenLastCalledWith({
-      ...PLAN_DE_ESTADO, tempo_automatico: true, en_bucle: true,
-    });
-  });
-
-  it("apagar el click manda con_click false", () => {
+  it("el click manda solo con_click", () => {
     const { alCambiarPlan } = pintar();
     fireEvent.click(casilla("Click"));
+    expect(alCambiarPlan.mock.calls).toEqual([[{ con_click: true }]]);
+  });
+
+  it("con el click puesto, el interruptor lo APAGA", () => {
+    const { alCambiarPlan } = pintar({ con_click: true });
     fireEvent.click(casilla("Click"));
-    expect(alCambiarPlan).toHaveBeenLastCalledWith({ ...PLAN_DE_ESTADO, con_click: false });
+    expect(alCambiarPlan.mock.calls).toEqual([[{ con_click: false }]]);
+  });
+
+  it("el tempo automático manda solo tempo_automatico", () => {
+    const { alCambiarPlan } = pintar();
+    fireEvent.click(casilla("Tempo automático"));
+    expect(alCambiarPlan.mock.calls).toEqual([[{ tempo_automatico: true }]]);
+  });
+
+  it("con el tempo automático puesto, el interruptor lo APAGA", () => {
+    const { alCambiarPlan } = pintar({ tempo_automatico: true });
+    fireEvent.click(casilla("Tempo automático"));
+    expect(alCambiarPlan.mock.calls).toEqual([[{ tempo_automatico: false }]]);
   });
 
   it("si el click está pedido pero no suena, lo dice", () => {
-    const { container } = pintar({ click_sonando: false });
-    expect(container.querySelector(".aviso-click")).toBeNull();
-    fireEvent.click(casilla("Click"));
+    const { container } = pintar({ con_click: true, click_sonando: false });
     expect(casilla("Click").checked).toBe(true);
     expect(container.querySelector(".aviso-click")?.textContent).toBe(
       "Sin click: no hay salida de audio.",
@@ -202,9 +237,14 @@ describe("el bucle, el click y el tempo automático", () => {
   });
 
   it("si el click está pedido y suena, no avisa de nada", () => {
-    const { container } = pintar({ click_sonando: true });
-    fireEvent.click(casilla("Click"));
+    const { container } = pintar({ con_click: true, click_sonando: true });
     expect(casilla("Click").checked).toBe(true);
+    expect(container.querySelector(".aviso-click")).toBeNull();
+  });
+
+  it("si el click no está pedido, que no suene no es noticia", () => {
+    const { container } = pintar({ con_click: false, click_sonando: false });
+    expect(casilla("Click").checked).toBe(false);
     expect(container.querySelector(".aviso-click")).toBeNull();
   });
 });
@@ -213,9 +253,7 @@ describe("las secciones", () => {
   it("elegir una arma el bucle con sus compases, sin tocar lo demás del plan", () => {
     const { alCambiarPlan } = pintar({ factor_tempo: 0.8 }, SECCIONES);
     fireEvent.change(casilla("Sección"), { target: { value: "1" } });
-    expect(alCambiarPlan).toHaveBeenCalledWith({
-      ...PLAN_DE_ESTADO, factor_tempo: 0.8, primer_compas: 5, ultimo_compas: 12, en_bucle: true,
-    });
+    expect(alCambiarPlan).toHaveBeenCalledWith({ primer_compas: 5, ultimo_compas: 12, en_bucle: true });
   });
 
   it("la lista ofrece cada sección con su nombre y sus compases", () => {
@@ -346,9 +384,7 @@ describe("pulsar un compás", () => {
     alSaltar.mockImplementation(() => orden.push("salto"));
     fireEvent.click(compas(9));
     await vi.waitFor(() => expect(alSaltar).toHaveBeenCalledWith(9));
-    expect(alCambiarPlan).toHaveBeenCalledWith({
-      ...PLAN_DE_ESTADO, primer_compas: 9, ultimo_compas: 10, en_bucle: true,
-    });
+    expect(alCambiarPlan).toHaveBeenCalledWith({ primer_compas: 9, ultimo_compas: 10 });
     expect(orden).toEqual(["plan", "salto"]);
   });
 
@@ -360,9 +396,7 @@ describe("pulsar un compás", () => {
     );
     fireEvent.click(compas(2));
     await vi.waitFor(() => expect(alSaltar).toHaveBeenCalledWith(2));
-    expect(alCambiarPlan).toHaveBeenCalledWith({
-      ...PLAN_DE_ESTADO, primer_compas: 2, ultimo_compas: 4,
-    });
+    expect(alCambiarPlan).toHaveBeenCalledWith({ primer_compas: 2, ultimo_compas: 4 });
   });
 
   it("junto al final de la pieza la ventana se corre hacia atrás y sigue conteniendo el compás", async () => {
@@ -373,9 +407,7 @@ describe("pulsar un compás", () => {
     );
     fireEvent.click(compas(12));
     await vi.waitFor(() => expect(alSaltar).toHaveBeenCalledWith(12));
-    expect(alCambiarPlan).toHaveBeenCalledWith({
-      ...PLAN_DE_ESTADO, primer_compas: 10, ultimo_compas: 12,
-    });
+    expect(alCambiarPlan).toHaveBeenCalledWith({ primer_compas: 10, ultimo_compas: 12 });
   });
 
   it("si el servidor rechaza el plan, no salta", async () => {
@@ -395,9 +427,7 @@ describe("pulsar un compás", () => {
     fireEvent.pointerDown(compas(2));
     fireEvent.pointerEnter(compas(4));
     fireEvent.pointerUp(compas(4));
-    expect(alCambiarPlan).toHaveBeenCalledWith({
-      ...PLAN_DE_ESTADO, factor_tempo: 0.9, primer_compas: 2, ultimo_compas: 4, en_bucle: true,
-    });
+    expect(alCambiarPlan).toHaveBeenCalledWith({ primer_compas: 2, ultimo_compas: 4, en_bucle: true });
   });
 
   it("la rejilla se dibuja desde el estado: el rango del bucle y el compás en curso", () => {

@@ -34,6 +34,9 @@ export interface EstadoEstudio extends EstadoCarril {
   /** Tempo de la pieza por `factor_tempo`: el que marca el reloj que se oye. */
   tempo_efectivo: number;
   en_bucle: boolean;
+  /** Lo que se PIDIÓ, no lo que suena: ver `click_sonando`. */
+  con_click: boolean;
+  tempo_automatico: boolean;
   en_pausa: boolean;
   compas_variable: boolean;
   ritmo_aproximado: boolean;

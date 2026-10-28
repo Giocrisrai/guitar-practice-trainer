@@ -113,8 +113,9 @@ export interface SesionCarril {
   iniciar(peticion: PeticionPieza): Promise<void>;
   detener(): Promise<void>;
   /**
-   * Cambia el plan de la pasada SIN reiniciarla. El plan es ENTERO, no un parche:
-   * lo que no se mande vuelve a su valor por defecto en el servidor.
+   * Cambia el plan de la pasada SIN reiniciarla. Es un PARCHE: el servidor
+   * conserva del plan vigente todo campo que el cuerpo no traiga, así que se manda
+   * solo lo que cambia.
    *
    * Ninguna de las tres acciones guarda el plan: el vigente lo dice el servidor y
    * llega por el WebSocket. Una copia aquí se desincronizaría en cuanto el tempo

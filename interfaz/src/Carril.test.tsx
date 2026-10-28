@@ -85,7 +85,8 @@ const ARRANQUE_ANTERIOR = 1;
 const ESTUDIO_BASE = {
   instante_pulsos: 0, compas_en_curso: 1, total_de_compases: 1, primer_compas: 1,
   ultimo_compas: 1, repeticion: 1, cuenta_atras_restante_s: 0, factor_tempo: 1,
-  tempo_efectivo: 60, en_bucle: false, en_pausa: false, compas_variable: false,
+  tempo_efectivo: 60, en_bucle: false, con_click: false, tempo_automatico: false,
+  en_pausa: false, compas_variable: false,
   ritmo_aproximado: false, tramo_terminado: false, click_sonando: false,
   factor_sugerido: null,
 };
@@ -972,16 +973,14 @@ describe("Carril: los controles de la pasada", () => {
     expect(cuerpoDe(fetchFalso, "/api/piezas/pausa")).toEqual({ activa: false });
   });
 
-  it("el tempo que se mueve llega al servidor como plan entero", async () => {
+  it("el tempo que se suelta llega al servidor como parche", async () => {
     const fetchFalso = fetchConOrdenes();
     await montarEnMarcha(fetchFalso);
     await act(async () => {
       fireEvent.change(screen.getByLabelText("Tempo"), { target: { value: "70" } });
+      fireEvent.pointerUp(screen.getByLabelText("Tempo"));
     });
-    expect(cuerpoDe(fetchFalso, "/api/piezas/plan")).toEqual({
-      primer_compas: 1, ultimo_compas: 4, factor_tempo: 0.7, en_bucle: false,
-      compases_de_cuenta_atras: 1, con_click: false, tempo_automatico: false,
-    });
+    expect(cuerpoDe(fetchFalso, "/api/piezas/plan")).toEqual({ factor_tempo: 0.7 });
   });
 
   it("un clic fuera del tramo manda el plan y luego el salto, al servidor", async () => {
