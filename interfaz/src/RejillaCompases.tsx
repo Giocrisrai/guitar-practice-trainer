@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 /**
  * Los compases de la pieza, para orientarse y para armar el bucle.
@@ -39,6 +39,26 @@ export function RejillaCompases({
   // Estado y no `useRef`: lo que se está arrastrando también se PINTA (`marcando`).
   const [desde, setDesde] = useState<number | null>(null);
   const [hasta, setHasta] = useState<number | null>(null);
+
+  // Mientras hay un arrastre en curso, soltar o cancelar el puntero EN CUALQUIER
+  // sitio lo cancela. Sin esto, soltar fuera de la rejilla dejaba el arrastre
+  // abierto, y el siguiente clic del usuario se leía como su final y marcaba un
+  // rango que nadie pidió. Si se suelta sobre un compás, su propio `onPointerUp`
+  // corre antes (el evento sube hasta `window`) y ya marcó el rango.
+  const arrastrando = desde !== null;
+  useEffect(() => {
+    if (!arrastrando) return;
+    const cancelar = () => {
+      setDesde(null);
+      setHasta(null);
+    };
+    window.addEventListener("pointerup", cancelar);
+    window.addEventListener("pointercancel", cancelar);
+    return () => {
+      window.removeEventListener("pointerup", cancelar);
+      window.removeEventListener("pointercancel", cancelar);
+    };
+  }, [arrastrando]);
 
   if (total === 0) return null;
 
