@@ -89,6 +89,10 @@ export interface CompasDelInforme {
   a_tiempo: number;
   pronto: number;
   tarde: number;
+  /** Notas acertadas Y a tiempo A LA VEZ, contadas nota a nota: una nota tocada a
+   * tiempo pero de otra altura no es limpia. Es lo que entra en la proporción que
+   * decide el tempo (`proporcion_limpia`, estudio.py). */
+  limpias: number;
   desfase_medio_s: number | null;
   tiene_acordes: boolean;
 }
@@ -98,6 +102,9 @@ export interface Informe {
   ritmo_aproximado: boolean;
   compas_variable: boolean;
   factor_tempo: number;
+  /** Cuántas vueltas del bucle lleva sumadas este informe en sus contadores. La
+   * proporción limpia divide entre `medibles * repeticiones`. */
+  repeticiones: number;
 }
 
 export interface Historial {

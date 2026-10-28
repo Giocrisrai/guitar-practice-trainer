@@ -157,6 +157,10 @@ describe("la rejilla de compases", () => {
     expect(alMarcarRango).toHaveBeenCalledTimes(1);
   });
 
+  // OJO: esta prueba documenta un comportamiento que NO depende de la cancelación
+  // por `window` (el `pointerdown` del clic siguiente ya pisa el arrastre viejo) y
+  // pasa también sin ella. No es la red: la que vigila la cancelación es la
+  // siguiente, que mira el marcado al pasar el puntero y el `pointerup` suelto.
   it.each(["pointerUp", "pointerCancel"] as const)(
     "un arrastre que termina fuera de la rejilla (%s) no convierte el clic siguiente en rango",
     (evento) => {
@@ -188,20 +192,20 @@ describe("la rejilla de compases", () => {
   it.each(["pointerUp", "pointerCancel"] as const)(
     "tras terminar fuera de la rejilla (%s), pasar el puntero no sigue marcando ni un pointerup suelto marca un rango",
     (evento) => {
-    const { alMarcarRango } = pintar();
-    fireEvent.pointerDown(screen.getByRole("button", { name: /compás 8/i }));
-    fireEvent[evento](document.body);
+      const { alMarcarRango } = pintar();
+      fireEvent.pointerDown(screen.getByRole("button", { name: /compás 8/i }));
+      fireEvent[evento](document.body);
 
-    fireEvent.pointerEnter(screen.getByRole("button", { name: /compás 3/i }));
-    const marcados = screen
-      .getAllByRole("button")
-      .filter((boton) => boton.classList.contains("marcando"));
-    expect(marcados).toHaveLength(0);
+      fireEvent.pointerEnter(screen.getByRole("button", { name: /compás 3/i }));
+      const marcados = screen
+        .getAllByRole("button")
+        .filter((boton) => boton.classList.contains("marcando"));
+      expect(marcados).toHaveLength(0);
 
-    // Un puntero que se pulsó fuera y se suelta sobre un compás no es un arrastre.
-    fireEvent.pointerUp(screen.getByRole("button", { name: /compás 3/i }));
-    expect(alMarcarRango).not.toHaveBeenCalled();
-    expect(screen.getAllByRole("button")).toHaveLength(12);
-  },
+      // Un puntero que se pulsó fuera y se suelta sobre un compás no es un arrastre.
+      fireEvent.pointerUp(screen.getByRole("button", { name: /compás 3/i }));
+      expect(alMarcarRango).not.toHaveBeenCalled();
+      expect(screen.getAllByRole("button")).toHaveLength(12);
+    },
   );
 });

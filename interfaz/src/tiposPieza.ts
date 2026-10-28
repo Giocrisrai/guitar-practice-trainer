@@ -119,6 +119,11 @@ export interface EstadoCarril {
  * más el mismo estado inicial que después repite el WebSocket
  * (`SesionCarril.iniciar()`, servidor/piezas.py). De ahí sale el `arranque` con
  * el que se reconocen después los paquetes de esta pieza.
+ *
+ * **Es la respuesta de la etapa 3a y la que usa hoy `useCarril.ts`.** La de la etapa
+ * 3c es `RespuestaIniciarEstudio` (`tiposEstudio.ts`): trae esta misma `pieza` más
+ * `secciones_en_compases` y todos los campos del estudio (compases, bucle, tempo).
+ * Conviven hasta que el hook migre; después, esta sobra.
  */
 export interface RespuestaIniciarPieza extends EstadoCarril {
   pieza: Pieza;
