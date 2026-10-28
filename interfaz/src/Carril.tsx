@@ -10,6 +10,7 @@ import {
 } from "./geometriaCarril";
 import type { PerfilAfinacion } from "./tipos";
 import type { FamiliaEjercicio } from "./tiposEjercicio";
+import type { EstadoEstudio } from "./tiposEstudio";
 import type { Clasificacion, EstadoCarril, NotaDePieza, NotaTocada, Pieza } from "./tiposPieza";
 import { useCarril, type PeticionPieza } from "./useCarril";
 import { VistaEscrita } from "./VistaEscritaPieza";
@@ -177,8 +178,9 @@ function pintarCuadro(
 
   contexto.textAlign = "center";
   contexto.font = "600 11px system-ui, sans-serif";
-  for (const nota of notasVisibles(pieza.notas, instanteS, pieza.tempo, VENTANA_VISIBLE_S)) {
-    const rectangulo = rectanguloDeNota(nota, instanteS, pieza.tempo, lienzo, VENTANA_VISIBLE_S);
+  const tempoEfectivo = tempoParaDibujar(pieza, estado);
+  for (const nota of notasVisibles(pieza.notas, instanteS, tempoEfectivo, VENTANA_VISIBLE_S)) {
+    const rectangulo = rectanguloDeNota(nota, instanteS, tempoEfectivo, lienzo, VENTANA_VISIBLE_S);
     const indice = indices.get(nota);
     const tocada = indice === undefined ? undefined : tocadas.get(indice);
 
@@ -212,6 +214,20 @@ function pintarCuadro(
   contexto.moveTo(0, lineaAtaque);
   contexto.lineTo(lienzo.ancho, lineaAtaque);
   contexto.stroke();
+}
+
+/**
+ * El tempo con el que se convierten los pulsos en segundos al dibujar.
+ *
+ * Es el EFECTIVO (tempo escrito por el factor de práctica), porque el reloj del
+ * servidor ya corre estirado: a la mitad de velocidad, cada pulso dura el doble. Con
+ * el tempo escrito las notas viajarían al doble de velocidad que el reloj. Mientras
+ * no ha llegado un paquete que lo traiga -o llega el del carril apagado, que lo
+ * manda a 0 y dividir entre él no dibuja nada- vale el de la pieza.
+ */
+function tempoParaDibujar(pieza: Pieza, estado: EstadoCarril | null): number {
+  const efectivo = (estado as Partial<EstadoEstudio> | null)?.tempo_efectivo;
+  return efectivo !== undefined && efectivo > 0 ? efectivo : pieza.tempo;
 }
 
 /** El resumen de la pieza terminada: cómo llegó cada nota que se pudo adjudicar. */

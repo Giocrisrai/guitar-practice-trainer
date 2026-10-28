@@ -120,6 +120,7 @@ const PIEZA: PiezaImportada = {
   tempo: 90,
   compas: [4, 4],
   duracion_pulsos: 2,
+  secciones: [], ritmo_aproximado: false, tempo_variable: false, compas_variable: false, casillas_de_repeticion: false,
   notas: [nota({ inicio_pulsos: 0 }), nota({ midi: 45, inicio_pulsos: 1 })],
   avisos: [],
 };

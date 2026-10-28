@@ -1,12 +1,10 @@
 /**
  * Formas que llegan del servidor para las piezas, de `nucleo/piezas`.
  *
- * **Espejo PARCIAL, a propósito.** `Pieza` declara aquí solo los campos que esta
- * interfaz usa, y los que faltan están nombrados en su propio comentario: añadirlos
- * obligaría a escribirlos en los literales de prueba de dos archivos
- * (`Canciones.test.tsx`, `VistaEscritaPieza.test.tsx`) sin que nada los lea. Lo que
- * sí es exacto es el NOMBRE y el TIPO de lo que está: si el núcleo renombra un campo
- * que aparece aquí, lo que hay que cambiar es esta línea.
+ * **Espejo COMPLETO.** Cada interfaz de este archivo declara todos los campos que
+ * manda el servidor. Antes `Pieza` omitía cinco a propósito, porque nada los leía;
+ * la etapa 3c los consume y por eso ya están. Lo que es exacto es el NOMBRE y el
+ * TIPO: si el núcleo renombra un campo, lo que hay que cambiar es esta línea.
  */
 
 /** Una nota de la pieza, con su sitio en el mástil y su sitio en el tiempo.
@@ -27,12 +25,12 @@ export interface NotaDePieza {
  * repetirla treinta veces por segundo desperdiciaría el canal en notas que no
  * cambian (`Pieza.a_dict()`, nucleo/piezas/modelo.py).
  *
- * **Lo que el servidor manda y aquí NO está declarado**, porque esta interfaz no lo
- * lee: `secciones`, `ritmo_aproximado`, `tempo_variable`, `compas_variable` y
- * `casillas_de_repeticion`. Los cuatro últimos llegan ya convertidos en frases
- * dentro de `avisos` (`_avisos_de`, servidor/app.py), que es lo que la pantalla
- * pinta; `secciones` no la usa nada todavía y la va a consumir la etapa 3c, que es
- * cuando toca declararla.
+ * `ritmo_aproximado`, `tempo_variable`, `compas_variable` y `casillas_de_repeticion`
+ * dicen en qué se aparta de la partitura lo que se pudo leer; además llegan ya
+ * convertidos en frases dentro de `avisos` (`_avisos_de`, servidor/app.py), que es
+ * lo que pintan las pantallas de canciones. `secciones` da el inicio de cada una en
+ * pulsos: para saber en qué compases caen NO se calcula aquí, el servidor lo manda
+ * hecho (`secciones_en_compases`, ver `tiposEstudio.ts`).
  */
 export interface Pieza {
   nombre: string;
@@ -41,6 +39,11 @@ export interface Pieza {
   compas: [number, number];
   duracion_pulsos: number;
   notas: NotaDePieza[];
+  secciones: { nombre: string; inicio_pulsos: number }[];
+  ritmo_aproximado: boolean;
+  tempo_variable: boolean;
+  compas_variable: boolean;
+  casillas_de_repeticion: boolean;
 }
 
 /** Cómo llegó una pulsación respecto al instante escrito de su nota.

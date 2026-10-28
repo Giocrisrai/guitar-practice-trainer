@@ -238,3 +238,18 @@ body {
   border-radius: 8px; padding: 8px 16px; margin-top: 8px; cursor: pointer; font-size: 14px;
 }
 .antes-de-empezar button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* La rejilla de compases: un botón por compás, en filas que envuelven. El rango del
+   bucle va relleno, el compás en curso con borde, y lo que se está arrastrando con
+   trazo discontinuo, para que los tres se distingan a la vez. */
+.rejilla-compases { margin: 12px 0; }
+.compases { display: flex; flex-wrap: wrap; gap: 4px; }
+.compas {
+  min-width: 36px; padding: 6px 4px; background: var(--panel); color: var(--texto);
+  border: 1px solid var(--borde); border-radius: 6px; cursor: pointer; font-size: 13px;
+  touch-action: none;
+}
+.compas.en-el-bucle { background: var(--borde); border-color: var(--tenue); }
+.compas.marcando { border-style: dashed; border-color: var(--desviada); }
+.compas[aria-current="true"] { border-color: var(--afinada); border-width: 2px; font-weight: 600; }
+.aviso-compases { color: var(--desviada); font-size: 13px; margin: 0 0 8px; }

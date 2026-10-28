@@ -63,6 +63,7 @@ const PIEZA: Pieza = {
   tempo: 60,
   compas: [4, 4],
   duracion_pulsos: 3,
+  secciones: [], ritmo_aproximado: false, tempo_variable: false, compas_variable: false, casillas_de_repeticion: false,
   notas: [
     { midi: 40, nombre: "E2", cuerda: 6, traste: 0, inicio_pulsos: 0, duracion_pulsos: 1 },
     { midi: 45, nombre: "A2", cuerda: 5, traste: 0, inicio_pulsos: 1, duracion_pulsos: 1 },
@@ -763,5 +764,122 @@ describe("Carril", () => {
     unmount();
     expect(cancelar).toHaveBeenCalledWith(2);
     expect(cuadros.length).toBe(2); // ni un cuadro más tras desmontar
+  });
+});
+
+/**
+ * El carril dibuja con el tempo EFECTIVO, no con el escrito.
+ *
+ * Al 50 % el reloj del servidor corre estirado: cada pulso dura el doble. Si el
+ * dibujo convirtiera los pulsos con el tempo escrito, las notas viajarían al doble
+ * de velocidad que el reloj. Aquí sí hay lienzo: jsdom no lo trae, así que se le
+ * pone un contexto falso que apunta cada `fillRect`, y de ahí se lee en qué carril
+ * (cuerda) cayó cada nota visible.
+ */
+describe("Carril: el dibujo sigue al tempo efectivo", () => {
+  // Tempo escrito 60: un pulso es un segundo. Al 50 % (tempo efectivo 30) es dos.
+  const PIEZA_LARGA: Pieza = {
+    ...PIEZA,
+    duracion_pulsos: 13,
+    notas: [
+      { midi: 64, nombre: "E4", cuerda: 1, traste: 0, inicio_pulsos: 0, duracion_pulsos: 1 },
+      { midi: 59, nombre: "B3", cuerda: 2, traste: 0, inicio_pulsos: 3, duracion_pulsos: 1 },
+      { midi: 55, nombre: "G3", cuerda: 3, traste: 0, inicio_pulsos: 6, duracion_pulsos: 1 },
+      { midi: 50, nombre: "D3", cuerda: 4, traste: 0, inicio_pulsos: 12, duracion_pulsos: 1 },
+    ],
+  };
+  const ANCHO = 600; // seis cuerdas: un carril de 100 px cada una
+  const MARGEN = 5; // el hueco a cada lado que deja el carril (MARGEN_CARRIL_PX)
+
+  beforeEach(() => vi.stubGlobal("WebSocket", WebSocketFalso));
+  afterEach(() => {
+    delete (HTMLCanvasElement.prototype as { clientWidth?: number }).clientWidth;
+    delete (HTMLCanvasElement.prototype as { clientHeight?: number }).clientHeight;
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  /** Monta el carril con lienzo "de verdad", manda un paquete en el segundo 4 y
+   * devuelve `[x, y de la esquina superior, alto]` de cada nota pintada en ese cuadro,
+   * con la `x` ya sin el margen del carril. */
+  async function carrilesPintados(paquete: Record<string, unknown>): Promise<number[][]> {
+    const fetchFalso = vi.fn((url: string) => {
+      const direccion = String(url);
+      if (direccion.includes("/api/ejercicios/familias")) return responder(FAMILIAS);
+      if (direccion.includes("/api/perfiles")) return responder(PERFILES);
+      if (direccion.includes("/api/piezas/iniciar")) {
+        return responder({ ...RESPUESTA_INICIAR, pieza: PIEZA_LARGA, total: 4 });
+      }
+      return responder(ESTADO_APAGADO);
+    });
+    vi.stubGlobal("fetch", fetchFalso);
+
+    const rectangulos: number[][] = [];
+    const contexto = {
+      setTransform: vi.fn(),
+      fillRect: vi.fn((x: number, y: number, ancho: number, alto: number) => {
+        rectangulos.push([x, y, ancho, alto]);
+      }),
+      fillText: vi.fn(),
+      beginPath: vi.fn(),
+      moveTo: vi.fn(),
+      lineTo: vi.fn(),
+      stroke: vi.fn(),
+    };
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(contexto as never);
+    Object.defineProperty(HTMLCanvasElement.prototype, "clientWidth", {
+      configurable: true,
+      get: () => ANCHO,
+    });
+    Object.defineProperty(HTMLCanvasElement.prototype, "clientHeight", {
+      configurable: true,
+      get: () => 500,
+    });
+    const cuadros: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      cuadros.push(callback);
+      return cuadros.length;
+    });
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+
+    render(<Carril />);
+    await pulsarEmpezar();
+    await waitFor(() => expect(cuadros.length).toBeGreaterThan(0));
+    enviarEstado({ ...enCurso({ instante_s: 4, total: 4 }), ...paquete });
+
+    rectangulos.length = 0;
+    act(() => {
+      cuadros[cuadros.length - 1](performance.now());
+    });
+    // El primer `fillRect` de un cuadro es el fondo; las notas vienen después.
+    const [fondo, ...notas] = rectangulos;
+    expect(fondo).toEqual([0, 0, ANCHO, 500]);
+    return notas.map(([x, y, , alto]) => [x - MARGEN, y, alto]);
+  }
+
+  it("al 50 % las notas visibles son las del reloj estirado, no las del tempo escrito", async () => {
+    // Segundo 4 con un pulso de 2 s: es el pulso 2. Se ve la nota del pulso 3
+    // (cuerda 2) y nada más: la del pulso 6 empieza en el segundo 12, fuera de la
+    // ventana de 4 s. Con el tempo escrito (60) se verían también la del pulso 6.
+    const carriles = await carrilesPintados({ factor_tempo: 0.5, tempo_efectivo: 30 });
+    expect(carriles.map(([x]) => x)).toEqual([100]);
+    // Y la geometría, no solo la selección: 100 px por segundo y la línea de ataque
+    // en el 400. La nota empieza 2 s después del instante (pulso 3 a 2 s por pulso
+    // son 6 s, menos los 4 s) y dura 2 s. Con el tempo escrito saldría ya pasada
+    // (y = 500) y de 100 px de alto.
+    const [, arriba, alto] = carriles[0];
+    expect(alto).toBe(200);
+    expect(Math.abs(arriba + alto - 200)).toBeLessThan(10);
+  });
+
+  it("sin tempo efectivo en el paquete se usa el de la pieza", async () => {
+    // El mismo instante, pero a 60: las notas de los pulsos 3 y 6 caen dentro.
+    const carriles = await carrilesPintados({});
+    expect(carriles.map(([x]) => x)).toEqual([100, 200]);
+  });
+
+  it("un tempo efectivo de 0, el del carril apagado, no rompe el dibujo ni lo vacía", async () => {
+    const carriles = await carrilesPintados({ tempo_efectivo: 0 });
+    expect(carriles.map(([x]) => x)).toEqual([100, 200]);
   });
 });

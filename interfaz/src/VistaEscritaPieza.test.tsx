@@ -8,6 +8,7 @@ import { VistaEscrita } from "./VistaEscritaPieza";
 const PIEZA: Pieza = {
   nombre: "p", perfil: "guitarra_estandar", tempo: 60, compas: [4, 4],
   duracion_pulsos: 8,
+  secciones: [], ritmo_aproximado: false, tempo_variable: false, compas_variable: false, casillas_de_repeticion: false,
   notas: [
     { midi: 40, nombre: "E2", cuerda: 6, traste: 0, inicio_pulsos: 0, duracion_pulsos: 1 },
     { midi: 45, nombre: "A2", cuerda: 5, traste: 0, inicio_pulsos: 1, duracion_pulsos: 1 },
