@@ -283,6 +283,59 @@ def test_un_ultimo_compas_nulo_en_el_parche_vale_hasta_el_final(cliente):
     assert datos["primer_compas"] == 3
 
 
+def test_dos_parches_de_campos_distintos_conservan_los_dos_cambios(cliente):
+    iniciar(cliente, **PLAN_COMPLETO)
+    cliente.post("/api/piezas/plan", json={"factor_tempo": 0.6})
+    datos = cliente.post("/api/piezas/plan", json={"tempo_automatico": False}).json()
+    assert datos["factor_tempo"] == 0.6
+    assert datos["tempo_automatico"] is False
+    assert datos["en_bucle"] is True
+    assert datos["primer_compas"] == 3
+
+
+def test_un_parche_a_medias_no_deja_que_otro_lea_el_plan_viejo(cliente, monkeypatch):
+    """La carrera: el segundo parche NO puede fusionarse con el plan de antes.
+
+    El primer parche se queda parado JUSTO DESPUES de leer el plan vigente. Con
+    la lectura y el cambio en dos tomas del candado, el segundo parche leia ese
+    mismo plan viejo, lo aplicaba, y luego el primero lo pisaba con el suyo: se
+    perdia un cambio en silencio. Con una sola toma, el segundo espera y se
+    fusiona sobre el plan nuevo. El `sleep` solo da tiempo a una implementacion
+    mala de equivocarse: con la buena la prueba es determinista.
+    """
+    import threading
+
+    from nucleo.piezas.estudio import SesionDeEstudio
+
+    iniciar(cliente, **PLAN_COMPLETO)
+    carril = cliente.app.state.carril
+    dentro, soltar, primera = threading.Event(), threading.Event(), [True]
+    leer = SesionDeEstudio.plan.fget
+
+    def plan_lento(self):
+        plan = leer(self)
+        if primera[0]:
+            primera[0] = False
+            dentro.set()
+            assert soltar.wait(5)
+        return plan
+
+    monkeypatch.setattr(SesionDeEstudio, "plan", property(plan_lento))
+    uno = threading.Thread(target=carril.parchar_plan, args=({"factor_tempo": 0.6},))
+    otro = threading.Thread(target=carril.parchar_plan, args=({"tempo_automatico": False},))
+    uno.start()
+    assert dentro.wait(5)
+    otro.start()
+    time.sleep(0.2)
+    soltar.set()
+    uno.join(5)
+    otro.join(5)
+    monkeypatch.undo()
+    plan = carril._estudio.plan
+    assert plan.factor_tempo == 0.6
+    assert plan.tempo_automatico is False
+
+
 def test_iniciar_con_un_plan_parcial_rellena_con_los_valores_de_fabrica(cliente):
     # Hay un plan vigente distinto del de fabrica, y `iniciar` NO lo hereda.
     iniciar(cliente, **PLAN_COMPLETO)

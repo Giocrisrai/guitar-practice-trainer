@@ -734,30 +734,38 @@ class SesionCarril:
             raise ValueError("No hay ninguna pieza en marcha que practicar")
         return estudio
 
-    def plan_vigente(self) -> PlanDePasada:
-        """El plan con el que suena la pasada ahora, o el `ValueError` del 400.
+    def parchar_plan(self, cambios: dict) -> dict:
+        """Aplica `cambios` ENCIMA del plan vigente, y lo que no diga se queda.
 
-        Es la base de un parche: `ultimo_compas` viene ya resuelto a un entero,
-        que es lo que el nucleo guarda.
+        Leer el plan, fusionarlo y cambiarlo ocurre bajo UNA sola toma del
+        candado: con dos tomas, dos parches simultaneos (dos pestañas) leian el
+        mismo plan viejo y el segundo revertia en silencio el cambio del primero.
+        `cambios` ya viene convertido a sus tipos; `PlanDePasada` y
+        `validar_plan` lanzan `ValueError` si el resultado es imposible.
         """
         with self._candado:
-            return self._estudio_o_falla().plan
+            estudio = self._estudio_o_falla()
+            self._aplicar_plan(estudio, replace(estudio.plan, **cambios))
+        return self.estado()
 
     def cambiar_plan(self, plan: PlanDePasada) -> dict:
         """Cambia el plan SIN reiniciar la pasada: lo tocado sigue contando."""
         with self._candado:
-            estudio = self._estudio_o_falla()
-            # El reloj que devuelve el nucleo se adopta AQUI, y no se deja para la
-            # mirada siguiente: si la señal ya se habia ido y nadie ha mirado
-            # desde entonces, la primera mirada entra por la rama de la pausa y
-            # coloca el cabezal en `self._instante`, que seria el de antes de esta
-            # orden. Asi se perdia justo la primera accion del usuario tras un
-            # apagon, que es el caso que la etapa 3a documenta como real.
-            self._instante = estudio.cambiar_plan(plan).carril.instante_s
-            # Un plan nuevo puesto a mano deja sin sentido la sugerencia anterior:
-            # el historial la hizo sobre el plan que ya no esta.
-            self._factor_sugerido = None
+            self._aplicar_plan(self._estudio_o_falla(), plan)
         return self.estado()
+
+    def _aplicar_plan(self, estudio: SesionDeEstudio, plan: PlanDePasada) -> None:
+        """El cuerpo de `cambiar_plan`; quien lo llama ya tiene el candado."""
+        # El reloj que devuelve el nucleo se adopta AQUI, y no se deja para la
+        # mirada siguiente: si la señal ya se habia ido y nadie ha mirado
+        # desde entonces, la primera mirada entra por la rama de la pausa y
+        # coloca el cabezal en `self._instante`, que seria el de antes de esta
+        # orden. Asi se perdia justo la primera accion del usuario tras un
+        # apagon, que es el caso que la etapa 3a documenta como real.
+        self._instante = estudio.cambiar_plan(plan).carril.instante_s
+        # Un plan nuevo puesto a mano deja sin sentido la sugerencia anterior:
+        # el historial la hizo sobre el plan que ya no esta.
+        self._factor_sugerido = None
 
     def saltar(self, numero: int) -> dict:
         """Coloca el cabezal al principio de un compas DEL TRAMO.

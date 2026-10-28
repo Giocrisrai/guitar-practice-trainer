@@ -691,35 +691,37 @@ def crear_app(
             return _leer_o_400(lambda: importar(ruta, numero, perfil))
         return pieza_desde_ejercicio(_generar_o_400(datos))
 
-    def _plan_pedido(datos: dict, base: PlanDePasada | None = None) -> PlanDePasada:
-        """Construye el plan del cuerpo de la peticion.
+    def _campos_del_plan(datos: dict) -> dict:
+        """Convierte SOLO los campos del plan que el cuerpo trae.
 
-        `PlanDePasada` valida lo suyo y lanza `ValueError`; el llamador lo
-        traduce a 400, igual que ya hace `iniciar_pieza` con la afinacion.
-
-        Las claves que faltan del cuerpo toman su valor de `base`. Sin `base`
-        -`/api/piezas/iniciar`, donde no hay plan vigente- es el plan de fabrica,
-        que es el comportamiento de la etapa 3a. Con `base` -`/api/piezas/plan`,
-        que le pasa el plan vigente- el cuerpo es un PARCHE: lo que no diga se
-        queda como estaba. Una clave presente con `ultimo_compas: null` si cuenta
-        y significa "hasta el final".
+        Lo ausente no aparece en el resultado: que valga el valor de fabrica
+        (`iniciar`) o el del plan vigente (`plan`) lo decide quien lo recibe.
+        Un `ultimo_compas` presente y `null` si cuenta y es "hasta el final".
+        Un valor de tipo imposible sale como `TypeError`/`ValueError`, que el
+        llamador traduce a 400.
         """
-        base = PlanDePasada() if base is None else base
-        return PlanDePasada(
-            primer_compas=int(datos.get("primer_compas", base.primer_compas)),
-            ultimo_compas=(
-                base.ultimo_compas
-                if "ultimo_compas" not in datos
-                else None if datos["ultimo_compas"] is None else int(datos["ultimo_compas"])
-            ),
-            factor_tempo=float(datos.get("factor_tempo", base.factor_tempo)),
-            en_bucle=bool(datos.get("en_bucle", base.en_bucle)),
-            compases_de_cuenta_atras=int(
-                datos.get("compases_de_cuenta_atras", base.compases_de_cuenta_atras)
-            ),
-            con_click=bool(datos.get("con_click", base.con_click)),
-            tempo_automatico=bool(datos.get("tempo_automatico", base.tempo_automatico)),
-        )
+        conversores = {
+            "primer_compas": int,
+            "ultimo_compas": lambda v: None if v is None else int(v),
+            "factor_tempo": float,
+            "en_bucle": bool,
+            "compases_de_cuenta_atras": int,
+            "con_click": bool,
+            "tempo_automatico": bool,
+        }
+        return {
+            campo: convertir(datos[campo])
+            for campo, convertir in conversores.items()
+            if campo in datos
+        }
+
+    def _plan_pedido(datos: dict) -> PlanDePasada:
+        """El plan del cuerpo de `iniciar`: lo que falta es el valor de fabrica.
+
+        Ese es el comportamiento de la etapa 3a. `PlanDePasada` valida lo suyo y
+        lanza `ValueError`; el llamador lo traduce a 400.
+        """
+        return PlanDePasada(**_campos_del_plan(datos))
 
     @app.post("/api/piezas/iniciar")
     def iniciar_pieza(datos: dict = Body(...)) -> dict:
@@ -774,8 +776,7 @@ def crear_app(
         Sin pieza en marcha, 400.
         """
         try:
-            carril = app.state.carril
-            return carril.cambiar_plan(_plan_pedido(datos, carril.plan_vigente()))
+            return app.state.carril.parchar_plan(_campos_del_plan(datos))
         except (TypeError, ValueError) as error:
             raise HTTPException(status_code=400, detail=str(error))
 
