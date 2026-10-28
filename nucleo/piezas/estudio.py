@@ -247,6 +247,8 @@ class EstadoEstudio:
     factor_tempo: float
     tempo_efectivo: float
     en_bucle: bool
+    con_click: bool
+    tempo_automatico: bool
     en_pausa: bool
     compas_variable: bool
     ritmo_aproximado: bool
@@ -265,6 +267,8 @@ class EstadoEstudio:
             "factor_tempo": self.factor_tempo,
             "tempo_efectivo": round(self.tempo_efectivo, 2),
             "en_bucle": self.en_bucle,
+            "con_click": self.con_click,
+            "tempo_automatico": self.tempo_automatico,
             "en_pausa": self.en_pausa,
             "compas_variable": self.compas_variable,
             "ritmo_aproximado": self.ritmo_aproximado,
@@ -404,6 +408,8 @@ class SesionDeEstudio:
             factor_tempo=self._plan.factor_tempo,
             tempo_efectivo=self.pieza.tempo * self._plan.factor_tempo,
             en_bucle=self._plan.en_bucle,
+            con_click=self._plan.con_click,
+            tempo_automatico=self._plan.tempo_automatico,
             en_pausa=self._en_pausa,
             compas_variable=self.pieza.compas_variable,
             ritmo_aproximado=self.pieza.ritmo_aproximado,

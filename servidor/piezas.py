@@ -136,6 +136,8 @@ _ESTUDIO_APAGADO = EstadoEstudio(
     factor_tempo=1.0,
     tempo_efectivo=0.0,
     en_bucle=False,
+    con_click=False,
+    tempo_automatico=False,
     en_pausa=False,
     compas_variable=False,
     ritmo_aproximado=False,
@@ -731,6 +733,15 @@ class SesionCarril:
         if estudio is None:
             raise ValueError("No hay ninguna pieza en marcha que practicar")
         return estudio
+
+    def plan_vigente(self) -> PlanDePasada:
+        """El plan con el que suena la pasada ahora, o el `ValueError` del 400.
+
+        Es la base de un parche: `ultimo_compas` viene ya resuelto a un entero,
+        que es lo que el nucleo guarda.
+        """
+        with self._candado:
+            return self._estudio_o_falla().plan
 
     def cambiar_plan(self, plan: PlanDePasada) -> dict:
         """Cambia el plan SIN reiniciar la pasada: lo tocado sigue contando."""

@@ -229,6 +229,82 @@ def test_cambiar_el_plan_no_reinicia_la_pasada(cliente):
     assert datos["tempo_efectivo"] == 30.0
 
 
+PLAN_COMPLETO = {
+    "primer_compas": 3,
+    "ultimo_compas": 6,
+    "factor_tempo": 0.8,
+    "en_bucle": True,
+    "con_click": True,
+    "tempo_automatico": True,
+}
+
+
+def test_el_estado_publica_el_click_y_el_tempo_automatico_del_plan(cliente):
+    datos = iniciar(cliente, con_click=True, tempo_automatico=True)
+    assert datos["con_click"] is True
+    assert datos["tempo_automatico"] is True
+    assert cliente.get("/api/piezas/estado").json()["tempo_automatico"] is True
+    por_defecto = iniciar(cliente)
+    assert por_defecto["con_click"] is False
+    assert por_defecto["tempo_automatico"] is False
+    # Y el carril apagado los publica en su valor de "nada que practicar".
+    cliente.post("/api/piezas/detener")
+    apagado = cliente.get("/api/piezas/estado").json()
+    assert apagado["con_click"] is False
+    assert apagado["tempo_automatico"] is False
+
+
+def test_el_plan_con_solo_el_tempo_deja_intacto_lo_demas(cliente):
+    iniciar(cliente, **PLAN_COMPLETO)
+    datos = cliente.post("/api/piezas/plan", json={"factor_tempo": 0.7}).json()
+    assert datos["factor_tempo"] == 0.7
+    assert datos["primer_compas"] == 3
+    assert datos["ultimo_compas"] == 6
+    assert datos["en_bucle"] is True
+    assert datos["con_click"] is True
+    assert datos["tempo_automatico"] is True
+
+
+def test_el_plan_con_solo_el_click_no_mueve_el_factor(cliente):
+    iniciar(cliente, **PLAN_COMPLETO)
+    datos = cliente.post("/api/piezas/plan", json={"con_click": False}).json()
+    assert datos["con_click"] is False
+    assert datos["factor_tempo"] == 0.8
+    assert datos["primer_compas"] == 3
+    assert datos["ultimo_compas"] == 6
+    assert datos["en_bucle"] is True
+    assert datos["tempo_automatico"] is True
+
+
+def test_un_ultimo_compas_nulo_en_el_parche_vale_hasta_el_final(cliente):
+    iniciar(cliente, **PLAN_COMPLETO)
+    datos = cliente.post("/api/piezas/plan", json={"ultimo_compas": None}).json()
+    assert datos["ultimo_compas"] == 12
+    assert datos["primer_compas"] == 3
+
+
+def test_iniciar_con_un_plan_parcial_rellena_con_los_valores_de_fabrica(cliente):
+    # Hay un plan vigente distinto del de fabrica, y `iniciar` NO lo hereda.
+    iniciar(cliente, **PLAN_COMPLETO)
+    datos = iniciar_por_http(cliente, factor_tempo=0.7).json()
+    assert datos["factor_tempo"] == 0.7
+    assert datos["primer_compas"] == 1
+    assert datos["ultimo_compas"] == 9
+    assert datos["en_bucle"] is False
+    assert datos["con_click"] is False
+    assert datos["tempo_automatico"] is False
+
+
+def test_iniciar_sin_plan_da_el_plan_de_fabrica_aunque_hubiera_otro_vigente(cliente):
+    iniciar(cliente, **PLAN_COMPLETO)
+    datos = iniciar_por_http(cliente).json()
+    assert datos["factor_tempo"] == 1.0
+    assert datos["primer_compas"] == 1
+    assert datos["en_bucle"] is False
+    assert datos["con_click"] is False
+    assert datos["tempo_automatico"] is False
+
+
 def test_saltar_a_un_compas_mueve_el_cabezal(cliente):
     iniciar(cliente)
     datos = cliente.post("/api/piezas/saltar", json={"compas": 9}).json()

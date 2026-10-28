@@ -691,28 +691,34 @@ def crear_app(
             return _leer_o_400(lambda: importar(ruta, numero, perfil))
         return pieza_desde_ejercicio(_generar_o_400(datos))
 
-    def _plan_pedido(datos: dict) -> PlanDePasada:
+    def _plan_pedido(datos: dict, base: PlanDePasada | None = None) -> PlanDePasada:
         """Construye el plan del cuerpo de la peticion.
 
         `PlanDePasada` valida lo suyo y lanza `ValueError`; el llamador lo
         traduce a 400, igual que ya hace `iniciar_pieza` con la afinacion.
 
-        Las claves que faltan toman el valor por defecto del plan, que es el de la
-        etapa 3a. Y el plan es ENTERO, no un parche: lo que el cuerpo no diga
-        vuelve a su valor por defecto, tambien en `/api/piezas/plan`. Es la
-        interfaz quien manda el plan completo, porque es ella la que tiene los
-        controles a la vista y sabe en que posicion esta cada uno.
+        Las claves que faltan del cuerpo toman su valor de `base`. Sin `base`
+        -`/api/piezas/iniciar`, donde no hay plan vigente- es el plan de fabrica,
+        que es el comportamiento de la etapa 3a. Con `base` -`/api/piezas/plan`,
+        que le pasa el plan vigente- el cuerpo es un PARCHE: lo que no diga se
+        queda como estaba. Una clave presente con `ultimo_compas: null` si cuenta
+        y significa "hasta el final".
         """
+        base = PlanDePasada() if base is None else base
         return PlanDePasada(
-            primer_compas=int(datos.get("primer_compas", 1)),
+            primer_compas=int(datos.get("primer_compas", base.primer_compas)),
             ultimo_compas=(
-                None if datos.get("ultimo_compas") is None else int(datos["ultimo_compas"])
+                base.ultimo_compas
+                if "ultimo_compas" not in datos
+                else None if datos["ultimo_compas"] is None else int(datos["ultimo_compas"])
             ),
-            factor_tempo=float(datos.get("factor_tempo", 1.0)),
-            en_bucle=bool(datos.get("en_bucle", False)),
-            compases_de_cuenta_atras=int(datos.get("compases_de_cuenta_atras", 1)),
-            con_click=bool(datos.get("con_click", False)),
-            tempo_automatico=bool(datos.get("tempo_automatico", False)),
+            factor_tempo=float(datos.get("factor_tempo", base.factor_tempo)),
+            en_bucle=bool(datos.get("en_bucle", base.en_bucle)),
+            compases_de_cuenta_atras=int(
+                datos.get("compases_de_cuenta_atras", base.compases_de_cuenta_atras)
+            ),
+            con_click=bool(datos.get("con_click", base.con_click)),
+            tempo_automatico=bool(datos.get("tempo_automatico", base.tempo_automatico)),
         )
 
     @app.post("/api/piezas/iniciar")
@@ -759,9 +765,17 @@ def crear_app(
 
     @app.post("/api/piezas/plan")
     def cambiar_plan_pieza(datos: dict = Body(...)) -> dict:
-        """Cambia el plan de la pasada en caliente, sin reiniciar nada."""
+        """Cambia el plan de la pasada en caliente, sin reiniciar nada.
+
+        Es un PATCH semantico aunque la ruta sea un POST: cada campo que el
+        cuerpo no diga conserva el valor del plan VIGENTE, no el de fabrica. Mandar
+        `{"factor_tempo": 0.7}` mueve solo el tempo. (`/api/piezas/iniciar` es
+        otra cosa: no hay plan vigente, y lo ausente es el valor de fabrica.)
+        Sin pieza en marcha, 400.
+        """
         try:
-            return app.state.carril.cambiar_plan(_plan_pedido(datos))
+            carril = app.state.carril
+            return carril.cambiar_plan(_plan_pedido(datos, carril.plan_vigente()))
         except (TypeError, ValueError) as error:
             raise HTTPException(status_code=400, detail=str(error))
 
