@@ -4,6 +4,8 @@ Ni una espera real: el reloj se mueve a mano con `avanzar_a`, igual que en
 `tests/test_seguimiento_pieza.py`.
 """
 
+import threading
+
 import pytest
 
 from nucleo.analisis.pipeline import ResultadoAnalisis
@@ -660,6 +662,20 @@ def test_saltar_a_un_compas_que_no_existe_se_rechaza():
         sesion.saltar_al_compas(99)
 
 
+def test_un_compas_que_no_existe_se_rechaza_con_el_mensaje_del_tramo():
+    """La guarda del tramo va ANTES de `pulsos_del_compas`, y se nota en el texto.
+
+    Al reves, un compas que la pieza no tiene salia con el mensaje de
+    `compases.py` ("la pieza no tiene compas 99: va del 1 al 12"), que no es el
+    que documenta este metodo: el suyo nombra los dos extremos del TRAMO y dice
+    que hay que cambiar el plan, que es lo unico que le permite al usuario
+    arreglarlo. Fuera del tramo es fuera del tramo, exista el compas o no.
+    """
+    sesion = SesionDeEstudio(pieza_de_doce_compases(), plan_2_a_3_en_bucle())
+    with pytest.raises(ValueError, match=r"99.*fuera del tramo.*2.*3"):
+        sesion.saltar_al_compas(99)
+
+
 def test_reiniciar_la_pasada_vuelve_al_inicio_y_olvida_el_informe():
     sesion = SesionDeEstudio(pieza_de_doce_compases())
     tocar(sesion, "E2", en=0.0)
@@ -903,6 +919,87 @@ def test_sin_bucle_el_reloj_queda_clavado_en_el_final_del_tramo():
     assert sesion.estado.carril.instante_s == pytest.approx(12.0)
 
 
+def tocar_hasta_pasar_el_final(sesion, nota, desde, cuadros=40, paso=0.021):
+    """Ataca `nota` en el instante `desde` y sigue dando cuadros pasado el final.
+
+    Es el caso de la ultima nota de una pasada: se toca a tiempo, justo antes de
+    la barra, y el detector la firma unas decenas de milisegundos DESPUES, cuando
+    el reloj ya ha cruzado el final del tramo. Hacen falta los cuadros de despues:
+    sin ellos el onset no llega a resolverse nunca y la prueba no mediria nada.
+    """
+    instante = desde - 0.1
+    sesion.colocar_en(instante)
+    while instante < desde:
+        sesion.procesar(SILENCIO, instante)
+        instante += paso
+    for _ in range(cuadros):
+        sesion.procesar(suena(nota), instante)
+        instante += paso
+    return instante
+
+
+def test_una_nota_del_final_del_tramo_entra_en_el_informe():
+    """El tramo que acaba NO puede recolocar el reloj mientras haya algo en vuelo.
+
+    Acabar el tramo sin bucle llega por `procesar`, o sea CON AUDIO entrando, y la
+    condicion «el reloj paso del final» sigue siendo verdad en todos los cuadros
+    siguientes: recolocando el reloj en cada uno (109 veces en 300 cuadros,
+    medido) se invalida la correspondencia entre los dos relojes del seguidor y
+    `_adjudicar` descarta el onset del ataque, que el detector firma hasta 250 ms
+    despues de que ocurriera. La nota escrita en el pulso 3,95 de un tramo que
+    acaba en el 4,0 y atacada en el 3,98 salia con `acertadas=0` y `limpias=0`
+    (medido: con la rotura puesta sigue saliendo asi, y es la prueba siguiente).
+
+    Y con ella salia sin limpias el ultimo compas de CADA pasada entera, asi que
+    `peores_compases` lo nominaba siempre y el tempo automatico no subia nunca.
+    """
+    sesion = SesionDeEstudio(
+        pieza_de([0.0, 3.95]), PlanDePasada(primer_compas=1, ultimo_compas=1)
+    )
+    tocar_hasta_pasar_el_final(sesion, "E2", 3.98)
+    assert sesion.estado.tramo_terminado is True, "el tramo tenia que haberse acabado"
+    primero = compas_numero(sesion.informe, 1)
+    assert primero.acertadas == 1
+    assert primero.limpias == 1
+
+
+def test_recolocar_el_reloj_en_cada_cuadro_se_come_la_nota_del_final():
+    """La ROTURA de la prueba de arriba, para que no sea una prueba que no falla.
+
+    Se vuelve al comportamiento viejo -recolocar el reloj en el final en cada
+    cuadro posterior al que acaba el tramo- y la nota del final desaparece del
+    informe. Si alguien «simplifica» el aplazamiento de `_al_dia`, esta prueba es
+    la que dice que se ha vuelto a romper.
+    """
+    sesion = SesionDeEstudio(
+        pieza_de([0.0, 3.95]), PlanDePasada(primer_compas=1, ultimo_compas=1)
+    )
+    # La rotura: la ventana de ataques en vuelo nunca esta abierta, asi que el
+    # reloj se clava en el final en todos los cuadros, como antes del arreglo.
+    sesion._ataques_en_vuelo = lambda: False
+    tocar_hasta_pasar_el_final(sesion, "E2", 3.98)
+    assert sesion.estado.tramo_terminado is True
+    assert compas_numero(sesion.informe, 1).acertadas == 0
+
+
+def test_sin_audio_el_reloj_se_queda_clavado_en_el_final_del_tramo_mirada_tras_mirada():
+    """La otra mitad del aplazamiento: sin audio no hay nada que esperar.
+
+    `avanzar` solo lo llama el servidor cuando NO llegan cuadros, asi que ahi
+    clavar el reloj no le cuesta una pulsacion a nadie, y tiene que clavarlo en
+    cada mirada: si el aplazamiento rigiera tambien sin audio, el cabezal seguiria
+    corriendo despues de «terminado» un segundo por segundo.
+    """
+    sesion = SesionDeEstudio(
+        pieza_de_doce_compases(), PlanDePasada(primer_compas=2, ultimo_compas=3)
+    )
+    sesion.colocar_en(8.0)
+    for _ in range(200):  # 6,6 s: de sobra para pasarse del final, que esta en 12,0
+        sesion.avanzar(1 / 30.0)
+    assert sesion.estado.tramo_terminado is True
+    assert sesion.estado.carril.instante_s == pytest.approx(12.0)
+
+
 def test_tras_cambiar_el_tempo_las_notas_se_miden_con_el_tempo_nuevo():
     # La nota escrita en el segundo 4 cae en el 8 al 50 %. Si el seguidor no se
     # reconstruyera, seguiria esperandola en el 4 y tocarla en el 8 saldria tarde.
@@ -987,6 +1084,53 @@ def test_colocar_el_cabezal_mas_alla_del_final_no_da_la_vuelta_ni_cuenta_repetic
     assert sesion.estado.repeticion == 1
     assert sesion.informe.repeticiones == 1
     assert sesion.ultima_vuelta is None
+
+
+def test_procesar_y_cambiar_plan_no_se_cruzan_sobre_la_misma_sesion():
+    """El candado propio de `SesionDeEstudio`: `procesar` corre en OTRO hilo.
+
+    El servidor llama a `procesar` a proposito FUERA de su propio candado
+    (`SesionCarril._observar` no hace nada lento dentro), asi que mientras ese
+    `procesar` corre en el hilo de analisis, el hilo HTTP puede estar en
+    `cambiar_plan` sobre el MISMO objeto. Y `cambiar_plan` REEMPLAZA
+    `self._seguidor`: colado entre el `procesar` del seguidor y el `_al_dia` de la
+    misma llamada, la pulsacion de ese cuadro se adjudicaba a un seguidor que se
+    estaba tirando y `_al_dia` juzgaba contra el seguidor y el final nuevos.
+
+    El candado del `SeguidorPieza` no cubria nada de esto: protege el interior del
+    seguidor, no los campos que esta etapa anadio en la sesion.
+
+    Aqui se para el `procesar` del seguidor a mitad y se comprueba que el
+    `cambiar_plan` del otro hilo ESPERA. La espera corta solo le da tiempo a una
+    implementacion sin candado a equivocarse; con el candado es determinista.
+    """
+    sesion = SesionDeEstudio(pieza_de_doce_compases())
+    dentro, soltar, cambiado = threading.Event(), threading.Event(), threading.Event()
+    original = sesion._seguidor.procesar
+
+    def procesar_lento(resultado, instante):
+        dentro.set()
+        soltar.wait(2.0)
+        return original(resultado, instante)
+
+    sesion._seguidor.procesar = procesar_lento
+    analisis = threading.Thread(target=lambda: sesion.procesar(SILENCIO, 0.0))
+    analisis.start()
+    assert dentro.wait(2.0), "el cuadro no llego al seguidor"
+
+    def cambiar():
+        sesion.cambiar_plan(PlanDePasada(primer_compas=3, ultimo_compas=4))
+        cambiado.set()
+
+    http = threading.Thread(target=cambiar)
+    http.start()
+    assert not cambiado.wait(0.2), "cambiar_plan se colo dentro de un procesar"
+
+    soltar.set()
+    analisis.join(2.0)
+    http.join(2.0)
+    assert cambiado.is_set()
+    assert sesion.plan.primer_compas == 3
 
 
 def informe_de(filas, ritmo_aproximado=False):

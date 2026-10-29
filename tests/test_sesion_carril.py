@@ -8,7 +8,6 @@ doble con las tres cosas que `SesionCarril` le pide.
 import pytest
 
 from nucleo.analisis.pipeline import ResultadoAnalisis
-from nucleo.piezas.estudio import PlanDePasada
 from nucleo.piezas.modelo import NotaEnPieza, Pieza
 from servidor.configuracion import Configuracion
 from servidor.piezas import ARRANQUE_NINGUNO, ESPERA_SIN_CUADROS_S, SesionCarril
@@ -110,6 +109,49 @@ def avanzar_mirando(sesion_carril, reloj, segundos, paso=1 / 30.0):
     return estado
 
 
+def agotar_cuenta_atras(sesion_carril, reloj, paso=0.0625, tope=600):
+    """Mira hasta que se agota la cuenta atras del plan. Devuelve el estado.
+
+    Las pruebas que miden el reloj de la pieza -o lo que el audio le cobra al
+    seguidor- necesitan el cabezal ya suelto, y el plan por defecto trae un compas
+    de cuenta atras delante (cuatro segundos en 4/4 a 60 ppm). Se agota MIRANDO,
+    como lo haria el WebSocket, y no apagandola en el plan.
+
+    Esa distincion es el motivo de que esta funcion exista. Apagar en una prueba
+    la caracteristica que esa prueba vigilaria es lo que dejo pasar el Critical de
+    la revision final: la cuenta atras moria con el primer cuadro de audio -el
+    servidor congelaba el reloj con `colocar_en`, que la cancela- y las dos unicas
+    pruebas de este archivo que podian haberlo visto llevaban
+    `compases_de_cuenta_atras=0`.
+
+    Hace falta que haya señal y que no haya llegado ningun cuadro todavia: es la
+    unica situacion en la que `_mirar` le pasa el tramo transcurrido al estudio.
+
+    Dos detalles que parecen quisquillosos y no lo son, porque sin ellos la cuenta
+    se come un tramo de la pieza y todas las medidas de despues salen cortas:
+
+    - El paso es 0,0625 s y no 1/30: divide los 4 s de la cuenta en 64 pasos
+      exactos en binario, asi que el ultimo la deja en 0,0 clavado. Con 1/30
+      quedaba un residuo de microsegundos y el aviso siguiente -que ya no era de
+      la cuenta- se gastaba en apurarlo, de modo que el cabezal perdia un paso.
+      Y sigue por debajo de `TECHO_TRAMO_S` (0,1 s), asi que cada paso cuenta
+      entero.
+    - La condicion mira el campo del nucleo y no el del estado publicado:
+      `EstadoEstudio.a_dict` redondea la cuenta a milisegundos, asi que un residuo
+      de microsegundos se publica como 0 estando todavia abierta.
+
+    El tope esta para que un fallo sea un fallo y no una suite colgada.
+    """
+    estudio = sesion_carril._estudio
+    for _ in range(tope):
+        if estudio._cuenta_atras_restante_s == 0:
+            return sesion_carril.estado()
+        reloj.avanzar(paso)
+        sesion_carril.estado()
+    raise AssertionError("la cuenta atras del plan no se agoto")
+
+
+
 def test_iniciar_devuelve_la_pieza_entera_una_sola_vez():
     """La pieza no viaja por el WebSocket: cientos de notas 30 veces por segundo
     seria tirar el canal en datos que no cambian."""
@@ -134,10 +176,14 @@ def test_el_instante_avanza_con_el_reloj():
     """
     reloj = RelojFalso()
     sesion_carril, sesion = carril(reloj)
-    # Sin cuenta atras: la prueba mide que el instante sigue al reloj, y con la
-    # cuenta del plan por defecto el reloj de la pieza se queda quieto un compas.
-    sesion_carril.iniciar(pieza_de([40, 45]), PlanDePasada(compases_de_cuenta_atras=0))
+    # CON la cuenta atras del plan por defecto delante, que es como arranca de
+    # verdad: primero se agota mirando y despues se mide el seguimiento del reloj.
+    # (Esta prueba llevaba `compases_de_cuenta_atras=0`, y era una de las dos que
+    # podian haber visto morir la cuenta con el primer cuadro de audio.)
+    sesion_carril.iniciar(pieza_de([40, 45]))
     assert sesion_carril.estado()["instante_s"] == 0.0
+    # Mientras la cuenta baja, el cabezal no se mueve ni un milimetro.
+    assert agotar_cuenta_atras(sesion_carril, reloj)["instante_s"] == pytest.approx(0.0)
     estado = avanzar_mirando(sesion_carril, reloj, 1.4)
     assert estado["instante_s"] == pytest.approx(1.4, abs=0.001)
     assert estado["indice_actual"] == 1
@@ -150,8 +196,10 @@ def test_sin_senal_el_carril_se_detiene_y_al_volver_sigue_donde_estaba():
     nunca sonaron."""
     reloj = RelojFalso()
     sesion_carril, sesion = carril(reloj)
-    # Sin cuenta atras: ver la nota de `test_el_instante_avanza_con_el_reloj`.
-    sesion_carril.iniciar(pieza_de([40, 45, 50]), PlanDePasada(compases_de_cuenta_atras=0))
+    # CON la cuenta atras del plan por defecto: ver `agotar_cuenta_atras`. Esta
+    # era la otra prueba que la llevaba apagada.
+    sesion_carril.iniciar(pieza_de([40, 45, 50]))
+    agotar_cuenta_atras(sesion_carril, reloj)
     assert avanzar_mirando(sesion_carril, reloj, 1.0)["instante_s"] == pytest.approx(1.0, abs=0.001)
 
     sesion.senal_ausente = True
@@ -162,6 +210,36 @@ def test_sin_senal_el_carril_se_detiene_y_al_volver_sigue_donde_estaba():
     sesion.senal_ausente = False
     estado = avanzar_mirando(sesion_carril, reloj, 0.5)
     assert estado["instante_s"] == pytest.approx(1.5, abs=0.001)
+    sesion_carril.detener()
+    sesion.detener()
+
+
+def test_perder_la_senal_en_plena_cuenta_atras_no_la_cancela():
+    """La otra mitad del Critical: la rama de la pausa por falta de señal.
+
+    Tambien congelaba el reloj del estudio con `colocar_en`, que es la puerta que
+    CANCELA la cuenta atras, asi que desenchufar el cable durante la cuenta la
+    mataba y el alumno se quedaba sin aviso justo cuando lo volvia a enchufar.
+    Congelar el reloj es decir «se queda donde esta», que es lo que la cuenta
+    atras quiere, no lo contrario.
+    """
+    reloj = RelojFalso()
+    sesion_carril, sesion = carril(reloj)
+    sesion_carril.iniciar(pieza_de([40, 45, 50]))
+    estado = avanzar_mirando(sesion_carril, reloj, 1.0)
+    assert estado["cuenta_atras_restante_s"] == pytest.approx(3.0, abs=0.05)
+
+    sesion.senal_ausente = True
+    estado = avanzar_mirando(sesion_carril, reloj, 5.0)
+    assert estado["pausado"] is True
+    # Ni se cancela ni se gasta esperando: el tiempo sin señal no entra en la
+    # pieza, y la cuenta atras es parte de la pieza.
+    assert estado["cuenta_atras_restante_s"] == pytest.approx(3.0, abs=0.05)
+
+    sesion.senal_ausente = False
+    agotar_cuenta_atras(sesion_carril, reloj)
+    estado = avanzar_mirando(sesion_carril, reloj, 0.5)
+    assert estado["instante_s"] == pytest.approx(0.5, abs=0.05)
     sesion_carril.detener()
     sesion.detener()
 
@@ -242,6 +320,10 @@ def test_lo_que_oye_el_cable_llega_al_seguidor():
     reloj = RelojFalso()
     sesion_carril, sesion = carril(reloj)
     sesion_carril.iniciar(pieza_de([40, 45]))
+    # La cuenta atras del plan por defecto va delante y se agota mirando: con ella
+    # abierta el reloj de la pieza esta congelado a proposito y esta prueba no
+    # mediria nada (ver `agotar_cuenta_atras`).
+    agotar_cuenta_atras(sesion_carril, reloj)
     publicar(sesion, reloj, suena("E2"), cuadros=12)
     tocadas = sesion_carril.estado()["tocadas"]
     assert len(tocadas) == 1
@@ -261,6 +343,10 @@ def test_el_websocket_mirando_el_estado_no_se_come_las_pulsaciones():
     reloj = RelojFalso()
     sesion_carril, sesion = carril(reloj)
     sesion_carril.iniciar(pieza_de([40, 45]))
+    # La cuenta atras del plan por defecto va delante y se agota mirando: con ella
+    # abierta el reloj de la pieza esta congelado a proposito y esta prueba no
+    # mediria nada (ver `agotar_cuenta_atras`).
+    agotar_cuenta_atras(sesion_carril, reloj)
     for _ in range(12):
         publicar(sesion, reloj, suena("E2"), cuadros=1)
         sesion_carril.estado()
@@ -275,6 +361,10 @@ def test_mientras_no_hay_senal_los_cuadros_no_mueven_el_carril():
     reloj = RelojFalso()
     sesion_carril, sesion = carril(reloj)
     sesion_carril.iniciar(pieza_de([40, 45, 50]))
+    # La cuenta atras del plan por defecto va delante y se agota mirando: con ella
+    # abierta el reloj de la pieza esta congelado a proposito y esta prueba no
+    # mediria nada (ver `agotar_cuenta_atras`).
+    agotar_cuenta_atras(sesion_carril, reloj)
     publicar(sesion, reloj, SILENCIO, cuadros=10)
     assert sesion_carril.estado()["instante_s"] == pytest.approx(0.21, abs=0.03)
 
@@ -309,6 +399,10 @@ def test_la_pausa_le_congela_el_reloj_tambien_al_seguidor():
     reloj = RelojFalso()
     sesion_carril, sesion = carril(reloj)
     sesion_carril.iniciar(pieza_de([40, 45, 50]))
+    # La cuenta atras del plan por defecto va delante y se agota mirando: con ella
+    # abierta el reloj de la pieza esta congelado a proposito y esta prueba no
+    # mediria nada (ver `agotar_cuenta_atras`).
+    agotar_cuenta_atras(sesion_carril, reloj)
     publicar(sesion, reloj, SILENCIO, cuadros=10)
     sesion.senal_ausente = True
     publicar(sesion, reloj, SILENCIO, cuadros=100)
@@ -325,6 +419,10 @@ def test_una_pausa_corta_con_audio_entrando_tampoco_mueve_el_cabezal():
     reloj = RelojFalso()
     sesion_carril, sesion = carril(reloj)
     sesion_carril.iniciar(pieza_de([40, 45, 50]))
+    # La cuenta atras del plan por defecto va delante y se agota mirando: con ella
+    # abierta el reloj de la pieza esta congelado a proposito y esta prueba no
+    # mediria nada (ver `agotar_cuenta_atras`).
+    agotar_cuenta_atras(sesion_carril, reloj)
     publicar(sesion, reloj, suena("E2"), cuadros=10)
     instante = sesion_carril.estado()["instante_s"]
 
@@ -355,6 +453,10 @@ def test_un_apagon_que_nadie_mira_no_entra_en_la_pieza():
     reloj = RelojFalso()
     sesion_carril, sesion = carril(reloj)
     sesion_carril.iniciar(pieza_de([40, 45, 50]))
+    # La cuenta atras del plan por defecto va delante y se agota mirando: con ella
+    # abierta el reloj de la pieza esta congelado a proposito y esta prueba no
+    # mediria nada (ver `agotar_cuenta_atras`).
+    agotar_cuenta_atras(sesion_carril, reloj)
     publicar(sesion, reloj, suena("E2"), cuadros=10)
     instante = sesion_carril.estado()["instante_s"]
 
@@ -380,6 +482,10 @@ def test_empezar_sin_el_cable_puesto_y_enchufarlo_treinta_segundos_despues():
     reloj = RelojFalso()
     sesion_carril, sesion = carril(reloj)
     sesion_carril.iniciar(pieza_de([40, 45, 50]))
+    # La cuenta atras del plan por defecto va delante y se agota mirando: con ella
+    # abierta el reloj de la pieza esta congelado a proposito y esta prueba no
+    # mediria nada (ver `agotar_cuenta_atras`).
+    agotar_cuenta_atras(sesion_carril, reloj)
     reloj.avanzar(30.0)  # ni un cuadro, ni una mirada: se estaba enchufando
     publicar(sesion, reloj, suena("E2"), cuadros=1)  # y aparece ya con señal
     assert sesion_carril.estado()["instante_s"] == pytest.approx(0.0, abs=0.15)
@@ -400,6 +506,10 @@ def test_la_vuelta_avisada_por_una_consulta_de_estado_tampoco_traga_el_hueco():
     reloj = RelojFalso()
     sesion_carril, sesion = carril(reloj)
     sesion_carril.iniciar(pieza_de([40, 45, 50]))
+    # La cuenta atras del plan por defecto va delante y se agota mirando: con ella
+    # abierta el reloj de la pieza esta congelado a proposito y esta prueba no
+    # mediria nada (ver `agotar_cuenta_atras`).
+    agotar_cuenta_atras(sesion_carril, reloj)
     reloj.avanzar(30.0)  # ni cuadros ni miradas: se estaba enchufando el cable
     assert sesion_carril.estado()["instante_s"] == pytest.approx(0.0, abs=0.15)
     # Y el cuadro que llega detras tampoco puede meterlo.
@@ -418,6 +528,10 @@ def test_tras_un_apagon_da_igual_quien_avise_primero():
     reloj = RelojFalso()
     sesion_carril, sesion = carril(reloj)
     sesion_carril.iniciar(pieza_de([40, 45, 50]))
+    # La cuenta atras del plan por defecto va delante y se agota mirando: con ella
+    # abierta el reloj de la pieza esta congelado a proposito y esta prueba no
+    # mediria nada (ver `agotar_cuenta_atras`).
+    agotar_cuenta_atras(sesion_carril, reloj)
     publicar(sesion, reloj, suena("E2"), cuadros=10)
     instante = sesion_carril.estado()["instante_s"]
 
@@ -445,6 +559,10 @@ def test_un_hueco_corto_de_audio_no_mueve_el_cabezal_mas_de_lo_acotado():
     reloj = RelojFalso()
     sesion_carril, sesion = carril(reloj)
     sesion_carril.iniciar(pieza_de([40, 45, 50]))
+    # La cuenta atras del plan por defecto va delante y se agota mirando: con ella
+    # abierta el reloj de la pieza esta congelado a proposito y esta prueba no
+    # mediria nada (ver `agotar_cuenta_atras`).
+    agotar_cuenta_atras(sesion_carril, reloj)
     publicar(sesion, reloj, suena("E2"), cuadros=10)
     instante = sesion_carril.estado()["instante_s"]
 
@@ -540,9 +658,14 @@ def test_con_la_captura_cerrada_el_carril_no_corre():
     assert estado["instante_s"] == pytest.approx(0.0, abs=0.001)
     assert estado["indice_actual"] == 0
     assert estado["pausado"] is True
+    # Y la cuenta atras del plan sigue entera: sin captura no hay nada que contar,
+    # y gastarla esperando dejaria al alumno sin aviso justo cuando enchufa.
+    assert estado["cuenta_atras_restante_s"] == pytest.approx(4.0)
 
-    # Al abrirse la captura el carril arranca desde donde estaba, sin saltos.
+    # Al abrirse la captura el carril arranca desde donde estaba, sin saltos
+    # (despues de la cuenta atras, que es lo que se oye al enchufar).
     sesion.activa = True
+    agotar_cuenta_atras(sesion_carril, reloj)
     estado = avanzar_mirando(sesion_carril, reloj, 0.5)
     assert estado["pausado"] is False
     assert estado["instante_s"] == pytest.approx(0.5, abs=0.001)

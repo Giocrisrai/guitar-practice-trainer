@@ -33,7 +33,7 @@ from dataclasses import replace
 from typing import Callable
 
 from nucleo.ejercicios.pulsaciones import VENTANA_ATAQUE_COMO_ONSET_S
-from nucleo.piezas.compases import compases_de_la_seccion
+from nucleo.piezas.compases import compases_de_la_seccion, pulsos_por_compas
 from nucleo.piezas.estudio import (
     EstadoEstudio,
     HistorialDeEstudio,
@@ -430,7 +430,17 @@ class SesionCarril:
 
         Corre DENTRO del hilo de analisis, asi que aqui no se hace nada lento: se
         mueve el reloj bajo candado, se suelta, y `procesar` -que es el trabajo de
-        verdad- corre fuera, con el candado del propio seguidor.
+        verdad- corre fuera.
+
+        Fuera de ESTE candado, no sin ninguno: `SesionDeEstudio` lleva el suyo
+        propio (reentrante) y `procesar` lo toma, igual que lo toman
+        `cambiar_plan`, `saltar_al_compas` y `cerrar_repeticion` desde el hilo
+        HTTP. Antes aqui se decia que `procesar` corria "con el candado del propio
+        seguidor", y eso seguia siendo cierto DEL SEGUIDOR pero dejo de ser
+        suficiente: esta etapa le anadio a la sesion de estudio media docena de
+        campos mutables (la cuenta atras, el tramo terminado, el acumulado, las
+        vueltas cerradas y el propio seguidor, que `cambiar_plan` reemplaza) que
+        ese candado no protege.
 
         Mientras el carril esta pausado por falta de señal el cuadro NO llega al
         estudio. No es un detalle: con el cable enchufado y callado los cuadros de
@@ -439,11 +449,20 @@ class SesionCarril:
         no hubiera pausa.
 
         Y si este cuadro llega despues de un hueco largo -el audio se paro y ha
-        vuelto- se le recoloca el reloj al estudio ANTES de darle de comer, con la
-        puerta ABSOLUTA (`colocar_en`) y no con la relativa: es una colocacion en
-        el sitio que esta clase ya decidio, no un tiempo que haya pasado, y
-        tratarla como un avance le haria dar la vuelta al bucle por un hueco de
-        audio. Sin recolocar, `procesar` calcula el instante de la pieza
+        vuelto- se le recoloca el reloj al estudio ANTES de darle de comer, con
+        `congelar_en` y no con la puerta relativa: es una colocacion en el sitio
+        que esta clase ya decidio, no un tiempo que haya pasado, y tratarla como
+        un avance le haria dar la vuelta al bucle por un hueco de audio.
+
+        Y con `congelar_en` y no con `colocar_en`, que es la otra puerta absoluta:
+        `colocar_en` CANCELA la cuenta atras, y `_ultimo_cuadro` empieza a None,
+        asi que el PRIMER cuadro tras arrancar entraba por aqui y mataba la cuenta
+        que `arrancar()` acababa de abrir, unos 21 ms despues de pulsar «empezar».
+        Lo mismo con cualquier hueco de audio dentro de una cuenta de vuelta.
+        Cancelar la cuenta es el contrato de `colocar_en` para las ordenes del
+        USUARIO (saltar, cambiar de plan); congelar el reloj no es una de ellas.
+
+        Sin recolocar, `procesar` calcula el instante de la pieza
         restandole al reloj del analisis un origen fijado antes del hueco, y el
         hueco entero entra en el cabezal: con 30 s de apagon, el cabezal saltaba a
         30 s aunque el reloj de esta clase se hubiera quedado donde debia.
@@ -458,7 +477,7 @@ class SesionCarril:
             if estudio is None or self._pausado:
                 return
             if self._sin_cuadros(ahora):
-                estudio.colocar_en(self._instante)
+                estudio.congelar_en(self._instante)
             self._ultimo_cuadro = ahora
         estudio.procesar(resultado, instante_analisis)
 
@@ -486,8 +505,10 @@ class SesionCarril:
         cada excepcion a esa regla ha sido un camino nuevo por el que el hueco
         volvia a entrar.
 
-        Al pausar se le congela tambien el reloj al estudio (`colocar_en`, que
-        acaba en el `avanzar_a` del seguidor), que es lo que hace segura la pausa:
+        Al pausar se le congela tambien el reloj al estudio (`congelar_en`, que
+        acaba en el `avanzar_a` del seguidor y NO cancela la cuenta atras: perder
+        la senal en plena cuenta no es motivo para tirarla), que es lo que hace
+        segura la pausa:
         `avanzar_a` invalida las pulsaciones en vuelo -las tocadas en el tramo que
         se acaba de abandonar- y deja la correspondencia entre relojes sin fijar,
         de modo que el primer cuadro tras la vuelta la fija de nuevo y la pieza
@@ -511,7 +532,7 @@ class SesionCarril:
                 estudio.avanzar(min(transcurrido, TECHO_TRAMO_S))
         elif not self._pausado:
             self._pausado = True
-            estudio.colocar_en(self._instante)
+            estudio.congelar_en(self._instante)
         # El reloj de la sesion de estudio es la verdad, y esta clase lo adopta en
         # vez de llevar su propia cuenta: ella congela durante la cuenta atras y
         # da la vuelta al bucle. Sin esta linea el cabezal saltaba hacia delante
@@ -687,7 +708,7 @@ class SesionCarril:
             self._parar_click(cerrar_salida=False)
             self._clave_del_click = clave
             try:
-                metronomo = Metronomo(tempo, pieza.compas[0], self._salida)
+                metronomo = Metronomo(tempo, self._periodo_del_acento(pieza), self._salida)
             except ValueError:
                 # Se acaba de parar el click anterior sin cerrar la salida (para
                 # no reabrirla cada vuelta): sin metronomo nuevo no se queda
@@ -709,6 +730,30 @@ class SesionCarril:
                 self._metronomo.pausar()
             else:
                 self._metronomo.reanudar()
+
+    @staticmethod
+    def _periodo_del_acento(pieza: Pieza) -> int:
+        """Cada cuantos clicks acentua el metronomo en esta pieza.
+
+        El `Metronomo` emite un click cada `60/tempo` segundos -o sea, un click
+        por PULSO- y acentua cada `compas` clicks. Asi que el periodo del acento
+        se mide en PULSOS DEL MODELO, que es la negra: `pulsos_por_compas` lo
+        convierte con `num*4/den`.
+
+        La spec §5 decia literalmente `compas = pieza.compas[0]`, y la
+        implementacion la copio. Acierta en 4/4 y en 3/4, donde el numerador y los
+        pulsos coinciden, y falla en todo lo demas: en 6/8 el compas son 3 negras
+        y acentuaba cada 6, y en 7/8 son 3,5 y acentuaba cada 7, de modo que el
+        acento caia cada dos compases y nunca sobre la misma nota. Dentro de la
+        propia etapa las dos cuentas se contradecian, porque
+        `SesionDeEstudio._segundos_de_cuenta_atras` si usa `pulsos_por_compas`.
+
+        Se redondea porque el metronomo cuenta clicks enteros: en 7/8 el acento va
+        cada 4 pulsos (3,5 redondeado), que es lo mas cerca que se puede estar del
+        compas con un click por negra. Suelo en 1 para que una pieza con un compas
+        raro no le pida al metronomo un periodo de 0.
+        """
+        return max(1, round(pulsos_por_compas(pieza)))
 
     def _parar_click(self, cerrar_salida: bool = True) -> None:
         """Para el click y olvida el intento. Seguro de llamar sin click.

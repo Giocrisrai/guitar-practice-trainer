@@ -17,10 +17,14 @@ nucleo con el dispositivo de sonido, y esta clase tiene que poder probarse enter
 en silencio.
 """
 
+import threading
 from dataclasses import dataclass, replace
 
 from nucleo.analisis.pipeline import ResultadoAnalisis
-from nucleo.ejercicios.pulsaciones import DetectorPulsaciones
+from nucleo.ejercicios.pulsaciones import (
+    VENTANA_ATAQUE_COMO_ONSET_S,
+    DetectorPulsaciones,
+)
 from nucleo.piezas.compases import (
     compas_en,
     pulsos_del_compas,
@@ -281,7 +285,33 @@ class EstadoEstudio:
 
 
 class SesionDeEstudio:
-    """Un seguidor, un plan, y el informe de lo que va pasando."""
+    """Un seguidor, un plan, y el informe de lo que va pasando.
+
+    CANDADO PROPIO, y hace falta: el servidor la muta desde DOS hilos. El hilo de
+    analisis entra por `procesar` -y a proposito fuera del candado de
+    `SesionCarril`, que no quiere nada lento dentro-, mientras el hilo HTTP puede
+    estar en `cambiar_plan`, `saltar_al_compas` o `cerrar_repeticion` sobre el
+    mismo objeto. El candado del `SeguidorPieza` no cubre nada de eso: esta etapa
+    anadio media docena de campos mutables AQUI (`_cuenta_atras_restante_s`,
+    `_tramo_terminado`, `_acumulado`, `_vueltas_cerradas`, `_repeticion`,
+    `_ultimo_analisis`, y el propio `_seguidor`, que `cambiar_plan` REEMPLAZA).
+    Sin candado, un `cambiar_plan` colado entre el `procesar` del seguidor y el
+    `_al_dia` de la misma llamada adjudicaba la pulsacion del cuadro a un seguidor
+    que se estaba tirando, y el `destino[clave] += valor` de `cerrar_repeticion`
+    no es atomico.
+
+    Es REENTRANTE porque varios de estos metodos se llaman entre si:
+    `cambiar_plan` y `saltar_al_compas` acaban en `colocar_en`, `arrancar` tambien,
+    `reiniciar_pasada` llama a `arrancar`, y `_dar_la_vuelta` -desde `avanzar` o
+    `procesar`- llama a `cerrar_repeticion`.
+
+    ORDEN DE LOS CANDADOS, comprobado: el del seguidor se toma SIEMPRE DENTRO de
+    este (es este objeto quien llama al seguidor, nunca al reves) y el seguidor no
+    llama hacia arriba -no conoce a esta clase-, asi que no hay inversion posible.
+    El de `SesionCarril` queda SIEMPRE FUERA de este -el servidor llama al nucleo
+    y no al reves-, asi que la cadena es carril -> estudio -> seguidor y nunca se
+    recorre en otro sentido.
+    """
 
     def __init__(
         self,
@@ -289,6 +319,8 @@ class SesionDeEstudio:
         plan: PlanDePasada = PlanDePasada(),
         detector: DetectorPulsaciones | None = None,
     ) -> None:
+        # Ver el docstring de la clase: reentrante, y el del seguidor va dentro.
+        self._candado = threading.RLock()
         self.pieza = pieza
         self._plan = validar_plan(pieza, plan)
         self._detector = detector
@@ -311,6 +343,10 @@ class SesionDeEstudio:
             for indice in indices
         }
         self._tramo_terminado = False
+        # El instante del reloj del ANALISIS en que el tramo se dio por acabado
+        # con audio entrando, o None si acabo sin audio (o no ha acabado). Lo usa
+        # `_ataques_en_vuelo` para aplazar la recolocacion del reloj.
+        self._analisis_al_acabar: float | None = None
         # El informe de la ultima vuelta del bucle que se cerro, o None si
         # todavia no se cerro ninguna. Lo lee el servidor para el historial.
         self._ultima_vuelta: InformeDePasada | None = None
@@ -455,11 +491,25 @@ class SesionDeEstudio:
         self._repeticion += 1
         self._cuenta_atras_restante_s = self._segundos_de_cuenta_atras()
 
-    def _al_dia(self, avanzando: bool) -> None:
+    def _ataques_en_vuelo(self) -> bool:
+        """Si todavia puede quedar un ataque del final del tramo por resolver.
+
+        Solo se abre esta ventana cuando el tramo acabo CON AUDIO entrando (ver
+        `_al_dia`): sin audio no hay nada en vuelo, y `_ultimo_analisis` se queda
+        viejo, asi que preguntarselo daria «si» para siempre.
+        """
+        marca = self._analisis_al_acabar
+        if marca is None or self._ultimo_analisis is None:
+            return False
+        return self._ultimo_analisis - marca < VENTANA_ATAQUE_COMO_ONSET_S
+
+    def _al_dia(self, avanzando: bool, con_audio: bool = False) -> None:
         """Lo que hay que mirar tras mover el reloj: la cuenta atras y el final.
 
         La llaman los dos caminos -con audio y sin audio-, porque el bucle tiene
-        que dar la vuelta igual cuando el cable esta desenchufado.
+        que dar la vuelta igual cuando el cable esta desenchufado. `con_audio` lo
+        pone solo `procesar`, y decide cuando se puede clavar el reloj en el final
+        del tramo (ver abajo).
 
         El bucle solo da la vuelta si el reloj CRUZO el final AVANZANDO
         (`avanzando=True`: `avanzar` y `procesar`). Si el llamador lo COLOCO mas
@@ -478,8 +528,67 @@ class SesionDeEstudio:
             if avanzando:
                 self._dar_la_vuelta()
         else:
-            self._tramo_terminado = True
+            # Clavar el reloj en el final del tramo se APLAZA mientras pueda
+            # quedar un ataque en vuelo, y esa es la correccion de un defecto
+            # medido: aqui se llamaba a `avanzar_a(self._fin_s())` en CADA cuadro
+            # -109 recolocaciones en 300 cuadros-, y cada `avanzar_a` invalida la
+            # correspondencia entre los dos relojes del seguidor. `_adjudicar`
+            # descarta los onsets anteriores al primer cuadro posterior al salto,
+            # asi que se perdia hasta `VENTANA_ATAQUE_COMO_ONSET_S` (250 ms) de
+            # notas: una nota atacada a 3,95 s de un tramo que acaba en 4,0 salia
+            # con `acertadas=0` y `limpias=0`. Y envenenaba lo que cuelga: el
+            # ultimo compas de cada pasada salia siempre sin limpias, de modo que
+            # `peores_compases` lo nominaba siempre y el tempo automatico no subia
+            # nunca por culpa de una nota que si se toco.
+            #
+            # Es el invariante de `ESPERA_SIN_CUADROS_S` del servidor burlado por
+            # DENTRO del nucleo, donde esa constante no llega.
+            #
+            # Recolocar una sola vez, en la transicion, no basta: el detector firma
+            # un onset hasta 250 ms despues de que ocurriera, asi que el ataque del
+            # final del tramo se resuelve DESPUES de la transicion y la unica
+            # recolocacion ya lo habria descartado (medido). De ahi que no se
+            # recoloque ninguna vez hasta que la ventana del detector se cierra:
+            # entonces no queda nada por resolver y clavar el reloj vuelve a ser
+            # gratis. El precio es que el cabezal se pasa del final del tramo esos
+            # 250 ms como mucho, y lo paga quien ya tiene «terminado» en pantalla.
+            #
+            # Sin audio no hay ventana que esperar y se clava en el acto, que es lo
+            # que mantiene el reloj quieto en el final mirada tras mirada.
+            #
+            # Y NO se arregla acotando el `instante_s` que publica `estado`: toda
+            # la etapa esta construida sobre que el servidor ADOPTA el reloj del
+            # nucleo, y publicar un instante distinto del que tiene el seguidor
+            # romperia esa regla por detras.
+            if not self._tramo_terminado:
+                self._tramo_terminado = True
+                self._analisis_al_acabar = self._ultimo_analisis if con_audio else None
+            if self._ataques_en_vuelo():
+                return
             self._seguidor.avanzar_a(self._fin_s())
+
+    def congelar_en(self, instante_pasada_s: float) -> EstadoEstudio:
+        """Coloca el cabezal SIN tocar la cuenta atras. La usa el SERVIDOR.
+
+        Es la hermana de `colocar_en` para el unico caso en que colocar el cabezal
+        NO es una orden del usuario: el servidor congelando su espejo del reloj
+        tras un hueco de audio o al pausar por falta de senal. Esos dos sitios
+        llamaban a `colocar_en`, y `colocar_en` es la puerta que CANCELA la cuenta
+        atras: la cuenta que `arrancar()` acababa de abrir moria con el primer
+        cuadro de audio -unos 21 ms despues de pulsar «empezar»-, porque
+        `_ultimo_cuadro` empieza a None y el primer `_observar` ya pasaba por ahi.
+        Lo mismo con cualquier hueco de audio dentro de una cuenta de vuelta.
+
+        Congelar no es desobedecer la cuenta: el servidor esta diciendo «el reloj
+        se queda donde esta», que es exactamente lo que la cuenta atras quiere.
+
+        Mueve el reloj y NADA MAS, igual que `colocar_en`: no descobra las notas
+        del tramo abandonado.
+        """
+        with self._candado:
+            self._seguidor.avanzar_a(instante_pasada_s)
+            self._al_dia(avanzando=False)
+            return self.estado
 
     def colocar_en(self, instante_pasada_s: float) -> EstadoEstudio:
         """Puerta ABSOLUTA: pon el cabezal aqui. CANCELA la cuenta atras.
@@ -487,15 +596,18 @@ class SesionDeEstudio:
         Cancelarla es deliberado: colocar el cabezal es una orden sobre donde
         esta ahora, y hacerla esperar a una cuenta atras que ya no viene al caso
         seria desobedecerla a medias. Quien quiere que el tiempo pase respetando
-        la pausa y la cuenta usa `avanzar`.
+        la pausa y la cuenta usa `avanzar`, y quien solo quiere CONGELAR el reloj
+        sin opinar sobre la cuenta usa `congelar_en` (el servidor, tras un hueco
+        de audio o al pausar por falta de senal).
 
         Mueve el reloj y NADA MAS: no descobra las notas del tramo abandonado
         (`olvidar_tramo`), y si se retrocede eso le toca a quien llama.
         """
-        self._cuenta_atras_restante_s = 0.0
-        self._seguidor.avanzar_a(instante_pasada_s)
-        self._al_dia(avanzando=False)
-        return self.estado
+        with self._candado:
+            self._cuenta_atras_restante_s = 0.0
+            self._seguidor.avanzar_a(instante_pasada_s)
+            self._al_dia(avanzando=False)
+            return self.estado
 
     def avanzar(self, delta_s: float) -> EstadoEstudio:
         """Puerta RELATIVA: ha pasado `delta_s`. Respeta la pausa y la cuenta atras.
@@ -508,21 +620,24 @@ class SesionDeEstudio:
         servidor con un reloj monotono, asi que un negativo es un hueco raro y no
         una orden de retroceder (para eso esta `colocar_en`).
         """
-        paso = max(0.0, delta_s)
-        if self._en_pausa:
+        with self._candado:
+            paso = max(0.0, delta_s)
+            if self._en_pausa:
+                return self.estado
+            if self._cuenta_atras_restante_s > 0:
+                self._cuenta_atras_restante_s = max(
+                    0.0, self._cuenta_atras_restante_s - paso
+                )
+                # Colocar el reloj del seguidor en el inicio en cada mirada es lo
+                # que lo congela, y ademas descarta las pulsaciones en vuelo:
+                # durante la cuenta atras no se puede cobrar nada. La abren
+                # `_dar_la_vuelta` y `arrancar`, que dejan el reloj en el inicio;
+                # esto lo mantiene ahi y descarta lo que llegue en vuelo.
+                self._seguidor.avanzar_a(self._inicio_s())
+                return self.estado
+            self._seguidor.avanzar_a(self._seguidor.estado.instante_s + paso)
+            self._al_dia(avanzando=True)
             return self.estado
-        if self._cuenta_atras_restante_s > 0:
-            self._cuenta_atras_restante_s = max(0.0, self._cuenta_atras_restante_s - paso)
-            # Colocar el reloj del seguidor en el inicio en cada mirada es lo que
-            # lo congela, y ademas descarta las pulsaciones en vuelo: durante la
-            # cuenta atras no se puede cobrar nada. La abren `_dar_la_vuelta` y
-            # `arrancar`, que dejan el reloj en el inicio; esto lo mantiene ahi
-            # y descarta lo que llegue en vuelo.
-            self._seguidor.avanzar_a(self._inicio_s())
-            return self.estado
-        self._seguidor.avanzar_a(self._seguidor.estado.instante_s + paso)
-        self._al_dia(avanzando=True)
-        return self.estado
 
     def procesar(
         self, resultado: ResultadoAnalisis, instante_analisis: float
@@ -534,18 +649,21 @@ class SesionDeEstudio:
         `_adjudicar` descarta los onsets anteriores al primer cuadro posterior a
         un salto, asi que ningun ataque se anotaria nunca.
         """
-        delta = self._delta_del_analisis(instante_analisis)
-        if self._en_pausa:
-            self._seguidor.avanzar_a(self._seguidor.estado.instante_s)
+        with self._candado:
+            delta = self._delta_del_analisis(instante_analisis)
+            if self._en_pausa:
+                self._seguidor.avanzar_a(self._seguidor.estado.instante_s)
+                return self.estado
+            if self._cuenta_atras_restante_s > 0:
+                self._cuenta_atras_restante_s = max(
+                    0.0, self._cuenta_atras_restante_s - delta
+                )
+                # Igual que en `avanzar`: reloj quieto en el inicio, nada se cobra.
+                self._seguidor.avanzar_a(self._inicio_s())
+                return self.estado
+            self._seguidor.procesar(resultado, instante_analisis)
+            self._al_dia(avanzando=True, con_audio=True)
             return self.estado
-        if self._cuenta_atras_restante_s > 0:
-            self._cuenta_atras_restante_s = max(0.0, self._cuenta_atras_restante_s - delta)
-            # Igual que en `avanzar`: reloj quieto en el inicio, nada se cobra.
-            self._seguidor.avanzar_a(self._inicio_s())
-            return self.estado
-        self._seguidor.procesar(resultado, instante_analisis)
-        self._al_dia(avanzando=True)
-        return self.estado
 
     def cambiar_plan(self, plan: PlanDePasada) -> EstadoEstudio:
         """Cambia tempo, bucle, click o rango SIN reiniciar la pasada.
@@ -559,18 +677,22 @@ class SesionDeEstudio:
         El cabezal se queda en el MISMO PULSO, no en el mismo segundo: cambiar de
         tempo no mueve a nadie de sitio dentro de la musica.
         """
-        nuevo = validar_plan(self.pieza, plan)
-        pulsos = self._pulsos(self._seguidor.estado.instante_s)
-        self.cerrar_repeticion(cuenta_como_vuelta=False)
-        cambia_el_factor = nuevo.factor_tempo != self._plan.factor_tempo
-        self._plan = nuevo
-        if cambia_el_factor:
-            self._seguidor = self._nuevo_seguidor()
-        self._tramo_terminado = False
-        self._cuenta_atras_restante_s = 0.0
-        dentro = nuevo.primer_compas <= compas_en(self.pieza, pulsos) <= nuevo.ultimo_compas
-        destino = self._segundos(pulsos) if dentro else self._inicio_s()
-        return self.colocar_en(destino)
+        with self._candado:
+            nuevo = validar_plan(self.pieza, plan)
+            pulsos = self._pulsos(self._seguidor.estado.instante_s)
+            self.cerrar_repeticion(cuenta_como_vuelta=False)
+            cambia_el_factor = nuevo.factor_tempo != self._plan.factor_tempo
+            self._plan = nuevo
+            if cambia_el_factor:
+                self._seguidor = self._nuevo_seguidor()
+            self._tramo_terminado = False
+            self._analisis_al_acabar = None
+            self._cuenta_atras_restante_s = 0.0
+            dentro = (
+                nuevo.primer_compas <= compas_en(self.pieza, pulsos) <= nuevo.ultimo_compas
+            )
+            destino = self._segundos(pulsos) if dentro else self._inicio_s()
+            return self.colocar_en(destino)
 
     def saltar_al_compas(self, numero: int) -> EstadoEstudio:
         """Coloca el cabezal al principio del compas `numero` del TRAMO.
@@ -589,32 +711,42 @@ class SesionDeEstudio:
         de destino, y antes de colocar el reloj) y la fijan pruebas con espia. No
         la borres por redundante ni la des por necesaria sin leer esto.
         """
-        desde, _ = pulsos_del_compas(self.pieza, numero)
-        if not self._plan.primer_compas <= numero <= self._plan.ultimo_compas:
-            raise ValueError(
-                f"El compas {numero} esta fuera del tramo que se estudia, que va "
-                f"del {self._plan.primer_compas} al {self._plan.ultimo_compas}: "
-                "cambia el plan antes de saltar"
-            )
-        destino = self._segundos(desde)
-        self.cerrar_repeticion(cuenta_como_vuelta=False)
-        self._tramo_terminado = False
-        # Primero se olvida y despues se coloca: colocar acaba en `avanzar_a`, que
-        # es quien descarta las pulsaciones en vuelo del tramo abandonado.
-        self._seguidor.olvidar_tramo(destino, self._fin_s())
-        return self.colocar_en(destino)
+        with self._candado:
+            # La guarda del tramo va ANTES de `pulsos_del_compas`: puesta despues,
+            # un compas que la pieza no tiene salia con el mensaje de
+            # `compases.py` ("la pieza no tiene compas 40") y no con el de este
+            # metodo, que es el que nombra los dos extremos del tramo y el que
+            # dice que hay que cambiar el plan. Fuera del tramo es fuera del
+            # tramo, exista el compas o no.
+            if not self._plan.primer_compas <= numero <= self._plan.ultimo_compas:
+                raise ValueError(
+                    f"El compas {numero} esta fuera del tramo que se estudia, que va "
+                    f"del {self._plan.primer_compas} al {self._plan.ultimo_compas}: "
+                    "cambia el plan antes de saltar"
+                )
+            desde, _ = pulsos_del_compas(self.pieza, numero)
+            destino = self._segundos(desde)
+            self.cerrar_repeticion(cuenta_como_vuelta=False)
+            self._tramo_terminado = False
+            self._analisis_al_acabar = None
+            # Primero se olvida y despues se coloca: colocar acaba en `avanzar_a`,
+            # que es quien descarta las pulsaciones en vuelo del tramo abandonado.
+            self._seguidor.olvidar_tramo(destino, self._fin_s())
+            return self.colocar_en(destino)
 
     def reiniciar_pasada(self) -> EstadoEstudio:
         """Vuelve al principio del tramo y olvida el informe. Empieza otra pasada."""
-        self._acumulado = {}
-        self._vueltas_cerradas = 0
-        # La ultima vuelta es de la pasada que se acaba: dejarla alli metaria una
-        # repeticion fantasma en el historial de la pasada nueva.
-        self._ultima_vuelta = None
-        self._repeticion = 1
-        self._tramo_terminado = False
-        self._seguidor = self._nuevo_seguidor()
-        return self.arrancar()
+        with self._candado:
+            self._acumulado = {}
+            self._vueltas_cerradas = 0
+            # La ultima vuelta es de la pasada que se acaba: dejarla alli metaria
+            # una repeticion fantasma en el historial de la pasada nueva.
+            self._ultima_vuelta = None
+            self._repeticion = 1
+            self._tramo_terminado = False
+            self._analisis_al_acabar = None
+            self._seguidor = self._nuevo_seguidor()
+            return self.arrancar()
 
     def arrancar(self) -> EstadoEstudio:
         """Empieza a tocar: coloca el cabezal al principio del tramo y abre la cuenta atras.
@@ -630,10 +762,11 @@ class SesionDeEstudio:
         El orden importa: `colocar_en` cancela la cuenta atras, asi que se coloca
         primero y se abre despues. Abrirla antes la dejaria cancelada.
         """
-        self._ultimo_analisis = None
-        self.colocar_en(self._inicio_s())
-        self._cuenta_atras_restante_s = self._segundos_de_cuenta_atras()
-        return self.estado
+        with self._candado:
+            self._ultimo_analisis = None
+            self.colocar_en(self._inicio_s())
+            self._cuenta_atras_restante_s = self._segundos_de_cuenta_atras()
+            return self.estado
 
     def pausar(self) -> None:
         """Pausa a voluntad del usuario. No es lo mismo que perder la senal."""
@@ -761,16 +894,20 @@ class SesionDeEstudio:
         que el contrato de `olvidar_tramo` pide a continuacion le toca a quien
         repite el tramo, no a este metodo.
         """
-        cuenta = self._contar(self._seguidor.estado.tocadas)
-        solo_esta_vuelta = self._armar_informe(cuenta, {}, 1)
-        if cuenta_como_vuelta:
-            self._vueltas_cerradas += 1
-        for numero, fila in cuenta.items():
-            destino = self._acumulado.setdefault(numero, self._contadores())
-            for clave, valor in fila.items():
-                destino[clave] += valor
-        self._seguidor.olvidar_tramo(0.0, self._seguidor.duracion_s + 1.0)
-        return solo_esta_vuelta
+        with self._candado:
+            cuenta = self._contar(self._seguidor.estado.tocadas)
+            solo_esta_vuelta = self._armar_informe(cuenta, {}, 1)
+            if cuenta_como_vuelta:
+                self._vueltas_cerradas += 1
+            for numero, fila in cuenta.items():
+                destino = self._acumulado.setdefault(numero, self._contadores())
+                for clave, valor in fila.items():
+                    # `+=` sobre un dict compartido no es atomico: sin el candado
+                    # de la clase, dos hilos podian leer el mismo valor y escribir
+                    # el mismo resultado, perdiendo una de las dos sumas.
+                    destino[clave] += valor
+            self._seguidor.olvidar_tramo(0.0, self._seguidor.duracion_s + 1.0)
+            return solo_esta_vuelta
 
 
 # La frontera para subir y la para bajar, separadas a proposito: con una sola,

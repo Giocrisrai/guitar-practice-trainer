@@ -38,6 +38,35 @@ def test_en_siete_por_ocho_el_pulso_es_la_corchea():
     assert pulsos_por_compas(pieza_de([0], compas=(7, 8))) == 3.5
 
 
+def test_en_seis_por_ocho_el_compas_son_tres_negras():
+    assert pulsos_por_compas(pieza_de([0], compas=(6, 8))) == 3.0
+
+
+def test_los_pulsos_del_compas_en_seis_por_ocho():
+    pieza = pieza_de([0.0, 3.0, 6.0], compas=(6, 8))
+    assert pulsos_del_compas(pieza, 1) == (0.0, 3.0)
+    assert pulsos_del_compas(pieza, 2) == (3.0, 6.0)
+
+
+def test_los_pulsos_del_compas_en_siete_por_ocho_caen_en_medias_negras():
+    # 7/8 son 3,5 negras, asi que las barras no caen en pulsos enteros: el segundo
+    # compas va del 3,5 al 7,0. Es el caso que delataba el acento del metronomo,
+    # que contaba 7 clicks por compas en vez de 3,5 pulsos.
+    pieza = pieza_de([0.0, 3.5, 7.0], compas=(7, 8))
+    assert pulsos_del_compas(pieza, 1) == (0.0, 3.5)
+    assert pulsos_del_compas(pieza, 2) == (3.5, 7.0)
+    assert compas_en(pieza, 3.5) == 2
+    assert compas_en(pieza, 3.49) == 1
+
+
+def test_el_total_de_compases_en_seis_por_ocho_y_en_siete_por_ocho():
+    # La pieza dura lo que el ultimo inicio mas su duracion (un pulso), y el
+    # ultimo compas incompleto cuenta. 6/8: 7 pulsos / 3 = 3 compases.
+    assert total_de_compases(pieza_de([0.0, 3.0, 6.0], compas=(6, 8))) == 3
+    # 7/8: 8 pulsos / 3,5 = 2,28... -> 3 compases.
+    assert total_de_compases(pieza_de([0.0, 3.5, 7.0], compas=(7, 8))) == 3
+
+
 def test_el_primer_compas_es_el_uno():
     pieza = pieza_de([0.0, 3.9])
     assert compas_en(pieza, 0.0) == 1

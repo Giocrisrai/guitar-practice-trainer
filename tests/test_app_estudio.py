@@ -220,6 +220,32 @@ def test_un_plan_con_un_valor_de_otro_tipo_no_es_un_quinientos(cliente):
     assert cliente.post("/api/piezas/plan", json={"compases_de_cuenta_atras": "x"}).status_code == 400
 
 
+def test_un_booleano_del_plan_que_no_es_booleano_se_rechaza(cliente):
+    """`bool(...)` acepta cualquier cosa: `{"en_bucle": "no"}` valia True.
+
+    Una cadena no vacia, un numero o una lista pasaban como True y el usuario se
+    encontraba con un bucle que no habia pedido en vez de un 400 que se lo
+    dijera. `int` y `float` ya rechazan lo que no es un numero; `bool` no rechaza
+    nada, asi que el filtro de los tres booleanos del plan va en el servidor.
+    """
+    iniciar(cliente)
+    for valor in ("no", "false", "", [], {}, 1, 0, None):
+        assert cliente.post(
+            "/api/piezas/plan", json={"en_bucle": valor}
+        ).status_code == 400, f"en_bucle={valor!r} tenia que ser un 400"
+    for campo in ("con_click", "tempo_automatico"):
+        assert cliente.post("/api/piezas/plan", json={campo: "si"}).status_code == 400
+
+    # Y los de verdad siguen pasando, por las dos puertas.
+    datos = cliente.post(
+        "/api/piezas/plan", json={"en_bucle": True, "con_click": False}
+    ).json()
+    assert datos["en_bucle"] is True
+    assert datos["con_click"] is False
+    assert iniciar_por_http(cliente, en_bucle="no").status_code == 400
+    assert iniciar_por_http(cliente, en_bucle=True).json()["en_bucle"] is True
+
+
 def test_cambiar_el_plan_no_reinicia_la_pasada(cliente):
     iniciar(cliente)
     cliente.post("/api/piezas/saltar", json={"compas": 6})
@@ -1276,8 +1302,42 @@ def test_el_click_nace_con_el_tempo_efectivo_y_el_compas_de_la_pieza(espia):
         pieza = replace(pieza_de_doce_compases(), tempo=75, compas=(3, 4))
         carril.iniciar(pieza, PlanDePasada(con_click=True, factor_tempo=0.85))
         assert len(espia) == 1
-        # round(75 * 0.85) = round(63,75) = 64 (int daria 63); el compas es el numerador, 3.
+        # round(75 * 0.85) = round(63,75) = 64 (int daria 63). Y el periodo del
+        # acento son los PULSOS del compas: un 3/4 son tres negras, o sea 3. En
+        # 3/4 coincide con el numerador; donde no coincide lo mide
+        # `test_el_acento_del_click_cuenta_los_pulsos_del_compas...`.
         assert (espia[0].tempo, espia[0].compas) == (64, 3)
+    finally:
+        carril.detener()
+        sesion.detener()
+
+
+@pytest.mark.parametrize(
+    "compas, periodo", [((4, 4), 4), ((3, 4), 3), ((6, 8), 3), ((7, 8), 4)]
+)
+def test_el_acento_del_click_cuenta_los_pulsos_del_compas_y_no_el_numerador(
+    espia, compas, periodo
+):
+    """El `Metronomo` acentua cada `compas` CLICKS, y un click es un PULSO.
+
+    El pulso del modelo es la negra -`compases.pulsos_por_compas` convierte con
+    `num*4/den`-, asi que pasarle el numerador acierta en 4/4 y en 3/4, donde los
+    dos numeros coinciden, y falla en todo lo demas: en 6/8 el compas son 3 negras
+    y el acento caia cada 6, y en 7/8 son 3,5 y caia cada 7, o sea cada dos
+    compases y nunca sobre la misma nota. Dentro de la propia etapa las dos
+    cuentas se contradecian, porque la cuenta atras si usa `pulsos_por_compas`.
+
+    La spec §5 decia literalmente `compas = pieza.compas[0]` y la implementacion
+    la copio: es un defecto de la spec, y se decide contra ella. En 7/8 el periodo
+    es 4 porque el metronomo cuenta clicks enteros y `round(3.5)` es 4.
+    """
+    salida, _ = salida_falsa()
+    carril, sesion, reloj = carril_a_mano(salida)
+    try:
+        pieza = replace(pieza_de_doce_compases(), compas=compas)
+        carril.iniciar(pieza, PlanDePasada(con_click=True))
+        assert len(espia) == 1
+        assert espia[0].compas == periodo
     finally:
         carril.detener()
         sesion.detener()
@@ -1555,6 +1615,52 @@ def test_la_pieza_espera_la_cuenta_atras_de_la_primera_entrada_y_luego_corre():
         assert estado["instante_s"] == pytest.approx(0.0, abs=0.1)
         estado = mirar_hasta(carril, reloj, lambda e: False, pasos=60)
         assert estado["instante_s"] == pytest.approx(2.0, abs=0.15)
+    finally:
+        carril.detener()
+        sesion.detener()
+
+
+def test_los_cuadros_de_audio_no_matan_la_cuenta_atras():
+    """El Critical de la revision final: la cuenta moria con el primer cuadro.
+
+    `iniciar()` deja `_ultimo_cuadro` a None, asi que `_sin_cuadros` es verdad en
+    el PRIMER `_observar` tras arrancar, y ahi el servidor congelaba el reloj del
+    estudio con `colocar_en`, que es la puerta que CANCELA la cuenta atras. Medido:
+    la cuenta que `arrancar()` acababa de abrir moria unos 21 ms despues de pulsar
+    «empezar». Con el cable enchufado -el unico caso que importa- no habia cuenta
+    atras en absoluto, y el README prometia que si.
+
+    Ninguna prueba de este archivo publicaba cuadros de audio con una cuenta
+    abierta, y esa ausencia es la causa raiz del defecto. Esta es esa prueba.
+    """
+    carril, sesion, reloj = carril_a_mano()
+    try:
+        datos = carril.iniciar(pieza_de_doce_compases())
+        # Un compas de 4/4 a 60 ppm: cuatro segundos de cuenta.
+        assert datos["cuenta_atras_restante_s"] == pytest.approx(4.0)
+
+        publicar(sesion, reloj, suena("E2"), cuadros=20)  # 0,4 s de audio
+        estado = carril.estado()
+        # La cuenta sigue bajando con los cuadros, que es lo que se rompia...
+        assert 3.0 < estado["cuenta_atras_restante_s"] < 4.0
+        # ...y mientras baja, el cabezal no se mueve y no se cobra nada.
+        assert estado["instante_s"] == pytest.approx(0.0, abs=1e-9)
+        assert estado["tocadas"] == []
+
+        # Y un hueco de audio mas largo que `ESPERA_SIN_CUADROS_S` dentro de la
+        # cuenta tampoco la mata: es el otro camino del mismo defecto, el que
+        # pasaba en cada cuenta de vuelta del bucle.
+        reloj.avanzar(0.3)
+        publicar(sesion, reloj, suena("E2"), cuadros=1)
+        estado = carril.estado()
+        assert estado["cuenta_atras_restante_s"] > 0
+        assert estado["instante_s"] == pytest.approx(0.0, abs=1e-9)
+
+        # Y agotada la cuenta con los cuadros, la pieza corre y se cobra.
+        publicar(sesion, reloj, SILENCIO, cuadros=200)
+        estado = carril.estado()
+        assert estado["cuenta_atras_restante_s"] == 0
+        assert estado["instante_s"] > 0
     finally:
         carril.detener()
         sesion.detener()
