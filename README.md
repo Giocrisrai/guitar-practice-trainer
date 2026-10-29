@@ -144,11 +144,15 @@ El carril se pausa por dos reglas distintas:
   sigue ahí, así que al desenchufar el carril se pausa en cosa de un segundo, no
   de cinco; al arrancar sin captura, desde el primer momento.
 
-**Sin plan, no hay cuenta atrás ni metrónomo.** La primera nota está escrita en el
-instante cero, el mismo en que pulsas **Empezar**, así que llegar *a tiempo* a la
-primera nota es prácticamente imposible, y nada marca el pulso: el ritmo lo llevas
-tú con lo que ves caer. Eso sigue siendo así en la primera pasada; el click
-opcional y la cuenta atrás entre vueltas del bucle son de la etapa 3c, más abajo.
+**Hay cuenta atrás desde el primer compás, y no hay metrónomo salvo que lo
+pidas.** El plan de fábrica trae **un compás de cuenta atrás** antes de la primera
+entrada —y antes de cada vuelta del bucle—, así que la primera nota, que está
+escrita en el instante cero de la pieza, no te cae encima al pulsar **Empezar**:
+durante la cuenta el cabezal no se mueve y no se cobra ninguna nota. Con
+`compases_de_cuenta_atras: 0` en el plan no hay cuenta, y entonces sí es
+prácticamente imposible llegar *a tiempo* a la primera nota. Lo que no hay de
+serie es nada que marque el pulso: el click es opcional (etapa 3c, más abajo) y
+sin él el ritmo lo llevas tú con lo que ves caer.
 
 **La ventana de ±80 ms.** Una pulsación cuenta como *a tiempo* si cae a menos de
 80 ms de donde la nota está escrita; entre 80 ms y el límite de la ventana de
@@ -375,11 +379,15 @@ partitura de una canción entera ocupa decenas de kilobytes: diez megas son dos
   etapa—, pero **ya no es en silencio**: el lector lee las casillas (`repeatAlternative` de las cabeceras)
   y la pantalla lo avisa antes de empezar, con el ejemplo de lo que suena y de lo
   que debería sonar. Es el estándar de esta etapa: si se detecta, se avisa.
-- **Las secciones se importan y todavía no las usa nada.** Los marcadores de
-  Guitar Pro, las marcas de ensayo de MusicXML y los marcadores de texto de MIDI
-  entran en la pieza porque reconstruirlos después sería imposible, pero ninguna
-  pantalla los muestra, tampoco la de la etapa 3c: el bucle se arma por números
-  de compás, no por secciones.
+- **Las secciones se importan y, en el carril, se pueden estudiar.** Los
+  marcadores de Guitar Pro, las marcas de ensayo de MusicXML y los marcadores de
+  texto de MIDI entran en la pieza, y la pantalla del carril trae un selector
+  **Elige una sección** que arma el bucle con el primer y el último compás de la
+  que elijas (etapa 3c, spec §6). Lo que sigue sin usarlas es la vista escrita,
+  que no dibuja sus nombres encima de la partitura. Y como `Seccion` no guarda
+  dónde acaba, el último compás de una sección es el anterior al comienzo de la
+  siguiente: si el archivo trae un marcador suelto a mitad de un pasaje, la
+  sección se estira hasta el marcador siguiente.
 - **Una canción que cambia de tempo o de compás se toca entera con el primero.**
   `Pieza` guarda uno solo. Eso **sí se avisa** antes de empezar, con el número que
   se va a usar («la canción CAMBIA DE TEMPO y aquí se toca entera a 76 ppm»), pero
@@ -405,15 +413,20 @@ tocarla de principio a fin. Todo está en la pantalla del carril:
 - **Compases a la vista**: una rejilla con todos los compases de la pieza y el
   del cabezal marcado, y se puede saltar a cualquiera con un clic.
 - **Bucle por rango de compases**: se arrastra sobre la rejilla para marcar desde
-  qué compás hasta cuál, y el tramo se repite con una **cuenta atrás** de
-  compases antes de empezar y al dar cada vuelta (uno por defecto; con 0 no hay).
-  Durante la cuenta el cabezal no se mueve y no se cobra ninguna nota.
+  qué compás hasta cuál, y el tramo se repite. También se puede elegir el tramo
+  por **secciones** de la canción, con el selector **Elige una sección**, cuando
+  el archivo las trae.
+- **Cuenta atrás de compases** antes de la primera entrada y al dar cada vuelta
+  del bucle (uno por defecto; con 0 no hay). Durante la cuenta el cabezal no se
+  mueve y no se cobra ninguna nota, y el click —si lo pides— se oye desde su
+  primer pulso.
 - **Tempo del 40 % al 100 % del escrito, en pasos del 5 %**, con un **click de
   metrónomo opcional**. No se pasa del 100 %: practicar más rápido que el
   original es otra cosa y no se construye aquí.
-- **Informe por compases al terminar la pasada**: notas limpias (acertadas y a
-  tiempo) de cada compás, el desfase medio dicho en palabras y un botón para
-  **machacar** los compases que más fallas.
+- **Informe por compases al terminar la pasada**: de cada compás, las notas
+  acertadas, las que llegaron a tiempo, las **limpias** (acertadas y a tiempo a
+  la vez, que son las que deciden el tempo automático) y el desfase medio dicho
+  en palabras, más un botón para **machacar** los compases que más fallas.
 - **Subida automática del tempo**, opcional: dos pasadas seguidas con el 90 % o
   más de notas limpias suben un paso; una sola por debajo del 70 % baja uno. Con
   bucle se aplica en el acto; sin bucle la pantalla lo **sugiere** y se aplica al
@@ -469,9 +482,18 @@ canción, no un dato perdido.
   infirió el lector de la etapa 3b, así que medir el desfase contra él no es un
   diagnóstico de fiar. El informe lo avisa en la cabecera.
 - **Marcar el rango arrastrando sobre la rejilla no funciona en pantalla
-  táctil.** Está hecho para el ratón (se practica en un MacBook); en una
-  tableta el rango se tendría que poner de otra manera, y esa otra manera no
-  existe todavía.
+  táctil.** Está hecho para el ratón (se practica en un MacBook). En una tableta
+  queda el selector de secciones, que no necesita arrastrar, pero solo sirve si el
+  archivo trae marcadores: para un rango cualquiera no hay otra manera todavía.
+- **En un compás cuyo denominador no es 4, el acento del click se redondea.** El
+  metrónomo da un click por negra, así que acentúa cada número **entero** de
+  pulsos: en 6/8 acierta (3 negras), y en 7/8 el compás son 3,5 negras y el acento
+  cae cada 4. Es lo más cerca que se puede estar del compás con un click por
+  negra; un click por corchea sería otro metrónomo.
+- **Al acabar un tramo que no es la pieza entera no hay resumen nota a nota.** El
+  resumen del final cuenta sobre la pieza completa, así que en un tramo parcial se
+  dice solo que el tramo terminó y lo que se tocó se lee en el informe por
+  compases, que sí sabe qué notas son del tramo.
 - **La pieza no suena de fondo.** Solo se oye tu guitarra (y el click, si lo
   pides): que la pieza suene mientras la sigues es la etapa siguiente.
 - **Nada de esto se ha probado con la guitarra en las manos**: lo que hay son
@@ -540,5 +562,5 @@ pendientes (están listadas en **Canciones**), y que la 3c tampoco se ha probado
 con el cable. Las siguientes, según el diseño:
 
 2b. Ejercicios de acordes
-La pieza sonando de fondo mientras la sigues (la etapa siguiente a la 3c)
+3d. La pieza sonando de fondo mientras la sigues (la etapa siguiente a la 3c)
 4. Grabación de sesiones, medición de progreso, entrenamiento de oído y efectos
