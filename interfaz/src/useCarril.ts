@@ -1,10 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { crearDetencionAlSalir } from "./detencionAlSalir";
 import { crearReloj, type Reloj } from "./relojCarril";
 import type {
   EstadoEstudio,
+  Historial,
+  Informe,
   Plan,
   RespuestaIniciarEstudio,
+  RespuestaPiezaEnMarcha,
   SeccionEnCompases,
 } from "./tiposEstudio";
 import type { Pieza } from "./tiposPieza";
@@ -87,6 +91,13 @@ export interface PeticionCancion {
  */
 export type PeticionPieza = PeticionEjercicio | PeticionCancion;
 
+/** Lo que devuelve `GET /api/piezas/informe`: lo tocado en esta pasada y el
+ * historial de la pieza. */
+export interface InformeConHistorial {
+  informe: Informe;
+  historial: Historial;
+}
+
 export interface SesionCarril {
   /** El último paquete del WebSocket. `null` mientras no llegó ninguno. */
   estado: EstadoEstudio | null;
@@ -128,6 +139,16 @@ export interface SesionCarril {
   /** La pausa del usuario, explícita (`activa`) y no un interruptor. No es el
    * `pausado` del estado, que es falta de señal. */
   pausar(activa: boolean): Promise<boolean>;
+  /**
+   * Machacar un compás: arma un bucle de ESE compás y lo arranca. Son dos
+   * órdenes y el orden importa: el servidor rechaza con 400 un salto a un compás
+   * fuera del tramo vigente, así que primero va el plan con el rango nuevo y
+   * después el salto. Si el plan se rechaza no se salta.
+   */
+  machacar(compas: number): Promise<boolean>;
+  /** Lo tocado en esta pasada. `null` si el servidor lo rechaza (el motivo queda
+   * en `error`). */
+  leerInforme(): Promise<InformeConHistorial | null>;
 }
 
 /**
@@ -144,7 +165,14 @@ export interface SesionCarril {
  *   que llama a `performance.now()`: el bucle de dibujo usa la marca que le da
  *   `requestAnimationFrame`, que es de la misma línea temporal.
  */
-export function useCarril(url = `ws://${window.location.host}/ws/piezas`): SesionCarril {
+export function useCarril(
+  url = `ws://${window.location.host}/ws/piezas`,
+  /** Pedir al servidor la pieza en marcha al montar, por si se recargó el
+   * navegador. Quien llega con una pieza ya pedida (desde `Canciones`) la trae en
+   * la respuesta de `iniciar` y pasa `false`: pedirla otra vez sería una petición
+   * de más, y además llegaría cruzada con la suya. */
+  recuperarPieza = true
+): SesionCarril {
   const [estado, setEstado] = useState<EstadoEstudio | null>(null);
   const [secciones, setSecciones] = useState<SeccionEnCompases[]>([]);
   const [pieza, setPieza] = useState<Pieza | null>(null);
@@ -316,6 +344,45 @@ export function useCarril(url = `ws://${window.location.host}/ws/piezas`): Sesio
     return valor;
   }, []);
 
+  /**
+   * Hace suya una pieza que el servidor tiene en marcha: la guarda, tira el reloj
+   * de la anterior y fija el arranque que decide qué paquetes son nuestros. La
+   * comparten `iniciar` (la pieza que acabamos de pedir) y la recuperación al
+   * montar (la que ya estaba corriendo cuando se recargó el navegador).
+   */
+  const adoptarPieza = useCallback(
+    (cuerpo: RespuestaIniciarEstudio) => {
+      const { pieza: piezaNueva, secciones_en_compases: seccionesNuevas, ...estadoInicial } =
+        cuerpo;
+      setPieza(piezaNueva);
+      setSecciones(seccionesNuevas ?? []);
+      // Reloj nuevo con cada pieza: el de la anterior tiene por suelo un
+      // instante que en esta pieza está en el futuro, y el suelo solo sube.
+      reloj.current = crearReloj();
+      relojCaduco.current = false;
+      instanteMostrado.current = 0;
+      // Pieza nueva, socket todavía sin decir nada de ella (ver
+      // `vistoPorElSocket`).
+      vistoPorElSocket.current = false;
+      // A partir de aquí, los paquetes de esta pieza son los que traen este
+      // arranque; cualquier otro se descarta en `recibir`. El estado inicial de
+      // la respuesta viene de la misma llamada que fijó el arranque, así que
+      // habla de esta pieza por construcción.
+      arranque.current = cuerpo.arranque;
+      // Si un paquete se adelantó a la respuesta y es de esta pieza, es más
+      // nuevo que el estado inicial y manda él; si no, manda el inicial, que
+      // vino de la misma llamada que fijó el arranque. Esta comparación solo
+      // ELIGE entre los dos: lo que impide que entre un paquete ajeno es la
+      // guarda de `recibir`, que vuelve a mirar la etiqueta.
+      const enEspera = paqueteEnEspera.current;
+      paqueteEnEspera.current = null;
+      recibir(
+        enEspera !== null && enEspera.arranque === cuerpo.arranque ? enEspera : estadoInicial
+      );
+    },
+    [recibir]
+  );
+
   const iniciar = useCallback(
     async (peticion: PeticionPieza) => {
       setIniciando(true);
@@ -332,33 +399,7 @@ export function useCarril(url = `ws://${window.location.host}/ws/piezas`): Sesio
         if (!respuesta.ok || cuerpo === null) {
           throw new Error(cuerpo?.detail ?? `El servidor respondio ${respuesta.status}`);
         }
-        const { pieza: piezaNueva, secciones_en_compases: seccionesNuevas, ...estadoInicial } =
-          cuerpo;
-        setPieza(piezaNueva);
-        setSecciones(seccionesNuevas ?? []);
-        // Reloj nuevo con cada pieza: el de la anterior tiene por suelo un
-        // instante que en esta pieza está en el futuro, y el suelo solo sube.
-        reloj.current = crearReloj();
-        relojCaduco.current = false;
-        instanteMostrado.current = 0;
-        // Pieza nueva, socket todavía sin decir nada de ella (ver
-        // `vistoPorElSocket`).
-        vistoPorElSocket.current = false;
-        // A partir de aquí, los paquetes de esta pieza son los que traen este
-        // arranque; cualquier otro se descarta en `recibir`. El estado inicial de
-        // la respuesta viene de la misma llamada que fijó el arranque, así que
-        // habla de esta pieza por construcción.
-        arranque.current = cuerpo.arranque;
-        // Si un paquete se adelantó a la respuesta y es de esta pieza, es más
-        // nuevo que el estado inicial y manda él; si no, manda el inicial, que
-        // vino de la misma llamada que fijó el arranque. Esta comparación solo
-        // ELIGE entre los dos: lo que impide que entre un paquete ajeno es la
-        // guarda de `recibir`, que vuelve a mirar la etiqueta.
-        const enEspera = paqueteEnEspera.current;
-        paqueteEnEspera.current = null;
-        recibir(
-          enEspera !== null && enEspera.arranque === cuerpo.arranque ? enEspera : estadoInicial
-        );
+        adoptarPieza(cuerpo);
       } catch (excepcion) {
         setError(
           excepcion instanceof Error ? excepcion.message : "No se pudo iniciar la pieza"
@@ -367,7 +408,7 @@ export function useCarril(url = `ws://${window.location.host}/ws/piezas`): Sesio
         setIniciando(false);
       }
     },
-    [recibir]
+    [adoptarPieza]
   );
 
   const detener = useCallback(async () => {
@@ -410,9 +451,78 @@ export function useCarril(url = `ws://${window.location.host}/ws/piezas`): Sesio
     [pedir]
   );
 
+  /**
+   * El informe de la pasada. Es una LECTURA, no una orden: no guarda nada aquí y
+   * quien lo pide decide cuándo repetirlo. Un 400 (no hay pieza) queda en `error`.
+   */
+  const leerInforme = useCallback(async (): Promise<InformeConHistorial | null> => {
+    try {
+      const respuesta = await fetch("/api/piezas/informe");
+      const datos = (await respuesta.json().catch(() => null)) as
+        | (Partial<InformeConHistorial> & { detail?: string })
+        | null;
+      if (!respuesta.ok || !datos?.informe || !datos.historial) {
+        setError(datos?.detail ?? `El servidor respondio ${respuesta.status}`);
+        return null;
+      }
+      setError(null);
+      return { informe: datos.informe, historial: datos.historial };
+    } catch (excepcion) {
+      setError(excepcion instanceof Error ? excepcion.message : "No se pudo contactar al servidor");
+      return null;
+    }
+  }, []);
+
+  const machacar = useCallback(
+    async (compas: number): Promise<boolean> => {
+      // Primero el plan y después el salto: un salto fuera del tramo vigente es
+      // un 400. El rango de un solo compás lo contiene por construcción.
+      const armado = await cambiarPlan({
+        primer_compas: compas,
+        ultimo_compas: compas,
+        en_bucle: true,
+      });
+      if (!armado) return false;
+      return saltar(compas);
+    },
+    [cambiarPlan, saltar]
+  );
+
+  /** Detener la pieza al desmontar, o el click de metrónomo se queda sonando (ver
+   * `detencionAlSalir`). */
+  const detencionAlSalir = useRef(crearDetencionAlSalir("/api/piezas/detener"));
+
+  // La pieza en marcha, para quien acaba de recargar el navegador. Se pide una
+  // sola vez al montar y SOLO si no tenemos pieza ni venimos de pedir una: quien
+  // llega desde `Canciones` la trae en la respuesta de `iniciar`, y pedirla otra
+  // vez sería una petición de más en el camino normal.
+  useEffect(() => {
+    if (!recuperarPieza) return;
+    let vivo = true;
+    fetch("/api/piezas/pieza")
+      .then((respuesta) => respuesta.json())
+      .then((datos: RespuestaPiezaEnMarcha) => {
+        // `arranque.current !== null`: mientras la petición volaba, el usuario
+        // arrancó una pieza; la suya es más nueva que lo que preguntamos.
+        if (!vivo || !datos.pieza || arranque.current !== null) return;
+        adoptarPieza(datos as RespuestaIniciarEstudio);
+      })
+      .catch(() => {
+        // Sin servidor o con una respuesta rara no hay nada que recuperar: el
+        // carril arranca vacío, como antes.
+      });
+    return () => {
+      vivo = false;
+    };
+    // Una sola vez, al montar.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   useEffect(() => {
     let vivo = true;
     let socket: WebSocket | null = null;
+    const detencion = detencionAlSalir.current;
+    detencion.cancelar();
 
     const conectar = () => {
       if (!vivo) return;
@@ -441,7 +551,10 @@ export function useCarril(url = `ws://${window.location.host}/ws/piezas`): Sesio
     return () => {
       vivo = false;
       if (temporizador.current !== null) window.clearTimeout(temporizador.current);
+      // El socket se cierra ANTES de pedir el detener: si el último paquete
+      // llegara después, volvería a pintar una pieza ya detenida.
       socket?.close();
+      detencion.programar();
     };
   }, [url, recibir]);
 
@@ -458,5 +571,7 @@ export function useCarril(url = `ws://${window.location.host}/ws/piezas`): Sesio
     cambiarPlan,
     saltar,
     pausar,
+    machacar,
+    leerInforme,
   };
 }

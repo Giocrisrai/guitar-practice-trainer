@@ -268,3 +268,12 @@ body {
 .sugerencia-tempo { border-color: var(--afinada); }
 .aviso-click, .aviso-pausa-usuario { color: var(--desviada); font-size: 13px; }
 .cuenta-atras { font-size: 24px; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/* El informe de la pasada */
+.informe-pasada { margin: 12px 0; }
+.tabla-informe { border-collapse: collapse; font-size: 14px; margin: 8px 0; }
+.tabla-informe th, .tabla-informe td { padding: 4px 12px; text-align: left; border-bottom: 1px solid var(--borde); }
+.aviso-informe { color: var(--desviada); font-size: 13px; margin: 4px 0; }
+.peores-compases { list-style: none; padding: 0; margin: 8px 0; }
+.peores-compases li { margin: 4px 0; }
+.cifras-peor { color: var(--tenue); font-size: 14px; }

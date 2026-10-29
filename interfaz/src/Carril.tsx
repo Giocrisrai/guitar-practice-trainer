@@ -13,7 +13,8 @@ import type { PerfilAfinacion } from "./tipos";
 import type { FamiliaEjercicio } from "./tiposEjercicio";
 import type { EstadoEstudio } from "./tiposEstudio";
 import type { Clasificacion, NotaDePieza, NotaTocada, Pieza } from "./tiposPieza";
-import { useCarril, type PeticionPieza } from "./useCarril";
+import { InformePasada } from "./InformePasada";
+import { useCarril, type InformeConHistorial, type PeticionPieza } from "./useCarril";
 import { VistaEscrita } from "./VistaEscritaPieza";
 
 /**
@@ -286,7 +287,9 @@ export function Carril({ peticion = null }: PropiedadesCarril) {
     cambiarPlan,
     saltar,
     pausar,
-  } = useCarril();
+    machacar,
+    leerInforme,
+  } = useCarril(undefined, peticion === null);
   const [familias, setFamilias] = useState<FamiliaEjercicio[]>([]);
   const [perfiles, setPerfiles] = useState<PerfilAfinacion[]>([]);
   // La familia la elige el usuario de entre las que publica el servidor. Nunca
@@ -296,6 +299,15 @@ export function Carril({ peticion = null }: PropiedadesCarril) {
   const [tempo, setTempo] = useState("");
   // Carril para tocar a tempo; escrita para leer la pieza y repasar lo tocado.
   const [vista, setVista] = useState<"carril" | "escrita">("carril");
+  // El informe de la pasada, tal como estaba al pedirlo: es una foto, no se
+  // actualiza solo. Lleva el arranque de la pieza que lo pidió, y solo se enseña
+  // mientras sea la que está en pantalla: así no sale encima de la siguiente.
+  const [pedido, setPedido] = useState<{ arranque: number; datos: InformeConHistorial } | null>(
+    null
+  );
+  const informe = pedido !== null && pedido.arranque === estado?.arranque ? pedido.datos : null;
+  const setInforme = (datos: InformeConHistorial | null) =>
+    setPedido(datos === null || estado === null ? null : { arranque: estado.arranque, datos });
 
   const lienzoRef = useRef<HTMLCanvasElement | null>(null);
   /** El último estado, para que el bucle de dibujo lo lea sin reiniciarse en
@@ -459,6 +471,11 @@ export function Carril({ peticion = null }: PropiedadesCarril) {
 
   const total = estado?.total ?? pieza.notas.length;
 
+  const pedirInforme = async () => setInforme(await leerInforme());
+  const machacarDesdeElInforme = async (compas: number) => {
+    if (await machacar(compas)) setInforme(null);
+  };
+
   return (
     <section className="carril-en-curso">
       <h2>{pieza.nombre}</h2>
@@ -504,6 +521,26 @@ export function Carril({ peticion = null }: PropiedadesCarril) {
 
       {vista === "escrita" && (
         <VistaEscrita pieza={pieza} estado={estado} cuerdas={cuerdas} etiquetas={etiquetas} />
+      )}
+
+      {informe === null ? (
+        <button type="button" onClick={() => void pedirInforme()}>
+          Ver el informe de la pasada
+        </button>
+      ) : (
+        <>
+          <InformePasada
+            informe={informe.informe}
+            historial={informe.historial}
+            alMachacar={(compas) => void machacarDesdeElInforme(compas)}
+          />
+          <button type="button" onClick={() => void pedirInforme()}>
+            Actualizar el informe
+          </button>
+          <button type="button" onClick={() => setInforme(null)}>
+            Cerrar el informe
+          </button>
+        </>
       )}
 
       {dibujando && (

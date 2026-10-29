@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { Ejercicios } from "./Ejercicios";
@@ -527,5 +528,51 @@ describe("Ejercicios", () => {
     await waitFor(() => expect(screen.getByText("Escalas")).toBeTruthy());
     await pulsarEmpezar();
     await waitFor(() => expect(screen.getByText(/No cae ninguna nota/)).toBeTruthy());
+  });
+
+  const rutasLlamadas = () => fetchFalso.mock.calls.map(([url]) => String(url));
+
+  it("detiene el ejercicio al desmontar, o su metronomo se queda sonando", async () => {
+    const { unmount } = render(<Ejercicios />);
+    await waitFor(() => expect(screen.getByText("Escalas")).toBeTruthy());
+    expect(rutasLlamadas()).not.toContain("/api/ejercicios/detener");
+    unmount();
+    await waitFor(() => expect(rutasLlamadas()).toContain("/api/ejercicios/detener"));
+    const llamada = fetchFalso.mock.calls.find(([url]) => url === "/api/ejercicios/detener")!;
+    expect((llamada[1] as RequestInit).method).toBe("POST");
+  });
+
+  it("cierra el WebSocket ANTES de pedir el detener", async () => {
+    const orden: string[] = [];
+    class SocketQueApunta extends WebSocketFalso {
+      close() {
+        orden.push("cerrar");
+      }
+    }
+    vi.stubGlobal("WebSocket", SocketQueApunta);
+    const base = fetchFalso as unknown as typeof fetch;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string, opciones?: RequestInit) => {
+        if (url === "/api/ejercicios/detener") orden.push("detener");
+        return base(url, opciones);
+      })
+    );
+    const { unmount } = render(<Ejercicios />);
+    await waitFor(() => expect(screen.getByText("Escalas")).toBeTruthy());
+    unmount();
+    await waitFor(() => expect(orden).toContain("detener"));
+    expect(orden).toEqual(["cerrar", "detener"]);
+  });
+
+  it("montar en StrictMode no detiene el ejercicio", async () => {
+    render(
+      <StrictMode>
+        <Ejercicios />
+      </StrictMode>
+    );
+    await waitFor(() => expect(screen.getByText("Escalas")).toBeTruthy());
+    await new Promise((resolver) => setTimeout(resolver, 30));
+    expect(rutasLlamadas()).not.toContain("/api/ejercicios/detener");
   });
 });

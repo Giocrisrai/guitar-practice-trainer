@@ -1,4 +1,5 @@
 import { act, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
+import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { Carril } from "./Carril";
@@ -1053,7 +1054,8 @@ describe("useCarril: las órdenes de la pasada", () => {
     });
     expect(resultados).toEqual([true, true, true]);
     expect(
-      fetchFalso.mock.calls.map(([url, opciones]) => [
+      // La lectura de la pieza en marcha al montar no es una orden.
+      fetchFalso.mock.calls.filter(([url]) => url !== "/api/piezas/pieza").map(([url, opciones]) => [
         url,
         opciones?.method,
         JSON.parse(String(opciones?.body)),
@@ -1101,7 +1103,11 @@ describe("useCarril: las órdenes de la pasada", () => {
 
   it("una orden aceptada limpia el error de la anterior", async () => {
     const respuestas = [responder({ detail: "mal" }, false, 400), responder({})];
-    vi.stubGlobal("fetch", vi.fn(() => respuestas.shift()!));
+    // La lectura de la pieza en marcha al montar no es una orden: no gasta una respuesta.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => (url === "/api/piezas/pieza" ? responder({}) : respuestas.shift()!)),
+    );
     const { result } = renderHook(() => useCarril());
     await act(async () => {
       await result.current.pausar(true);
@@ -1122,5 +1128,329 @@ describe("useCarril: las órdenes de la pasada", () => {
     });
     expect(aceptada).toBe(false);
     expect(result.current.error).toBe("sin red");
+  });
+});
+
+/** Las rutas a las que se llamó, en orden. */
+function rutas(fetchFalso: ReturnType<typeof vi.fn>): string[] {
+  return fetchFalso.mock.calls.map(([url]) => String(url));
+}
+
+/** Un `fetch` que contesta con lo que se le dé a cada ruta, y {} al resto. */
+function fetchCon(respuestas: Record<string, unknown>) {
+  return vi.fn((url: string, _opciones?: RequestInit) => {
+    const ruta = String(url);
+    if (ruta in respuestas) return responder(respuestas[ruta]);
+    if (ruta.includes("/api/ejercicios/familias")) return responder(FAMILIAS);
+    if (ruta.includes("/api/perfiles")) return responder(PERFILES);
+    if (ruta.includes("/api/piezas/iniciar")) return responder(RESPUESTA_INICIAR);
+    return responder({});
+  });
+}
+
+describe("Carril: recargar el navegador y desmontar", () => {
+  beforeEach(() => vi.stubGlobal("WebSocket", WebSocketFalso));
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("pide la pieza en marcha al montar y la dibuja, para quien recargó el navegador", async () => {
+    // La pieza viaja una sola vez en la respuesta de iniciar: sin esto, recargar
+    // a mitad de cancion dejaba el carril en blanco.
+    const fetchFalso = fetchCon({
+      "/api/piezas/pieza": {
+        ...RESPUESTA_INICIAR,
+        pieza: { ...PIEZA, nombre: "Una pieza que ya sonaba" },
+      },
+    });
+    vi.stubGlobal("fetch", fetchFalso);
+    render(<Carril />);
+    expect(await screen.findByText("Una pieza que ya sonaba")).toBeTruthy();
+    expect(await screen.findByTestId("lienzo-carril")).toBeTruthy();
+    // Y no se arrancó nada: solo se leyó.
+    expect(rutas(fetchFalso)).not.toContain("/api/piezas/iniciar");
+  });
+
+  it("los paquetes de la pieza recuperada entran, porque adoptó su arranque", async () => {
+    vi.stubGlobal("fetch", fetchCon({ "/api/piezas/pieza": RESPUESTA_INICIAR }));
+    render(<Carril />);
+    await screen.findByTestId("lienzo-carril");
+    enviarEstado(enCurso({ indice_actual: 2 }));
+    expect(screen.getByText("3 / 3")).toBeTruthy();
+  });
+
+  it("si no hay nada en marcha se queda con el configurador", async () => {
+    const fetchFalso = fetchCon({ "/api/piezas/pieza": { ...ESTADO_APAGADO, pieza: null } });
+    vi.stubGlobal("fetch", fetchFalso);
+    render(<Carril />);
+    await waitFor(() => expect(rutas(fetchFalso)).toContain("/api/piezas/pieza"));
+    await act(async () => {});
+    expect(screen.getByRole("button", { name: /empezar/i })).toBeTruthy();
+    expect(screen.queryByTestId("lienzo-carril")).toBeNull();
+  });
+
+  it("si la lectura falla, el carril arranca vacío y no revienta", async () => {
+    const fetchFalso = vi.fn((url: string) =>
+      String(url) === "/api/piezas/pieza"
+        ? Promise.reject(new Error("sin red"))
+        : responder(FAMILIAS),
+    );
+    vi.stubGlobal("fetch", fetchFalso);
+    render(<Carril />);
+    await waitFor(() => expect(rutas(fetchFalso)).toContain("/api/piezas/pieza"));
+    await act(async () => {});
+    expect(screen.getByRole("button", { name: /empezar/i })).toBeTruthy();
+  });
+
+  it("quien llega con una pieza pedida (desde Canciones) no la vuelve a pedir", async () => {
+    const fetchFalso = crearFetchFalso();
+    vi.stubGlobal("fetch", fetchFalso);
+    render(<Carril peticion={{ cancion: "x.gp5", pista: 1, perfil: null }} />);
+    // La positiva: la pieza se arrancó y se dibuja; la lectura habría salido ya.
+    expect(await screen.findByTestId("lienzo-carril")).toBeTruthy();
+    expect(rutas(fetchFalso)).toContain("/api/piezas/iniciar");
+    expect(rutas(fetchFalso)).not.toContain("/api/piezas/pieza");
+  });
+
+  it("una lectura que llega tarde no pisa la pieza que se arrancó mientras tanto", async () => {
+    let contestarLaLectura: (cuerpo: unknown) => void = () => {};
+    const fetchFalso = vi.fn((url: string) => {
+      const ruta = String(url);
+      if (ruta === "/api/piezas/pieza") {
+        return new Promise<Response>((resolver) => {
+          contestarLaLectura = (cuerpo) =>
+            resolver({ ok: true, status: 200, json: () => Promise.resolve(cuerpo) } as Response);
+        });
+      }
+      if (ruta.includes("/api/ejercicios/familias")) return responder(FAMILIAS);
+      if (ruta.includes("/api/perfiles")) return responder(PERFILES);
+      if (ruta.includes("/api/piezas/iniciar")) return responder(RESPUESTA_INICIAR);
+      return responder({});
+    });
+    vi.stubGlobal("fetch", fetchFalso);
+    render(<Carril />);
+    await pulsarEmpezar();
+    expect(await screen.findByText("Escala de Do mayor")).toBeTruthy();
+
+    await act(async () => {
+      contestarLaLectura({
+        ...RESPUESTA_INICIAR,
+        arranque: ARRANQUE_ANTERIOR,
+        pieza: { ...PIEZA, nombre: "La de antes" },
+      });
+    });
+    expect(screen.getByText("Escala de Do mayor")).toBeTruthy();
+    expect(screen.queryByText("La de antes")).toBeNull();
+  });
+
+  it("detiene la pieza al desmontar, o el click se queda sonando", async () => {
+    const fetchFalso = fetchCon({});
+    vi.stubGlobal("fetch", fetchFalso);
+    const { unmount } = render(<Carril />);
+    await act(async () => {});
+    expect(rutas(fetchFalso)).not.toContain("/api/piezas/detener");
+    unmount();
+    await waitFor(() => expect(rutas(fetchFalso)).toContain("/api/piezas/detener"));
+    const llamada = fetchFalso.mock.calls.find(([url]) => url === "/api/piezas/detener")!;
+    expect((llamada[1] as RequestInit).method).toBe("POST");
+  });
+
+  it("cierra el WebSocket ANTES de pedir el detener", async () => {
+    // Si el ultimo paquete llegara despues del detener, volveria a pintar una
+    // pieza ya detenida.
+    const orden: string[] = [];
+    class SocketQueApunta extends WebSocketFalso {
+      close() {
+        orden.push("cerrar");
+      }
+    }
+    vi.stubGlobal("WebSocket", SocketQueApunta);
+    const base = fetchCon({});
+    const fetchFalso = vi.fn((url: string, opciones?: RequestInit) => {
+      if (String(url) === "/api/piezas/detener") orden.push("detener");
+      return base(url, opciones);
+    });
+    vi.stubGlobal("fetch", fetchFalso);
+    const { unmount } = render(<Carril />);
+    await act(async () => {});
+    unmount();
+    await waitFor(() => expect(orden).toContain("detener"));
+    expect(orden).toEqual(["cerrar", "detener"]);
+  });
+
+  it("montar en StrictMode no detiene la pieza que se acaba de pedir", async () => {
+    // StrictMode monta, desmonta y vuelve a montar: la limpieza de la primera
+    // vez no puede parar la pieza de la segunda.
+    const fetchFalso = crearFetchFalso();
+    vi.stubGlobal("fetch", fetchFalso);
+    render(
+      <StrictMode>
+        <Carril peticion={{ cancion: "x.gp5", pista: 1, perfil: null }} />
+      </StrictMode>,
+    );
+    expect(await screen.findByTestId("lienzo-carril")).toBeTruthy();
+    await new Promise((resolver) => setTimeout(resolver, 30));
+    expect(rutas(fetchFalso)).not.toContain("/api/piezas/detener");
+  });
+});
+
+describe("useCarril: machacar y el informe", () => {
+  beforeEach(() => vi.stubGlobal("WebSocket", WebSocketFalso));
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  /** Las órdenes (POST) que salieron, como [ruta, cuerpo]. */
+  function ordenes(fetchFalso: ReturnType<typeof vi.fn>) {
+    return fetchFalso.mock.calls
+      .filter(([url, opciones]) =>
+        (opciones as RequestInit | undefined)?.method === "POST" && url !== "/api/piezas/detener")
+      .map(([url, opciones]) => [url, JSON.parse(String((opciones as RequestInit).body))]);
+  }
+
+  it("machacar manda primero el plan con el bucle de ese compás y después el salto", async () => {
+    const fetchFalso = fetchCon({});
+    vi.stubGlobal("fetch", fetchFalso);
+    const { result } = renderHook(() => useCarril());
+    let aceptada = false;
+    await act(async () => {
+      aceptada = await result.current.machacar(19);
+    });
+    expect(aceptada).toBe(true);
+    expect(ordenes(fetchFalso)).toEqual([
+      ["/api/piezas/plan", { primer_compas: 19, ultimo_compas: 19, en_bucle: true }],
+      ["/api/piezas/saltar", { compas: 19 }],
+    ]);
+  });
+
+  it("si el servidor rechaza el plan no manda el salto, y deja el motivo", async () => {
+    const fetchFalso = vi.fn((url: string, _opciones?: RequestInit) =>
+      String(url) === "/api/piezas/plan"
+        ? responder({ detail: "El compas 19 no existe" }, false, 400)
+        : responder({}),
+    );
+    vi.stubGlobal("fetch", fetchFalso);
+    const { result } = renderHook(() => useCarril());
+    let aceptada = true;
+    await act(async () => {
+      aceptada = await result.current.machacar(19);
+    });
+    expect(aceptada).toBe(false);
+    expect(ordenes(fetchFalso).map(([ruta]) => ruta)).toEqual(["/api/piezas/plan"]);
+    expect(result.current.error).toBe("El compas 19 no existe");
+  });
+
+  it("leerInforme devuelve informe e historial; un 400 da null y deja el motivo", async () => {
+    const cuerpo = {
+      informe: { compases: [], ritmo_aproximado: false, compas_variable: false, factor_tempo: 1, repeticiones: 1 },
+      historial: { pasadas: 2, peores_compases: [] },
+    };
+    vi.stubGlobal("fetch", vi.fn(() => responder(cuerpo)));
+    const { result } = renderHook(() => useCarril(undefined, false));
+    let leido: unknown = null;
+    await act(async () => {
+      leido = await result.current.leerInforme();
+    });
+    expect(leido).toEqual(cuerpo);
+
+    vi.stubGlobal("fetch", vi.fn(() => responder({ detail: "No hay pieza" }, false, 400)));
+    await act(async () => {
+      leido = await result.current.leerInforme();
+    });
+    expect(leido).toBeNull();
+    expect(result.current.error).toBe("No hay pieza");
+  });
+});
+
+describe("Carril: el informe en pantalla", () => {
+  beforeEach(() => vi.stubGlobal("WebSocket", WebSocketFalso));
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  const INFORME = {
+    informe: {
+      compases: [
+        {
+          numero: 19, notas_escritas: 4, notas_medibles: 4, acertadas: 4, a_tiempo: 2, limpias: 2,
+          pronto: 0, tarde: 2, desfase_medio_s: 0.04, tiene_acordes: false,
+        },
+      ],
+      ritmo_aproximado: false, compas_variable: false, factor_tempo: 1, repeticiones: 1,
+    },
+    historial: { pasadas: 5, peores_compases: [{ compas: 19, falladas: 4, contadas: 5 }] },
+  };
+
+  it("ver el informe pide el informe y lo enseña; machacar arma el bucle y salta", async () => {
+    const fetchFalso = fetchCon({ "/api/piezas/informe": INFORME });
+    vi.stubGlobal("fetch", fetchFalso);
+    render(<Carril peticion={{ cancion: "x.gp5", pista: 1, perfil: null }} />);
+    await screen.findByTestId("lienzo-carril");
+    expect(document.querySelector(".informe-pasada")).toBeNull();
+
+    await act(async () => {
+      screen.getByRole("button", { name: /ver el informe/i }).click();
+    });
+    expect(document.querySelector('tr[data-compas="19"] .celda-desfase')!.textContent).toBe(
+      "40 ms tarde",
+    );
+
+    await act(async () => {
+      screen.getByRole("button", { name: "Machacar el compás 19" }).click();
+    });
+    const posts = fetchFalso.mock.calls
+      .filter(([, o]) => (o as RequestInit | undefined)?.method === "POST")
+      .map(([url, o]) => [url, JSON.parse(String((o as RequestInit).body ?? "null"))])
+      .filter(([url]) => url === "/api/piezas/plan" || url === "/api/piezas/saltar");
+    expect(posts).toEqual([
+      ["/api/piezas/plan", { primer_compas: 19, ultimo_compas: 19, en_bucle: true }],
+      ["/api/piezas/saltar", { compas: 19 }],
+    ]);
+    // Machacado, el informe viejo se cierra.
+    expect(document.querySelector(".informe-pasada")).toBeNull();
+  });
+
+  it("el informe de una pieza no sale encima de la siguiente", async () => {
+    const arranques = [ARRANQUE_EN_CURSO, ARRANQUE_EN_CURSO + 1];
+    const base = fetchCon({ "/api/piezas/informe": INFORME });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string, opciones?: RequestInit) =>
+        String(url) === "/api/piezas/iniciar"
+          ? responder({ ...RESPUESTA_INICIAR, arranque: arranques.shift() })
+          : base(url, opciones),
+      ),
+    );
+    render(<Carril />);
+    await pulsarEmpezar();
+    await screen.findByTestId("lienzo-carril");
+    await act(async () => {
+      screen.getByRole("button", { name: /ver el informe/i }).click();
+    });
+    expect(document.querySelector(".informe-pasada")).not.toBeNull();
+
+    await act(async () => {
+      screen.getByRole("button", { name: /detener/i }).click();
+    });
+    await pulsarEmpezar();
+    await screen.findByTestId("lienzo-carril");
+    expect(screen.getByRole("button", { name: /ver el informe/i })).toBeTruthy();
+    expect(document.querySelector(".informe-pasada")).toBeNull();
+  });
+
+  it("cerrar el informe lo quita", async () => {
+    vi.stubGlobal("fetch", fetchCon({ "/api/piezas/informe": INFORME }));
+    render(<Carril peticion={{ cancion: "x.gp5", pista: 1, perfil: null }} />);
+    await screen.findByTestId("lienzo-carril");
+    await act(async () => {
+      screen.getByRole("button", { name: /ver el informe/i }).click();
+    });
+    expect(document.querySelector(".informe-pasada")).not.toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /cerrar el informe/i }));
+    expect(document.querySelector(".informe-pasada")).toBeNull();
+    expect(screen.getByRole("button", { name: /ver el informe/i })).toBeTruthy();
   });
 });
