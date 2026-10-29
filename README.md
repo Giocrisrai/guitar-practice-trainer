@@ -367,14 +367,16 @@ partitura de una canción entera ocupa decenas de kilobytes: diez megas son dos
   suena dos veces y la pieza dura lo que suena. Pero **las casillas de primera y
   segunda vez producen un compás de más**: con `|: A | B(1ª vez) :|` y `C` como
   segunda vez, lo que debería sonar es A B A C y lo que suena es A B A B C. El
-  compás de más sigue ahí —arreglar el expansor es la etapa 3c—, pero **ya no es
-  en silencio**: el lector lee las casillas (`repeatAlternative` de las cabeceras)
+  compás de más sigue ahí —arreglar el expansor es un defecto de lectura, no de
+  práctica: se consideró para la etapa 3c y se descartó, y irá a su propia
+  etapa—, pero **ya no es en silencio**: el lector lee las casillas (`repeatAlternative` de las cabeceras)
   y la pantalla lo avisa antes de empezar, con el ejemplo de lo que suena y de lo
   que debería sonar. Es el estándar de esta etapa: si se detecta, se avisa.
 - **Las secciones se importan y todavía no las usa nada.** Los marcadores de
   Guitar Pro, las marcas de ensayo de MusicXML y los marcadores de texto de MIDI
   entran en la pieza porque reconstruirlos después sería imposible, pero ninguna
-  pantalla los muestra: son para la etapa 3c.
+  pantalla los muestra, tampoco la de la etapa 3c: el bucle se arma por números
+  de compás, no por secciones.
 - **Una canción que cambia de tempo o de compás se toca entera con el primero.**
   `Pieza` guarda uno solo. Eso **sí se avisa** antes de empezar, con el número que
   se va a usar («la canción CAMBIA DE TEMPO y aquí se toca entera a 76 ppm»), pero
@@ -392,14 +394,88 @@ partitura de una canción entera ocupa decenas de kilobytes: diez megas son dos
   atasque el carril: las cinco **están pendientes**, y las cinco necesitan el cable
   y archivos reales.
 
-**Practicar por secciones, con bucles y tempo ajustable, es la etapa 3c.** Y hay
-una cosa que conviene tener delante antes de construirla: **la investigación
-disponible sugiere alternar pasajes en vez de repetir uno en bucle**, al revés que
-el *Riff Repeater* de Rocksmith. Es Carter y Grahn (2016, *Frontiers in
-Psychology*), que compararon práctica en bloque contra intercalada y encontraron
-que gana la intercalada —y, de propina, que la mayoría de los participantes creía
-lo contrario—. **Son diez sujetos**: es una señal, no una ley, y sin ese matiz la
-frase suena a verdad establecida.
+### Practicar la pieza
+
+La etapa 3c convierte el carril en un sitio donde **estudiar** una pieza, no solo
+tocarla de principio a fin. Todo está en la pantalla del carril:
+
+- **Compases a la vista**: una rejilla con todos los compases de la pieza y el
+  del cabezal marcado, y se puede saltar a cualquiera con un clic.
+- **Bucle por rango de compases**: se arrastra sobre la rejilla para marcar desde
+  qué compás hasta cuál, y el tramo se repite con una **cuenta atrás** de
+  compases antes de cada vuelta (uno por defecto).
+- **Tempo del 40 % al 100 % del escrito, en pasos del 5 %**, con un **click de
+  metrónomo opcional**. No se pasa del 100 %: practicar más rápido que el
+  original es otra cosa y no se construye aquí.
+- **Informe por compases al terminar la pasada**: notas limpias (acertadas y a
+  tiempo) de cada compás, el desfase medio dicho en palabras y un botón para
+  **machacar** los compases que más fallas.
+- **Subida automática del tempo**, opcional: dos pasadas seguidas con el 90 % o
+  más de notas limpias suben un paso; una sola por debajo del 70 % baja uno. Con
+  bucle se aplica en el acto; sin bucle la pantalla lo **sugiere** y se aplica al
+  empezar la pasada siguiente, para no arrancar sola un bucle que nadie pidió.
+
+**Los cinco endpoints nuevos**, al lado de los de la etapa 3a:
+
+- `POST /api/piezas/plan` — cambia tempo, bucle, click o tempo automático **sin
+  reiniciar** la pasada. Es un **parche**: lo que no mandas conserva el valor del
+  plan vigente, no el de fábrica (`{"factor_tempo": 0.7}` mueve solo el tempo).
+  Sin pieza en marcha, 400.
+- `POST /api/piezas/saltar` — `{compas}`: mueve el cabezal al principio de ese
+  compás, que tiene que estar dentro del tramo que se estudia.
+- `POST /api/piezas/pausa` — `{activa}`: la pausa del usuario, explícita y no un
+  interruptor, y distinta de la pausa por falta de señal.
+- `GET /api/piezas/informe` — lo tocado en esta pasada, compás a compás, y el
+  historial de la pieza.
+- `GET /api/piezas/pieza` — la pieza en marcha, para el navegador que se acaba de
+  recargar (`/iniciar` la manda entera una sola vez).
+
+`POST /api/piezas/iniciar` acepta además un `plan` opcional; sin él la pasada es
+la de la etapa 3a.
+
+**La ventana de acierto escala con el tempo.** Los ±80 ms de una nota son los del
+tempo escrito: al 50 %, el compás dura el doble y la ventana también, así que son
+±160 ms. Lo que se juzga es la colocación **dentro del compás**, con la misma
+indulgencia a cualquier velocidad, no cuántos milisegundos de reloj te
+equivocaste.
+
+**El historial dura lo que dure el servidor.** Vive en memoria, por nombre de
+pieza, y **no se guarda en disco**: al parar el servidor se pierde. Es una
+decisión tomada a propósito, no una carencia por llenar.
+
+**Límites de esta etapa**, sin maquillar:
+
+- **Una pieza con compás variable pinta mal las barras.** El modelo guarda un solo
+  compás, así que con un 3/4 en medio las barras caen en el sitio equivocado desde
+  el cambio hasta el final, y los números de compás pueden no coincidir con la
+  partitura. Se avisa antes de empezar y en el informe; avisar no es dibujarlo
+  bien.
+- **En los compases con acordes solo se puede medir una nota de cada uno**, porque
+  el detector de tono es monofónico. Por eso esos compases **no entran** en el
+  ranking de fallos ni en la regla del tempo automático (saldrían fallados para
+  siempre), y el informe lo dice en pantalla —«con acordes»— en vez de contarlos
+  como fallados.
+- **El click puede derivar del carril en una pasada larga**: corre en su propio
+  hilo, con su propio reloj. Cada repetición del bucle lo rearranca, así que
+  estudiando un bucle no se nota; tocando una pieza entera de seguido, sí puede.
+- **En una pieza con ritmo aproximado** —las tablaturas de texto— el ritmo lo
+  infirió el lector de la etapa 3b, así que medir el desfase contra él no es un
+  diagnóstico de fiar. El informe lo avisa en la cabecera.
+- **Marcar el rango arrastrando sobre la rejilla no funciona en pantalla
+  táctil.** Está hecho para el ratón (se practica en un MacBook); en una
+  tableta el rango se tendría que poner de otra manera, y esa otra manera no
+  existe todavía.
+- **La pieza no suena de fondo.** Solo se oye tu guitarra (y el click, si lo
+  pides): que la pieza suene mientras la sigues es la etapa siguiente.
+- **Nada de esto se ha probado con la guitarra en las manos**, como la 3b: lo que
+  hay son pruebas automáticas, no una sesión de estudio real con el cable.
+
+La investigación disponible sugiere **alternar pasajes en vez de repetir uno en
+bucle**, al revés que el *Riff Repeater* de Rocksmith: Carter y Grahn (2016,
+*Frontiers in Psychology*) compararon práctica en bloque contra intercalada y
+encontraron que gana la intercalada —y, de propina, que la mayoría de los
+participantes creía lo contrario—. **Son diez sujetos**: es una señal, no una
+ley. El bucle está porque es lo que se pidió; la alternancia no está construida.
 
 ## Verificar el cable
 
@@ -448,10 +524,11 @@ grabaciones todavía no existen, así que esas pruebas aparecen como saltadas
 
 ## Estado
 
-Etapas 1, 2a, 3a y 3b completas, con la salvedad de que las cinco
+Etapas 1, 2a, 3a, 3b y 3c completas, con la salvedad de que las cinco
 comprobaciones de la 3b que necesitan la guitarra y archivos reales siguen
-pendientes (están listadas en **Canciones**). Las siguientes, según el diseño:
+pendientes (están listadas en **Canciones**), y que la 3c tampoco se ha probado
+con el cable. Las siguientes, según el diseño:
 
 2b. Ejercicios de acordes
-3c. Practicar una pieza entera: secciones, bucles y tempo ajustable
+La pieza sonando de fondo mientras la sigues (la etapa siguiente a la 3c)
 4. Grabación de sesiones, medición de progreso, entrenamiento de oído y efectos
