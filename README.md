@@ -5,7 +5,8 @@ Etapa 1: afinador y monitor de notas en el mástil. Etapa 2a: ejercicios
 monofónicos (escalas, arpegios, intervalos y lectura) con corrección de nota,
 afinación y tempo. Etapa 3a: el carril, para tocar una pieza con la música
 corriendo. Etapa 3b: importar canciones de Guitar Pro, MusicXML, MIDI y
-tablatura de texto.
+tablatura de texto. Etapa 3c: practicar la pieza con compases, bucles y tempo
+ajustable.
 
 ## Requisitos
 
@@ -143,10 +144,11 @@ El carril se pausa por dos reglas distintas:
   sigue ahí, así que al desenchufar el carril se pausa en cosa de un segundo, no
   de cinco; al arrancar sin captura, desde el primer momento.
 
-**No hay cuenta atrás ni metrónomo.** La primera nota está escrita en el instante
-cero, el mismo en que pulsas **Empezar**, así que llegar *a tiempo* a la primera
-nota es prácticamente imposible, y nada en el carril marca el pulso: el ritmo lo
-llevas tú con lo que ves caer.
+**Sin plan, no hay cuenta atrás ni metrónomo.** La primera nota está escrita en el
+instante cero, el mismo en que pulsas **Empezar**, así que llegar *a tiempo* a la
+primera nota es prácticamente imposible, y nada marca el pulso: el ritmo lo llevas
+tú con lo que ves caer. Eso sigue siendo así en la primera pasada; el click
+opcional y la cuenta atrás entre vueltas del bucle son de la etapa 3c, más abajo.
 
 **La ventana de ±80 ms.** Una pulsación cuenta como *a tiempo* si cae a menos de
 80 ms de donde la nota está escrita; entre 80 ms y el límite de la ventana de
@@ -156,7 +158,8 @@ ataques no se oyen separados, de que por encima de unos 100 ms el desfase ya se
 oye como error, y de la latencia del cable (13,8 ms según la medición anotada en el código), pero nadie ha
 sentado a un alumno con la guitarra a ver cuándo siente que llegó tarde. Si te
 parece indulgente o severo, hay que ajustarlo: es la constante `VENTANA_A_TIEMPO_S`
-de `nucleo/piezas/seguimiento.py`.
+de `nucleo/piezas/seguimiento.py`. Todo esto es al tempo escrito: con el tempo
+ajustable de la etapa 3c las ventanas se estiran con él (al 50 %, ±160 ms).
 
 **La ventana de reclamo, y lo que queda fuera de ella.** Para decidir a qué nota
 pertenece una pulsación, cada nota solo puede ser reclamada desde una ventana, y
@@ -403,7 +406,8 @@ tocarla de principio a fin. Todo está en la pantalla del carril:
   del cabezal marcado, y se puede saltar a cualquiera con un clic.
 - **Bucle por rango de compases**: se arrastra sobre la rejilla para marcar desde
   qué compás hasta cuál, y el tramo se repite con una **cuenta atrás** de
-  compases antes de cada vuelta (uno por defecto).
+  compases al dar cada vuelta (uno por defecto). La primera entrada al tramo no
+  lleva cuenta atrás: solo la llevan las vueltas del bucle.
 - **Tempo del 40 % al 100 % del escrito, en pasos del 5 %**, con un **click de
   metrónomo opcional**. No se pasa del 100 %: practicar más rápido que el
   original es otra cosa y no se construye aquí.
@@ -439,9 +443,12 @@ tempo escrito: al 50 %, el compás dura el doble y la ventana también, así que
 indulgencia a cualquier velocidad, no cuántos milisegundos de reloj te
 equivocaste.
 
-**El historial dura lo que dure el servidor.** Vive en memoria, por nombre de
-pieza, y **no se guarda en disco**: al parar el servidor se pierde. Es una
-decisión tomada a propósito, no una carencia por llenar.
+**El historial dura lo que dure el servidor.** Vive en memoria y **no se guarda en
+disco**: al parar el servidor se pierde. Es una decisión tomada a propósito, no
+una carencia por llenar. Además se guarda por **nombre** de pieza, así que dos
+canciones distintas que se llamen igual comparten historial: es un empate
+declarado, y el precio de equivocarse es un «fallas el compás 19» de otra
+canción, no un dato perdido.
 
 **Límites de esta etapa**, sin maquillar:
 
@@ -467,8 +474,11 @@ decisión tomada a propósito, no una carencia por llenar.
   existe todavía.
 - **La pieza no suena de fondo.** Solo se oye tu guitarra (y el click, si lo
   pides): que la pieza suene mientras la sigues es la etapa siguiente.
-- **Nada de esto se ha probado con la guitarra en las manos**, como la 3b: lo que
-  hay son pruebas automáticas, no una sesión de estudio real con el cable.
+- **Nada de esto se ha probado con la guitarra en las manos**: lo que hay son
+  pruebas automáticas. Siguen pendientes de ensayo real si la cuenta atrás de un
+  compás da tiempo a colocar la mano, si el click acentuado ayuda o estorba, si
+  los pasos del 5 % son finos o bastos, y si «dos pasadas al 90 %» es la frontera
+  correcta para subir.
 
 La investigación disponible sugiere **alternar pasajes en vez de repetir uno en
 bucle**, al revés que el *Riff Repeater* de Rocksmith: Carter y Grahn (2016,
