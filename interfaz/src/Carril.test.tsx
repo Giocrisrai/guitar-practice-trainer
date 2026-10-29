@@ -1310,7 +1310,7 @@ describe("useCarril: machacar y el informe", () => {
       .map(([url, opciones]) => [url, JSON.parse(String((opciones as RequestInit).body))]);
   }
 
-  it("machacar manda primero el plan con el bucle de ese compás y después el salto", async () => {
+  it("machacar manda el plan con el bucle de ese compás, después el salto y por último quita la pausa", async () => {
     const fetchFalso = fetchCon({});
     vi.stubGlobal("fetch", fetchFalso);
     const { result } = renderHook(() => useCarril());
@@ -1322,7 +1322,43 @@ describe("useCarril: machacar y el informe", () => {
     expect(ordenes(fetchFalso)).toEqual([
       ["/api/piezas/plan", { primer_compas: 19, ultimo_compas: 19, en_bucle: true }],
       ["/api/piezas/saltar", { compas: 19 }],
+      ["/api/piezas/pausa", { activa: false }],
     ]);
+  });
+
+  it("si el salto se rechaza no se toca la pausa, y devuelve false", async () => {
+    const fetchFalso = vi.fn((url: string, _opciones?: RequestInit) =>
+      String(url) === "/api/piezas/saltar"
+        ? responder({ detail: "fuera del tramo" }, false, 400)
+        : responder({}),
+    );
+    vi.stubGlobal("fetch", fetchFalso);
+    const { result } = renderHook(() => useCarril(undefined, false));
+    let aceptada = true;
+    await act(async () => {
+      aceptada = await result.current.machacar(19);
+    });
+    expect(aceptada).toBe(false);
+    expect(ordenes(fetchFalso).map(([ruta]) => ruta)).toEqual([
+      "/api/piezas/plan",
+      "/api/piezas/saltar",
+    ]);
+  });
+
+  it("si la pausa no se quita, machacar devuelve false y deja el motivo", async () => {
+    const fetchFalso = vi.fn((url: string, _opciones?: RequestInit) =>
+      String(url) === "/api/piezas/pausa"
+        ? responder({ detail: "no se pudo reanudar" }, false, 400)
+        : responder({}),
+    );
+    vi.stubGlobal("fetch", fetchFalso);
+    const { result } = renderHook(() => useCarril(undefined, false));
+    let aceptada = true;
+    await act(async () => {
+      aceptada = await result.current.machacar(19);
+    });
+    expect(aceptada).toBe(false);
+    expect(result.current.error).toBe("no se pudo reanudar");
   });
 
   it("si el servidor rechaza el plan no manda el salto, y deja el motivo", async () => {
@@ -1404,10 +1440,11 @@ describe("Carril: el informe en pantalla", () => {
     const posts = fetchFalso.mock.calls
       .filter(([, o]) => (o as RequestInit | undefined)?.method === "POST")
       .map(([url, o]) => [url, JSON.parse(String((o as RequestInit).body ?? "null"))])
-      .filter(([url]) => url === "/api/piezas/plan" || url === "/api/piezas/saltar");
+      .filter(([url]) => ["/api/piezas/plan", "/api/piezas/saltar", "/api/piezas/pausa"].includes(String(url)));
     expect(posts).toEqual([
       ["/api/piezas/plan", { primer_compas: 19, ultimo_compas: 19, en_bucle: true }],
       ["/api/piezas/saltar", { compas: 19 }],
+      ["/api/piezas/pausa", { activa: false }],
     ]);
     // Machacado, el informe viejo se cierra.
     expect(document.querySelector(".informe-pasada")).toBeNull();
@@ -1438,6 +1475,63 @@ describe("Carril: el informe en pantalla", () => {
     await pulsarEmpezar();
     await screen.findByTestId("lienzo-carril");
     expect(screen.getByRole("button", { name: /ver el informe/i })).toBeTruthy();
+    expect(document.querySelector(".informe-pasada")).toBeNull();
+  });
+
+  it("al terminar la pasada pide el informe y lo enseña, UNA vez por pasada", async () => {
+    const fetchFalso = fetchCon({ "/api/piezas/informe": INFORME });
+    vi.stubGlobal("fetch", fetchFalso);
+    const cuantosInformes = () => rutas(fetchFalso).filter((r) => r === "/api/piezas/informe").length;
+    render(<Carril peticion={{ cancion: "x.gp5", pista: 1, perfil: null }} />);
+    await screen.findByTestId("lienzo-carril");
+
+    // Mientras se toca no se pide nada.
+    enviarEstado(enCurso({ completado: false }));
+    expect(cuantosInformes()).toBe(0);
+    expect(document.querySelector(".informe-pasada")).toBeNull();
+
+    // Se acaba el tramo: aparece solo.
+    await act(async () => {
+      WebSocketFalso.ultimo!.enviar(enCurso({ completado: true }));
+    });
+    await waitFor(() => expect(document.querySelector(".informe-pasada")).not.toBeNull());
+    expect(cuantosInformes()).toBe(1);
+
+    // El carril publica a 30 Hz y `completado` se queda en true.
+    for (let i = 0; i < 30; i++) {
+      await act(async () => {
+        WebSocketFalso.ultimo!.enviar(enCurso({ completado: true, instante_s: 1 + i / 30 }));
+      });
+    }
+    expect(cuantosInformes()).toBe(1);
+
+    // Empieza otra pasada y se acaba: se pide otra vez.
+    await act(async () => {
+      WebSocketFalso.ultimo!.enviar(enCurso({ completado: false }));
+    });
+    await act(async () => {
+      WebSocketFalso.ultimo!.enviar(enCurso({ completado: true }));
+    });
+    await waitFor(() => expect(cuantosInformes()).toBe(2));
+  });
+
+  it("un informe automático rechazado deja el motivo y no se reintenta en cada paquete", async () => {
+    const base = fetchCon({});
+    const fetchFalso = vi.fn((url: string, opciones?: RequestInit) =>
+      String(url) === "/api/piezas/informe"
+        ? responder({ detail: "No hay pasada" }, false, 400)
+        : base(url, opciones),
+    );
+    vi.stubGlobal("fetch", fetchFalso);
+    render(<Carril peticion={{ cancion: "x.gp5", pista: 1, perfil: null }} />);
+    await screen.findByTestId("lienzo-carril");
+    for (let i = 0; i < 5; i++) {
+      await act(async () => {
+        WebSocketFalso.ultimo!.enviar(enCurso({ completado: true }));
+      });
+    }
+    expect(await screen.findByText("No hay pasada")).toBeTruthy();
+    expect(rutas(fetchFalso).filter((r) => r === "/api/piezas/informe").length).toBe(1);
     expect(document.querySelector(".informe-pasada")).toBeNull();
   });
 

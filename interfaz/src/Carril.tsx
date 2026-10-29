@@ -352,6 +352,28 @@ export function Carril({ peticion = null }: PropiedadesCarril) {
     void iniciar(peticion);
   }, [peticion, iniciar]);
 
+  /**
+   * Al terminar la pasada el informe aparece solo: el usuario acaba de tocar y
+   * mira la pantalla, y pedirle un clic es pedirle que sepa que hay algo que
+   * pedir. UNA vez por pasada: el carril publica a 30 Hz y `completado` se queda en
+   * `true`, así que se recuerda que ya se pidió y se olvida al empezar otra
+   * (`completado` vuelve a `false`, o la pieza se suelta y no hay estado).
+   */
+  const informePedidoAlTerminar = useRef(false);
+  const terminada = estado?.completado === true;
+  const arranqueDeLaPasada = estado?.arranque;
+  useEffect(() => {
+    if (!terminada || arranqueDeLaPasada === undefined) {
+      informePedidoAlTerminar.current = false;
+      return;
+    }
+    if (informePedidoAlTerminar.current) return;
+    informePedidoAlTerminar.current = true;
+    void leerInforme().then((datos) => {
+      if (datos !== null) setPedido({ arranque: arranqueDeLaPasada, datos });
+    });
+  }, [terminada, arranqueDeLaPasada, leerInforme]);
+
   const cuerdas = useMemo(
     () => (pieza === null ? 1 : cuerdasDeLaPieza(pieza, perfiles)),
     [pieza, perfiles]
@@ -472,6 +494,22 @@ export function Carril({ peticion = null }: PropiedadesCarril) {
   const total = estado?.total ?? pieza.notas.length;
 
   const pedirInforme = async () => setInforme(await leerInforme());
+  /**
+   * Machacar un compás del informe. OJO: esto NO usa la regla de los clics de la
+   * rejilla (`rangoQueIncluye`, en `ControlesEstudio`), y la diferencia es a
+   * propósito, no una incoherencia que arreglar:
+   *
+   * - Clic en la rejilla = «llévame ahí». Si el compás cae fuera del bucle, se
+   *   MUEVE la ventana conservando su longitud, porque quien hizo clic quería ir a
+   *   un sitio, no cambiar cuánto estudia.
+   * - Machacar = «quiero ESTE compás». El bucle es de ese compás solo, y la
+   *   longitud del bucle anterior no cuenta: conservarla metería en el bucle
+   *   compases que nadie pidió machacar.
+   *
+   * Lo único que comparten es la regla del servidor (el compás tiene que estar en
+   * el rango vigente antes del salto), que un bucle de un compás cumple por
+   * construcción. Son dos cálculos distintos; no hay nada que unificar.
+   */
   const machacarDesdeElInforme = async (compas: number) => {
     if (await machacar(compas)) setInforme(null);
   };

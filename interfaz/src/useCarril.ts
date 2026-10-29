@@ -143,7 +143,8 @@ export interface SesionCarril {
    * Machacar un compás: arma un bucle de ESE compás y lo arranca. Son dos
    * órdenes y el orden importa: el servidor rechaza con 400 un salto a un compás
    * fuera del tramo vigente, así que primero va el plan con el rango nuevo y
-   * después el salto. Si el plan se rechaza no se salta.
+   * después el salto, y por último se quita la pausa del usuario. Cada paso solo
+   * va si el anterior fue aceptado.
    */
   machacar(compas: number): Promise<boolean>;
   /** Lo tocado en esta pasada. `null` si el servidor lo rechaza (el motivo queda
@@ -477,15 +478,19 @@ export function useCarril(
     async (compas: number): Promise<boolean> => {
       // Primero el plan y después el salto: un salto fuera del tramo vigente es
       // un 400. El rango de un solo compás lo contiene por construcción.
+      // Y al final, quitar la pausa del usuario: el botón promete EMPEZAR a
+      // practicar ese compás, y en pausa el bucle quedaría armado sin moverse.
+      // Es `pausa(false)`, explícita, no un interruptor.
       const armado = await cambiarPlan({
         primer_compas: compas,
         ultimo_compas: compas,
         en_bucle: true,
       });
       if (!armado) return false;
-      return saltar(compas);
+      if (!(await saltar(compas))) return false;
+      return pausar(false);
     },
-    [cambiarPlan, saltar]
+    [cambiarPlan, saltar, pausar]
   );
 
   /** Detener la pieza al desmontar, o el click de metrónomo se queda sonando (ver
