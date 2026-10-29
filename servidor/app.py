@@ -699,15 +699,28 @@ def crear_app(
         Un `ultimo_compas` presente y `null` si cuenta y es "hasta el final".
         Un valor de tipo imposible sale como `TypeError`/`ValueError`, que el
         llamador traduce a 400.
+
+        Los tres booleanos NO se convierten con `bool(...)`, que acepta cualquier
+        cosa: `{"en_bucle": "no"}` valia True -una cadena no vacia- en vez de dar
+        400, y lo mismo una lista o un diccionario. `int` y `float` ya rechazan lo
+        que no es un numero; `bool` no rechaza nada, asi que el filtro va aqui.
         """
+
+        def booleano(valor):
+            if not isinstance(valor, bool):
+                raise ValueError(
+                    f"Esto tiene que ser true o false, y me has mandado {valor!r}"
+                )
+            return valor
+
         conversores = {
             "primer_compas": int,
             "ultimo_compas": lambda v: None if v is None else int(v),
             "factor_tempo": float,
-            "en_bucle": bool,
+            "en_bucle": booleano,
             "compases_de_cuenta_atras": int,
-            "con_click": bool,
-            "tempo_automatico": bool,
+            "con_click": booleano,
+            "tempo_automatico": booleano,
         }
         return {
             campo: convertir(datos[campo])
