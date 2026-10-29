@@ -1307,3 +1307,135 @@ def test_el_redondeo_de_los_pulsos_no_se_come_precision_que_se_vea():
     sesion = SesionDeEstudio(pieza_de_doce_compases())
     sesion.colocar_en(1.2345678)
     assert sesion.estado.instante_pulsos == pytest.approx(1.2345678, abs=1e-7)
+
+
+# -- arrancar: la cuenta atras de la PRIMERA entrada al tramo ---------------
+
+
+def test_construir_la_sesion_no_abre_la_cuenta_atras_aunque_el_plan_la_pida():
+    # El constructor no es "empezar a tocar": las pruebas del nucleo que colocan
+    # el reloj y esperan que la pieza avance dependen de esto.
+    sesion = SesionDeEstudio(pieza_de_doce_compases())
+    assert sesion.plan.compases_de_cuenta_atras == 1
+    assert sesion.estado.cuenta_atras_restante_s == 0.0
+    sesion.avanzar(1.0)
+    assert sesion.estado.carril.instante_s == pytest.approx(1.0)
+
+
+def test_tras_arrancar_el_reloj_espera_la_cuenta_atras_y_solo_despues_corre():
+    sesion = SesionDeEstudio(pieza_de_doce_compases())
+    estado = sesion.arrancar()
+    # Un compas de 4/4 a 60 ppm: cuatro segundos.
+    assert estado.cuenta_atras_restante_s == pytest.approx(4.0)
+    assert estado.carril.instante_s == pytest.approx(0.0)
+    # Pasa el tiempo, a pasos como el servidor: el reloj de la pieza no se mueve
+    # y la cuenta baja.
+    for _ in range(3):
+        sesion.avanzar(1.0)
+        assert sesion.estado.carril.instante_s == pytest.approx(0.0)
+    assert sesion.estado.cuenta_atras_restante_s == pytest.approx(1.0)
+    # Se agota: ese paso solo gasta la cuenta, y el siguiente ya mueve la pieza.
+    sesion.avanzar(1.0)
+    assert sesion.estado.cuenta_atras_restante_s == 0.0
+    assert sesion.estado.carril.instante_s == pytest.approx(0.0)
+    sesion.avanzar(2.0)
+    assert sesion.estado.carril.instante_s == pytest.approx(2.0)
+
+
+def test_arrancar_coloca_el_cabezal_al_inicio_del_tramo_y_no_en_el_compas_uno():
+    sesion = SesionDeEstudio(
+        pieza_de_doce_compases(), PlanDePasada(primer_compas=3, ultimo_compas=4)
+    )
+    sesion.colocar_en(30.0)
+    estado = sesion.arrancar()
+    assert estado.compas_en_curso == 3
+    assert estado.carril.instante_s == pytest.approx(8.0)
+    assert estado.cuenta_atras_restante_s == pytest.approx(4.0)
+
+
+def test_la_cuenta_de_arrancar_sigue_el_tempo_de_la_pasada():
+    sesion = SesionDeEstudio(pieza_de_doce_compases(), PlanDePasada(factor_tempo=0.5))
+    assert sesion.arrancar().cuenta_atras_restante_s == pytest.approx(8.0)
+
+
+def test_durante_la_cuenta_de_arrancar_no_se_cobra_ninguna_nota():
+    sesion = SesionDeEstudio(pieza_de_doce_compases())
+    sesion.arrancar()
+    # Medio segundo de cuadros con la E2 sonando, que la pieza (nota en el
+    # instante 0) cobraria si el reloj corriera. Son menos de los 4 s de cuenta.
+    instante = 100.0
+    for _ in range(24):
+        sesion.procesar(suena("E2"), instante)
+        instante += 0.021
+    assert sesion.estado.cuenta_atras_restante_s > 0
+    assert sesion.estado.carril.tocadas == ()
+    assert sesion.estado.carril.instante_s == pytest.approx(0.0)
+
+
+def test_acabada_la_cuenta_de_arrancar_las_notas_si_se_cobran():
+    sesion = SesionDeEstudio(pieza_de_doce_compases())
+    sesion.arrancar()
+    instante = 100.0
+    # Acotado: si la cuenta nunca bajara, que falle en vez de colgar la suite.
+    for _ in range(400):
+        if sesion.estado.cuenta_atras_restante_s == 0:
+            break
+        sesion.procesar(SILENCIO, instante)
+        instante += 0.021
+    assert sesion.estado.cuenta_atras_restante_s == 0
+    for _ in range(12):
+        sesion.procesar(suena("E2"), instante)
+        instante += 0.021
+    assert len(sesion.estado.carril.tocadas) == 1
+
+
+def test_arrancar_con_cero_compases_de_cuenta_no_abre_ninguna_y_la_pieza_corre():
+    sesion = SesionDeEstudio(
+        pieza_de_doce_compases(), PlanDePasada(compases_de_cuenta_atras=0)
+    )
+    estado = sesion.arrancar()
+    assert estado.cuenta_atras_restante_s == 0.0
+    sesion.avanzar(1.5)
+    assert sesion.estado.carril.instante_s == pytest.approx(1.5)
+
+
+def test_reiniciar_la_pasada_abre_la_cuenta_igual_que_arrancar():
+    sesion = SesionDeEstudio(pieza_de_doce_compases())
+    sesion.arrancar()
+    sesion.avanzar(4.0)
+    sesion.avanzar(5.0)
+    assert sesion.estado.carril.instante_s == pytest.approx(5.0)
+    estado = sesion.reiniciar_pasada()
+    assert estado.cuenta_atras_restante_s == pytest.approx(4.0)
+    assert estado.carril.instante_s == pytest.approx(0.0)
+    assert estado.repeticion == 1
+    sesion.avanzar(2.0)
+    assert sesion.estado.carril.instante_s == pytest.approx(0.0)
+
+
+def test_reiniciar_la_pasada_sin_cuenta_en_el_plan_no_abre_ninguna():
+    sesion = SesionDeEstudio(
+        pieza_de_doce_compases(), PlanDePasada(compases_de_cuenta_atras=0)
+    )
+    sesion.avanzar(5.0)
+    assert sesion.reiniciar_pasada().cuenta_atras_restante_s == 0.0
+
+
+def test_la_congelacion_de_la_cuenta_atras_no_depende_de_quien_la_abra():
+    # Las dos puertas del reloj recolocan el cabezal en el inicio en cada mirada
+    # mientras dura la cuenta, ademas de no avanzarlo: es una DEFENSA por si algun
+    # dia la cuenta se abre sin colocar el cabezal (hoy lo hacen `arrancar` y
+    # `_dar_la_vuelta`, que ya lo colocan, y sin esta prueba quitar las dos lineas
+    # no tira nada). Por eso se abre a mano, tocando el atributo privado.
+    for puerta in ("avanzar", "procesar"):
+        sesion = SesionDeEstudio(
+            pieza_de_doce_compases(), PlanDePasada(compases_de_cuenta_atras=0)
+        )
+        sesion.avanzar(2.5)
+        assert sesion.estado.carril.instante_s == pytest.approx(2.5)
+        sesion._cuenta_atras_restante_s = 4.0
+        if puerta == "avanzar":
+            sesion.avanzar(1.0)
+        else:
+            sesion.procesar(suena("E2"), 100.0)
+        assert sesion.estado.carril.instante_s == pytest.approx(0.0), puerta

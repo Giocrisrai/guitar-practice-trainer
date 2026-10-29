@@ -307,6 +307,9 @@ class SesionCarril:
             with self._candado:
                 self._pieza = pieza
                 self._estudio = SesionDeEstudio(pieza, plan or PlanDePasada())
+                # Empezar a tocar abre la cuenta atras (la spec la pide antes de
+                # la primera entrada, no solo al dar la vuelta el bucle).
+                self._estudio.arrancar()
                 self._historial = self._historiales.setdefault(
                     pieza.nombre, HistorialDeEstudio()
                 )

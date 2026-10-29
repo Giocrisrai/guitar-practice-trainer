@@ -406,8 +406,8 @@ tocarla de principio a fin. Todo está en la pantalla del carril:
   del cabezal marcado, y se puede saltar a cualquiera con un clic.
 - **Bucle por rango de compases**: se arrastra sobre la rejilla para marcar desde
   qué compás hasta cuál, y el tramo se repite con una **cuenta atrás** de
-  compases al dar cada vuelta (uno por defecto). La primera entrada al tramo no
-  lleva cuenta atrás: solo la llevan las vueltas del bucle.
+  compases antes de empezar y al dar cada vuelta (uno por defecto; con 0 no hay).
+  Durante la cuenta el cabezal no se mueve y no se cobra ninguna nota.
 - **Tempo del 40 % al 100 % del escrito, en pasos del 5 %**, con un **click de
   metrónomo opcional**. No se pasa del 100 %: practicar más rápido que el
   original es otra cosa y no se construye aquí.

@@ -515,9 +515,9 @@ class SesionDeEstudio:
             self._cuenta_atras_restante_s = max(0.0, self._cuenta_atras_restante_s - paso)
             # Colocar el reloj del seguidor en el inicio en cada mirada es lo que
             # lo congela, y ademas descarta las pulsaciones en vuelo: durante la
-            # cuenta atras no se puede cobrar nada. HOY es defensa: `_dar_la_vuelta`
-            # ya dejo el reloj en el inicio y nadie mas abre la cuenta atras. Se
-            # queda para que el reloj siga quieto si alguien la abre por otro lado.
+            # cuenta atras no se puede cobrar nada. La abren `_dar_la_vuelta` y
+            # `arrancar`, que dejan el reloj en el inicio; esto lo mantiene ahi
+            # y descarta lo que llegue en vuelo.
             self._seguidor.avanzar_a(self._inicio_s())
             return self.estado
         self._seguidor.avanzar_a(self._seguidor.estado.instante_s + paso)
@@ -540,7 +540,7 @@ class SesionDeEstudio:
             return self.estado
         if self._cuenta_atras_restante_s > 0:
             self._cuenta_atras_restante_s = max(0.0, self._cuenta_atras_restante_s - delta)
-            # Defensa, igual que en `avanzar`: hoy el reloj ya esta en el inicio.
+            # Igual que en `avanzar`: reloj quieto en el inicio, nada se cobra.
             self._seguidor.avanzar_a(self._inicio_s())
             return self.estado
         self._seguidor.procesar(resultado, instante_analisis)
@@ -613,10 +613,27 @@ class SesionDeEstudio:
         self._ultima_vuelta = None
         self._repeticion = 1
         self._tramo_terminado = False
-        self._cuenta_atras_restante_s = 0.0
         self._seguidor = self._nuevo_seguidor()
+        return self.arrancar()
+
+    def arrancar(self) -> EstadoEstudio:
+        """Empieza a tocar: coloca el cabezal al principio del tramo y abre la cuenta atras.
+
+        Es la entrada al tramo por primera vez (o de nuevo, en `reiniciar_pasada`):
+        la spec pide el compas de aviso ANTES de arrancar y en cada repeticion, y
+        la repeticion ya la abre `_dar_la_vuelta`. La duracion es la misma
+        (`_segundos_de_cuenta_atras`), cero si el plan dice 0 compases.
+
+        Construir la sesion NO llama a esto: quien solo coloca el reloj y espera
+        que la pieza avance (casi todas las pruebas del nucleo) sigue sin cuenta.
+
+        El orden importa: `colocar_en` cancela la cuenta atras, asi que se coloca
+        primero y se abre despues. Abrirla antes la dejaria cancelada.
+        """
         self._ultimo_analisis = None
-        return self.colocar_en(self._inicio_s())
+        self.colocar_en(self._inicio_s())
+        self._cuenta_atras_restante_s = self._segundos_de_cuenta_atras()
+        return self.estado
 
     def pausar(self) -> None:
         """Pausa a voluntad del usuario. No es lo mismo que perder la senal."""

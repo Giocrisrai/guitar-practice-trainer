@@ -679,7 +679,10 @@ def test_el_tempo_automatico_que_no_cambia_nada_no_se_come_la_cuenta_atras():
                 tempo_automatico=True,
             ),
         )
-        assert mirar_hasta(carril, reloj, lambda e: e["repeticion"] > 1)["repeticion"] == 2
+        # Mas pasos que el defecto: ahora la primera entrada tambien lleva su cuenta
+        # atras, asi que la primera vuelta tarda un compas mas en llegar.
+        vuelta = mirar_hasta(carril, reloj, lambda e: e["repeticion"] > 1, pasos=1000)
+        assert vuelta["repeticion"] == 2
         # La mirada SIGUIENTE a la vuelta, que es donde ya se ve lo que el
         # historial haya decidido (o no) hacer con el plan.
         estado = carril.estado()
@@ -1520,3 +1523,58 @@ def test_un_metronomo_que_no_arranca_con_la_salida_abierta_la_cierra(monkeypatch
     finally:
         carril.detener()
         sesion.detener()
+
+
+# ---------------------------------------------------------------------------
+# La cuenta atras de la primera entrada (`SesionDeEstudio.arrancar`)
+# ---------------------------------------------------------------------------
+
+
+def test_iniciar_por_http_ya_trae_la_cuenta_atras_con_el_plan_por_defecto(cliente):
+    datos = iniciar_por_http(cliente).json()
+    assert datos["cuenta_atras_restante_s"] > 0
+
+
+def test_iniciar_por_http_sin_compases_de_cuenta_atras_no_la_abre(cliente):
+    datos = iniciar_por_http(cliente, compases_de_cuenta_atras=0).json()
+    assert datos["cuenta_atras_restante_s"] == 0
+
+
+def test_la_pieza_espera_la_cuenta_atras_de_la_primera_entrada_y_luego_corre():
+    carril, sesion, reloj = carril_a_mano()
+    try:
+        datos = carril.iniciar(pieza_de_doce_compases())
+        # Compas de 4/4 a 60 ppm: cuatro segundos de cuenta.
+        assert datos["cuenta_atras_restante_s"] == pytest.approx(4.0)
+        # Dos segundos de reloj: la cuenta baja y el cabezal no se mueve.
+        estado = mirar_hasta(carril, reloj, lambda e: False, pasos=60)
+        assert estado["cuenta_atras_restante_s"] == pytest.approx(2.0, abs=0.1)
+        assert estado["instante_s"] == pytest.approx(0.0)
+        # Agotada la cuenta, la pieza empieza a correr desde el inicio.
+        estado = mirar_hasta(carril, reloj, lambda e: e["cuenta_atras_restante_s"] == 0)
+        assert estado["instante_s"] == pytest.approx(0.0, abs=0.1)
+        estado = mirar_hasta(carril, reloj, lambda e: False, pasos=60)
+        assert estado["instante_s"] == pytest.approx(2.0, abs=0.15)
+    finally:
+        carril.detener()
+        sesion.detener()
+
+
+def test_arrancar_con_cuenta_atras_y_click_no_deja_el_click_sonando_antes_de_hora(
+    cliente_con_salida,
+):
+    salida, streams = salida_falsa()
+    with TestClient(cliente_con_salida(salida), base_url=BASE_LOCAL) as cliente:
+        datos = iniciar(cliente, con_click=True)
+        # El click suena desde el primer pulso de la cuenta, que es lo que se
+        # quiere, y el cabezal esta en el inicio del tramo, no descolocado.
+        assert datos["click_sonando"] is True
+        assert datos["cuenta_atras_restante_s"] > 0
+        assert datos["instante_s"] == 0
+        for _ in range(5):
+            estado = cliente.get("/api/piezas/estado").json()
+        # Cinco miradas en plena cuenta no rearrancan el click (una sola salida
+        # abierta) ni mueven el cabezal.
+        assert len(streams) == 1
+        assert estado["click_sonando"] is True
+        assert estado["instante_s"] == 0

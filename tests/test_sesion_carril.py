@@ -8,6 +8,7 @@ doble con las tres cosas que `SesionCarril` le pide.
 import pytest
 
 from nucleo.analisis.pipeline import ResultadoAnalisis
+from nucleo.piezas.estudio import PlanDePasada
 from nucleo.piezas.modelo import NotaEnPieza, Pieza
 from servidor.configuracion import Configuracion
 from servidor.piezas import ARRANQUE_NINGUNO, ESPERA_SIN_CUADROS_S, SesionCarril
@@ -133,7 +134,9 @@ def test_el_instante_avanza_con_el_reloj():
     """
     reloj = RelojFalso()
     sesion_carril, sesion = carril(reloj)
-    sesion_carril.iniciar(pieza_de([40, 45]))
+    # Sin cuenta atras: la prueba mide que el instante sigue al reloj, y con la
+    # cuenta del plan por defecto el reloj de la pieza se queda quieto un compas.
+    sesion_carril.iniciar(pieza_de([40, 45]), PlanDePasada(compases_de_cuenta_atras=0))
     assert sesion_carril.estado()["instante_s"] == 0.0
     estado = avanzar_mirando(sesion_carril, reloj, 1.4)
     assert estado["instante_s"] == pytest.approx(1.4, abs=0.001)
@@ -147,7 +150,8 @@ def test_sin_senal_el_carril_se_detiene_y_al_volver_sigue_donde_estaba():
     nunca sonaron."""
     reloj = RelojFalso()
     sesion_carril, sesion = carril(reloj)
-    sesion_carril.iniciar(pieza_de([40, 45, 50]))
+    # Sin cuenta atras: ver la nota de `test_el_instante_avanza_con_el_reloj`.
+    sesion_carril.iniciar(pieza_de([40, 45, 50]), PlanDePasada(compases_de_cuenta_atras=0))
     assert avanzar_mirando(sesion_carril, reloj, 1.0)["instante_s"] == pytest.approx(1.0, abs=0.001)
 
     sesion.senal_ausente = True
