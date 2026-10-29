@@ -3,6 +3,7 @@ import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { Carril } from "./Carril";
+import { detenerPiezaAlSalir } from "./detencionAlSalir";
 import { useCarril } from "./useCarril";
 import type { EstadoEstudio, RespuestaIniciarEstudio } from "./tiposEstudio";
 import type { EstadoCarril, NotaTocada, Pieza } from "./tiposPieza";
@@ -1256,9 +1257,10 @@ describe("Carril: recargar el navegador y desmontar", () => {
     expect((llamada[1] as RequestInit).method).toBe("POST");
   });
 
-  it("cierra el WebSocket ANTES de pedir el detener", async () => {
-    // Si el ultimo paquete llegara despues del detener, volveria a pintar una
-    // pieza ya detenida.
+  it("cierra el WebSocket ANTES de programar el detener", async () => {
+    // Se espía el objeto de detención frente al cierre del socket, no la llegada
+    // del fetch: el fetch sale aplazado una microtarea y su orden de llegada es el
+    // mismo con cualquier orden de líneas.
     const orden: string[] = [];
     class SocketQueApunta extends WebSocketFalso {
       close() {
@@ -1266,17 +1268,32 @@ describe("Carril: recargar el navegador y desmontar", () => {
       }
     }
     vi.stubGlobal("WebSocket", SocketQueApunta);
-    const base = fetchCon({});
-    const fetchFalso = vi.fn((url: string, opciones?: RequestInit) => {
-      if (String(url) === "/api/piezas/detener") orden.push("detener");
-      return base(url, opciones);
+    vi.stubGlobal("fetch", fetchCon({}));
+    vi.spyOn(detenerPiezaAlSalir, "programar").mockImplementation(() => {
+      orden.push("programar");
     });
-    vi.stubGlobal("fetch", fetchFalso);
     const { unmount } = render(<Carril />);
     await act(async () => {});
     unmount();
-    await waitFor(() => expect(orden).toContain("detener"));
-    expect(orden).toEqual(["cerrar", "detener"]);
+    expect(orden).toEqual(["cerrar", "programar"]);
+  });
+
+  it("remontar por key nueva no detiene la pieza que acaba de arrancar el carril nuevo", async () => {
+    // `App` pone una `key` que cambia con cada traspaso: la instancia vieja
+    // desmonta y la nueva monta. La detención pendiente de la vieja tiene que
+    // cancelarla la nueva, o su detener sale tras el `iniciar` de la nueva.
+    const fetchFalso = crearFetchFalso();
+    vi.stubGlobal("fetch", fetchFalso);
+    const peticion = { cancion: "x.gp5", pista: 1, perfil: null };
+    const { rerender } = render(<Carril key="uno" peticion={peticion} />);
+    await screen.findByTestId("lienzo-carril");
+    rerender(<Carril key="dos" peticion={peticion} />);
+    await waitFor(() =>
+      expect(rutas(fetchFalso).filter((r) => r === "/api/piezas/iniciar").length).toBe(2),
+    );
+    await act(async () => {});
+    expect(await screen.findByTestId("lienzo-carril")).toBeTruthy();
+    expect(rutas(fetchFalso)).not.toContain("/api/piezas/detener");
   });
 
   it("montar en StrictMode no detiene la pieza que se acaba de pedir", async () => {
@@ -1290,7 +1307,7 @@ describe("Carril: recargar el navegador y desmontar", () => {
       </StrictMode>,
     );
     expect(await screen.findByTestId("lienzo-carril")).toBeTruthy();
-    await new Promise((resolver) => setTimeout(resolver, 30));
+    await act(async () => {});
     expect(rutas(fetchFalso)).not.toContain("/api/piezas/detener");
   });
 });
@@ -1533,6 +1550,18 @@ describe("Carril: el informe en pantalla", () => {
     expect(await screen.findByText("No hay pasada")).toBeTruthy();
     expect(rutas(fetchFalso).filter((r) => r === "/api/piezas/informe").length).toBe(1);
     expect(document.querySelector(".informe-pasada")).toBeNull();
+  });
+
+  it("el informe va debajo del lienzo, para no empujar el carril al aparecer", async () => {
+    vi.stubGlobal("fetch", fetchCon({ "/api/piezas/informe": INFORME }));
+    render(<Carril peticion={{ cancion: "x.gp5", pista: 1, perfil: null }} />);
+    const lienzo = await screen.findByTestId("lienzo-carril");
+    await act(async () => {
+      screen.getByRole("button", { name: /ver el informe/i }).click();
+    });
+    const informe = document.querySelector(".informe-pasada");
+    expect(informe).not.toBeNull();
+    expect(lienzo.compareDocumentPosition(informe!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("cerrar el informe lo quita", async () => {

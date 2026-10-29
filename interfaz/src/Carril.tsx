@@ -359,16 +359,18 @@ export function Carril({ peticion = null }: PropiedadesCarril) {
    * `true`, así que se recuerda que ya se pidió y se olvida al empezar otra
    * (`completado` vuelve a `false`, o la pieza se suelta y no hay estado).
    */
-  const informePedidoAlTerminar = useRef(false);
+  const informePedidoAlTerminar = useRef<number | null>(null);
   const terminada = estado?.completado === true;
   const arranqueDeLaPasada = estado?.arranque;
   useEffect(() => {
     if (!terminada || arranqueDeLaPasada === undefined) {
-      informePedidoAlTerminar.current = false;
+      informePedidoAlTerminar.current = null;
       return;
     }
-    if (informePedidoAlTerminar.current) return;
-    informePedidoAlTerminar.current = true;
+    // La ref guarda el arranque para el que ya se pidió: una pieza nueva que llegara
+    // ya terminada en su primer paquete también pide el suyo.
+    if (informePedidoAlTerminar.current === arranqueDeLaPasada) return;
+    informePedidoAlTerminar.current = arranqueDeLaPasada;
     void leerInforme().then((datos) => {
       if (datos !== null) setPedido({ arranque: arranqueDeLaPasada, datos });
     });
@@ -561,6 +563,26 @@ export function Carril({ peticion = null }: PropiedadesCarril) {
         <VistaEscrita pieza={pieza} estado={estado} cuerdas={cuerdas} etiquetas={etiquetas} />
       )}
 
+      {dibujando && (
+        <canvas className="lienzo-carril" data-testid="lienzo-carril" ref={lienzoRef} />
+      )}
+
+      {completado && estado !== null && <ResumenCarril pieza={pieza} estado={estado} />}
+
+      {/* `indice_actual` es un INDICE (base 0) y esto es una CUENTA: en la
+          ultima nota de una pieza de 12 se leia «11 / 12». La cuenta de la nota
+          en curso es su indice mas uno, y no pasa del total. */}
+      <p className="contador-progreso">
+        {Math.min((estado?.indice_actual ?? 0) + 1, total)} / {total}
+      </p>
+
+      <button type="button" onClick={() => void detener()}>
+        {completado ? "Otra vez" : "Detener"}
+      </button>
+
+      {/* El informe va DEBAJO del lienzo y de los botones, no encima: al acabar la
+          pasada aparece justo donde el usuario tiene los ojos, y si empujara el
+          carril hacia abajo lo movería bajo su mirada. */}
       {informe === null ? (
         <button type="button" onClick={() => void pedirInforme()}>
           Ver el informe de la pasada
@@ -580,23 +602,6 @@ export function Carril({ peticion = null }: PropiedadesCarril) {
           </button>
         </>
       )}
-
-      {dibujando && (
-        <canvas className="lienzo-carril" data-testid="lienzo-carril" ref={lienzoRef} />
-      )}
-
-      {completado && estado !== null && <ResumenCarril pieza={pieza} estado={estado} />}
-
-      {/* `indice_actual` es un INDICE (base 0) y esto es una CUENTA: en la
-          ultima nota de una pieza de 12 se leia «11 / 12». La cuenta de la nota
-          en curso es su indice mas uno, y no pasa del total. */}
-      <p className="contador-progreso">
-        {Math.min((estado?.indice_actual ?? 0) + 1, total)} / {total}
-      </p>
-
-      <button type="button" onClick={() => void detener()}>
-        {completado ? "Otra vez" : "Detener"}
-      </button>
     </section>
   );
 }

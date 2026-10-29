@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
-import { crearDetencionAlSalir } from "./detencionAlSalir";
+import { detenerEjercicioAlSalir } from "./detencionAlSalir";
 import type { EstadoEjercicio } from "./tiposEjercicio";
 
 /** Espera antes de reintentar la conexión. Desconectar el cable es habitual. */
@@ -16,14 +16,13 @@ export function useEjercicio(url = `ws://${window.location.host}/ws/ejercicios`)
   const [estado, setEstado] = useState<EstadoEjercicio | null>(null);
   const [conectado, setConectado] = useState(false);
   const temporizador = useRef<number | null>(null);
-  /** Detener el ejercicio al desmontar, o su metrónomo se queda sonando. */
-  const detencionAlSalir = useRef(crearDetencionAlSalir("/api/ejercicios/detener"));
 
   useEffect(() => {
     let vivo = true;
     let socket: WebSocket | null = null;
-    const detencion = detencionAlSalir.current;
-    detencion.cancelar();
+    // Montar cancela la detención pendiente de un desmontaje anterior (StrictMode
+    // o una `key` nueva): ver `detencionAlSalir.ts`.
+    detenerEjercicioAlSalir.cancelar();
 
     const conectar = () => {
       if (!vivo) return;
@@ -52,10 +51,11 @@ export function useEjercicio(url = `ws://${window.location.host}/ws/ejercicios`)
     return () => {
       vivo = false;
       if (temporizador.current !== null) window.clearTimeout(temporizador.current);
-      // El socket se cierra ANTES de pedir el detener: si el último paquete
-      // llegara después, volvería a pintar un ejercicio ya detenido.
+      // Cerrar el socket y pedir el detener, en este orden por claridad. Lo que
+      // GARANTIZA el orden es el aplazo de `programar` (ver `detencionAlSalir.ts`),
+      // no el de estas líneas. El detener evita que el metrónomo se quede sonando.
       socket?.close();
-      detencion.programar();
+      detenerEjercicioAlSalir.programar();
     };
   }, [url]);
 

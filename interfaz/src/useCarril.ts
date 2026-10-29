@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { crearDetencionAlSalir } from "./detencionAlSalir";
+import { detenerPiezaAlSalir } from "./detencionAlSalir";
 import { crearReloj, type Reloj } from "./relojCarril";
 import type {
   EstadoEstudio,
@@ -493,10 +493,6 @@ export function useCarril(
     [cambiarPlan, saltar, pausar]
   );
 
-  /** Detener la pieza al desmontar, o el click de metrónomo se queda sonando (ver
-   * `detencionAlSalir`). */
-  const detencionAlSalir = useRef(crearDetencionAlSalir("/api/piezas/detener"));
-
   // La pieza en marcha, para quien acaba de recargar el navegador. Se pide una
   // sola vez al montar y SOLO si no tenemos pieza ni venimos de pedir una: quien
   // llega desde `Canciones` la trae en la respuesta de `iniciar`, y pedirla otra
@@ -519,15 +515,17 @@ export function useCarril(
     return () => {
       vivo = false;
     };
-    // Una sola vez, al montar.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    // Las dos dependencias son estables en la práctica (`adoptarPieza` no cambia de
+    // identidad y `recuperarPieza` es constante por pantalla), así que es UNA vez, al
+    // montar.
+  }, [recuperarPieza, adoptarPieza]);
 
   useEffect(() => {
     let vivo = true;
     let socket: WebSocket | null = null;
-    const detencion = detencionAlSalir.current;
-    detencion.cancelar();
+    // Montar cancela la detención pendiente de un desmontaje anterior (el de
+    // StrictMode o el de una `key` nueva): ver `detencionAlSalir.ts`.
+    detenerPiezaAlSalir.cancelar();
 
     const conectar = () => {
       if (!vivo) return;
@@ -556,10 +554,13 @@ export function useCarril(
     return () => {
       vivo = false;
       if (temporizador.current !== null) window.clearTimeout(temporizador.current);
-      // El socket se cierra ANTES de pedir el detener: si el último paquete
-      // llegara después, volvería a pintar una pieza ya detenida.
+      // Cerrar el socket y pedir el detener, en este orden por claridad. Lo que
+      // GARANTIZA que el detener salga después del cierre no es el orden de estas
+      // líneas sino el aplazo de `programar` (una microtarea; el cierre es
+      // síncrono): ver `detencionAlSalir.ts`. Así un último paquete no vuelve a
+      // pintar una pieza ya detenida.
       socket?.close();
-      detencion.programar();
+      detenerPiezaAlSalir.programar();
     };
   }, [url, recibir]);
 

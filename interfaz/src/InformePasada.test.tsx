@@ -155,6 +155,10 @@ describe("el informe de la pasada", () => {
     const avisos = [...document.querySelectorAll(".aviso-informe")].map((a) => a.textContent);
     expect(avisos.length).toBe(1);
     expect(avisos[0]).toContain("cambia de compás");
+    cleanup();
+    pintar({ compas_variable: false });
+    expect(document.querySelectorAll(".aviso-informe").length).toBe(0);
+    expect(document.querySelectorAll("tbody tr").length).toBe(1);
   });
 
   it("ofrece machacar los peores compases con sus cifras", () => {

@@ -45,13 +45,12 @@ export function App() {
    * limpia, aunque mañana se abran dos módulos a la vez o se toque dos veces la
    * misma pista de la misma canción.
    *
-   * Lo que arrastra, dicho para quien llegue el día que sirva: un remontaje cierra
-   * el WebSocket del carril (`useCarril`, en la limpieza del efecto) pero NO llama a
-   * `POST /api/piezas/detener`, así que la pieza anterior se quedaría en marcha en
-   * el servidor hasta que el `iniciar` de la nueva la detenga. Hoy no añade ningún
-   * camino —cambiar de módulo ya hacía exactamente eso—, y es la misma deuda que
-   * tienen `Carril` y `Ejercicios` al desmontarse: su sitio es la limpieza de
-   * `useCarril`/`useEjercicio`, no esta `key`.
+   * Lo que hace un remontaje por `key`: la limpieza de `useCarril` cierra el
+   * WebSocket y programa `POST /api/piezas/detener`, y el carril nuevo, al montarse,
+   * cancela esa orden pendiente (la detención es una por ruta, a nivel de módulo en
+   * `detencionAlSalir.ts`). Así el `iniciar` del carril nuevo no lo mata el detener
+   * del viejo. Solo un desmontaje de verdad, sin nadie que se monte detrás, llega a
+   * detener la pieza.
    */
   const [traspasos, setTraspasos] = useState(0);
   const [diagnostico, setDiagnostico] = useState<Diagnostico | null>(null);

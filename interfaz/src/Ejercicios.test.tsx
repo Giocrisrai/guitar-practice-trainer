@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { detenerEjercicioAlSalir } from "./detencionAlSalir";
 import { Ejercicios } from "./Ejercicios";
 import type { EstadoEjercicio } from "./tiposEjercicio";
 
@@ -542,7 +543,7 @@ describe("Ejercicios", () => {
     expect((llamada[1] as RequestInit).method).toBe("POST");
   });
 
-  it("cierra el WebSocket ANTES de pedir el detener", async () => {
+  it("cierra el WebSocket ANTES de programar el detener", async () => {
     const orden: string[] = [];
     class SocketQueApunta extends WebSocketFalso {
       close() {
@@ -550,19 +551,22 @@ describe("Ejercicios", () => {
       }
     }
     vi.stubGlobal("WebSocket", SocketQueApunta);
-    const base = fetchFalso as unknown as typeof fetch;
-    vi.stubGlobal(
-      "fetch",
-      vi.fn((url: string, opciones?: RequestInit) => {
-        if (url === "/api/ejercicios/detener") orden.push("detener");
-        return base(url, opciones);
-      })
-    );
+    vi.spyOn(detenerEjercicioAlSalir, "programar").mockImplementation(() => {
+      orden.push("programar");
+    });
     const { unmount } = render(<Ejercicios />);
     await waitFor(() => expect(screen.getByText("Escalas")).toBeTruthy());
     unmount();
-    await waitFor(() => expect(orden).toContain("detener"));
-    expect(orden).toEqual(["cerrar", "detener"]);
+    expect(orden).toEqual(["cerrar", "programar"]);
+  });
+
+  it("remontar por key nueva no detiene el ejercicio del montaje nuevo", async () => {
+    const { rerender } = render(<Ejercicios key="uno" />);
+    await waitFor(() => expect(screen.getByText("Escalas")).toBeTruthy());
+    rerender(<Ejercicios key="dos" />);
+    await act(async () => {});
+    await waitFor(() => expect(screen.getByText("Escalas")).toBeTruthy());
+    expect(rutasLlamadas()).not.toContain("/api/ejercicios/detener");
   });
 
   it("montar en StrictMode no detiene el ejercicio", async () => {
@@ -572,7 +576,7 @@ describe("Ejercicios", () => {
       </StrictMode>
     );
     await waitFor(() => expect(screen.getByText("Escalas")).toBeTruthy());
-    await new Promise((resolver) => setTimeout(resolver, 30));
+    await act(async () => {});
     expect(rutasLlamadas()).not.toContain("/api/ejercicios/detener");
   });
 });
