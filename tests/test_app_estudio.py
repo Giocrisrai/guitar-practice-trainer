@@ -276,6 +276,21 @@ def test_el_plan_con_solo_el_click_no_mueve_el_factor(cliente):
     assert datos["tempo_automatico"] is True
 
 
+def test_el_parche_conserva_y_cambia_los_compases_de_cuenta_atras(cliente):
+    """El septimo campo del plan, el unico que el estado no publica.
+
+    Por eso se lee en el plan vigente del nucleo: si el parche lo olvidara, volveria
+    a su valor de fabrica (1) sin que nada del estado lo delatara.
+    """
+    iniciar(cliente, compases_de_cuenta_atras=0)
+    cliente.post("/api/piezas/plan", json={"factor_tempo": 0.7})
+    assert cliente.app.state.carril._estudio.plan.compases_de_cuenta_atras == 0
+    cliente.post("/api/piezas/plan", json={"compases_de_cuenta_atras": 2})
+    plan = cliente.app.state.carril._estudio.plan
+    assert plan.compases_de_cuenta_atras == 2
+    assert plan.factor_tempo == 0.7
+
+
 def test_un_ultimo_compas_nulo_en_el_parche_vale_hasta_el_final(cliente):
     iniciar(cliente, **PLAN_COMPLETO)
     datos = cliente.post("/api/piezas/plan", json={"ultimo_compas": None}).json()
