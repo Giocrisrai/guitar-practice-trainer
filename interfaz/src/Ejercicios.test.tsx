@@ -180,7 +180,12 @@ describe("Ejercicios", () => {
     vi.stubGlobal("fetch", fetchFalso);
   });
 
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    // Sin esto el espía de `programar` sobrevive a su prueba y deja la detención
+    // como un no-op para las siguientes.
+    vi.restoreAllMocks();
+  });
 
   /** El cuerpo del ultimo POST a /api/ejercicios/iniciar, ya parseado. */
   function ultimoCuerpoEnviado(): Record<string, unknown> {
