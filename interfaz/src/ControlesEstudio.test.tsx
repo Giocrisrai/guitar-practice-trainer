@@ -124,6 +124,45 @@ describe("el tempo", () => {
     expect(alCambiarPlan).toHaveBeenCalledTimes(1);
   });
 
+  it("si el gesto se cancela (pointercancel) se descarta: no se manda nada y no queda pegado", () => {
+    const { alCambiarPlan } = pintar({ factor_tempo: 0.8 });
+    fireEvent.change(deslizador(), { target: { value: "55" } });
+    expect(deslizador().value).toBe("55");
+    fireEvent.pointerCancel(deslizador());
+    expect(alCambiarPlan).not.toHaveBeenCalled();
+    expect(deslizador().value).toBe("80");
+    expect(screen.getByText(/80 %/)).toBeDefined();
+  });
+
+  it("perder el foco a mitad del gesto lo confirma: manda el valor una vez", () => {
+    const { alCambiarPlan } = pintar();
+    fireEvent.change(deslizador(), { target: { value: "65" } });
+    fireEvent.blur(deslizador());
+    expect(alCambiarPlan.mock.calls).toEqual([[{ factor_tempo: 0.65 }]]);
+    expect(deslizador().value).toBe("100");
+  });
+
+  it("perder el foco después de soltar no repite la orden", () => {
+    const { alCambiarPlan } = pintar();
+    arrastrarTempo(70);
+    fireEvent.blur(deslizador());
+    expect(alCambiarPlan).toHaveBeenCalledTimes(1);
+  });
+
+  it("perder el foco sin haber movido nada no manda nada", () => {
+    const { alCambiarPlan } = pintar();
+    fireEvent.blur(deslizador());
+    expect(alCambiarPlan).not.toHaveBeenCalled();
+  });
+
+  it("tras cancelar, un blur no manda el gesto descartado", () => {
+    const { alCambiarPlan } = pintar();
+    fireEvent.change(deslizador(), { target: { value: "55" } });
+    fireEvent.pointerCancel(deslizador());
+    fireEvent.blur(deslizador());
+    expect(alCambiarPlan).not.toHaveBeenCalled();
+  });
+
   it("después de soltar, el deslizador vuelve a seguir al estado", () => {
     pintar({ factor_tempo: 0.8 });
     arrastrarTempo(60);

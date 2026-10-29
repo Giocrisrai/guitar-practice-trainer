@@ -85,6 +85,14 @@ export function ControlesEstudio({
   /** Manda SOLO lo que cambia: el servidor conserva el resto del plan vigente. */
   const mandar = (cambios: Plan) => alCambiarPlan(cambios);
 
+  /**
+   * Un gesto que se interrumpe (en táctil, al empezar un scroll el navegador manda
+   * `pointercancel`) se DESCARTA: el usuario no quiso soltar ahí, y mandar el
+   * valor a medias sería inventarse una orden. Sin esto el número del gesto se
+   * quedaba pegado enseñando algo que el servidor no tiene.
+   */
+  const descartarTempo = () => setArrastre(null);
+
   const soltarTempo = () => {
     if (arrastre === null) return;
     setArrastre(null);
@@ -134,6 +142,11 @@ export function ControlesEstudio({
           onChange={(evento) => setArrastre(Number(evento.target.value))}
           onPointerUp={soltarTempo}
           onKeyUp={soltarTempo}
+          onPointerCancel={descartarTempo}
+          // Perder el foco con un valor ya movido y sin soltar CONFIRMA el gesto,
+          // como el `change` de un campo de formulario: el usuario puso ese valor
+          // a propósito. Si ya se soltó, `arrastre` es null y no hace nada.
+          onBlur={soltarTempo}
         />
         {/* Un 70 % no le dice nada a nadie; «42 ppm» sí. */}
         <span className="lectura">
