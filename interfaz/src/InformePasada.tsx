@@ -43,7 +43,14 @@ export function InformePasada({ informe, historial, alMachacar }: PropiedadesInf
       <table className="tabla-informe">
         <thead>
           <tr>
+            {/* Las tres cifras de la spec §6 (acertadas, a tiempo y desfase) más
+                las limpias, que son las que deciden el tempo. Con solo las
+                limpias el usuario no distingue un fallo de altura de uno de
+                ritmo sin deducirlo de la columna del desfase, y los tres datos ya
+                viajan en el paquete. */}
             <th scope="col">Compás</th>
+            <th scope="col">Acertadas</th>
+            <th scope="col">A tiempo</th>
             <th scope="col">Notas limpias</th>
             <th scope="col">Desfase medio</th>
           </tr>
@@ -52,6 +59,16 @@ export function InformePasada({ informe, historial, alMachacar }: PropiedadesInf
           {informe.compases.map((compas) => (
             <tr key={compas.numero} data-compas={compas.numero}>
               <th scope="row">{compas.numero}</th>
+              <td className="celda-acertadas">
+                {compas.tiene_acordes
+                  ? "con acordes"
+                  : `${compas.acertadas} de ${compas.notas_medibles * informe.repeticiones}`}
+              </td>
+              <td className="celda-a-tiempo">
+                {compas.tiene_acordes
+                  ? "con acordes"
+                  : `${compas.a_tiempo} de ${compas.notas_medibles * informe.repeticiones}`}
+              </td>
               <td className="celda-limpias">
                 {compas.tiene_acordes
                   ? "con acordes"

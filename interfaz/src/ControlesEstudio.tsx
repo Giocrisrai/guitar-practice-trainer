@@ -127,6 +127,15 @@ export function ControlesEstudio({
   };
 
   const sugerido = estado.factor_sugerido;
+  /**
+   * El servidor escribe `factor_sugerido` EN LAS DOS DIRECCIONES: dos pasadas
+   * buenas suben un paso, y una sola por debajo del 70 % baja uno sin esperar a
+   * la segunda. El botón decía siempre «Subir», así que una pasada mala al 50 %
+   * pintaba «Subir el tempo al 45 %», que es lo contrario de lo que iba a pasar.
+   * La dirección se saca comparando con el factor vigente y no de un campo nuevo:
+   * los dos números ya viajan en el estado.
+   */
+  const verbo = sugerido !== null && sugerido < estado.factor_tempo ? "Bajar" : "Subir";
 
   return (
     <div className="controles-estudio">
@@ -158,7 +167,7 @@ export function ControlesEstudio({
             className="sugerencia-tempo"
             onClick={() => void mandar({ factor_tempo: sugerido })}
           >
-            Subir el tempo al {porciento(sugerido)} %
+            {verbo} el tempo al {porciento(sugerido)} %
           </button>
         )}
       </div>

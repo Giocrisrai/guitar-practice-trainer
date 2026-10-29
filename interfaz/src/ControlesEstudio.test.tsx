@@ -204,6 +204,22 @@ describe("la sugerencia de tempo", () => {
     expect(alCambiarPlan.mock.calls).toEqual([[{ factor_tempo: 0.75 }]]);
   });
 
+  it("cuando la sugerencia BAJA el tempo, el botón dice bajar", () => {
+    // El servidor escribe `factor_sugerido` en las dos direcciones: una sola
+    // pasada por debajo del 70 % de notas limpias baja un paso. El botón decía
+    // siempre «Subir», así que una pasada mala al 50 % pintaba «Subir el tempo al
+    // 45 %», que es lo contrario de lo que iba a pasar al pulsarlo.
+    pintar({ factor_tempo: 0.5, factor_sugerido: 0.45 });
+    expect(screen.getByRole("button", { name: "Bajar el tempo al 45 %" })).toBeDefined();
+    expect(screen.queryByRole("button", { name: /subir el tempo/i })).toBeNull();
+  });
+
+  it("al aplicar una bajada manda ese factor, igual que una subida", () => {
+    const { alCambiarPlan } = pintar({ factor_tempo: 0.5, factor_sugerido: 0.45 });
+    fireEvent.click(screen.getByRole("button", { name: "Bajar el tempo al 45 %" }));
+    expect(alCambiarPlan.mock.calls).toEqual([[{ factor_tempo: 0.45 }]]);
+  });
+
   it("sin sugerencia no ofrece nada", () => {
     pintar({ factor_sugerido: null });
     // El deslizador está: los controles se pintaron y lo que falta es el botón.

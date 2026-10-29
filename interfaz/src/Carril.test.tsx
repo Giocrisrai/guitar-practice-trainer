@@ -181,7 +181,16 @@ type PaqueteDePrueba = Omit<EstadoCarril, "tocadas" | "arranque"> & {
  */
 function enviarEstado(estado: PaqueteDePrueba) {
   act(() => {
-    WebSocketFalso.ultimo!.enviar({ arranque: ARRANQUE_EN_CURSO, ...estado });
+    // Sobre `ESTUDIO_BASE`, porque el servidor manda SIEMPRE todas las claves del
+    // estudio (es lo que `_CARRIL_APAGADO` existe para garantizar). Un paquete a
+    // medias dejaba `primer_compas`, `ultimo_compas` y `total_de_compases` sin
+    // definir, y hay pantalla que los lee: el resumen del final mira si el tramo
+    // es la pieza entera.
+    WebSocketFalso.ultimo!.enviar({
+      ...ESTUDIO_BASE,
+      arranque: ARRANQUE_EN_CURSO,
+      ...estado,
+    });
   });
 }
 
@@ -263,6 +272,68 @@ describe("Carril", () => {
     });
     expect(await screen.findByText(/a tiempo/i)).toBeTruthy();
     expect(await screen.findByText(/tarde/i)).toBeTruthy();
+  });
+
+
+  /**
+   * `completado` significa «se acabó el TRAMO» (el núcleo lo sobrescribe a
+   * propósito) y `estado.total` sigue siendo las notas de la PIEZA entera, así que
+   * el resumen titulaba «Pieza terminada» y contaba sobre la pieza: practicando
+   * los compases 3-4 de una pieza de 12 y acertando las dos notas decía «2 de 12».
+   * En la etapa 3a era correcto porque `completado` solo significaba el final de
+   * la pieza; la ampliación del significado es de la 3c, así que era una regresión
+   * de honestidad, y encima el informe que se abre al lado sí decía la verdad.
+   */
+  it("al acabar un tramo que no es la pieza entera no dice «Pieza terminada»", async () => {
+    vi.stubGlobal("fetch", crearFetchFalso());
+    render(<Carril />);
+    fireEvent.click(await screen.findByRole("button", { name: /empezar/i }));
+    enviarEstado(
+      enCurso({
+        completado: true,
+        instante_s: 4.0,
+        indice_actual: 1,
+        total: 12,
+        total_de_compases: 12,
+        primer_compas: 3,
+        ultimo_compas: 4,
+        tocadas: [
+          { indice: 0, midi: 40, nombre: "E2", cents: 0, desfase_s: 0.01,
+            clasificacion: "a_tiempo", acertada: true, afinada: true },
+          { indice: 1, midi: 45, nombre: "A2", cents: 0, desfase_s: 0.01,
+            clasificacion: "a_tiempo", acertada: true, afinada: true },
+        ],
+      }),
+    );
+    expect(await screen.findByText(/Tramo terminado: compases 3 a 4 de 12/i)).toBeTruthy();
+    expect(screen.queryByText(/Pieza terminada/i)).toBeNull();
+    expect(screen.queryByText(/2 de 12 notas acertadas/i)).toBeNull();
+    expect(document.querySelector(".resumen-carril")).toBeNull();
+  });
+
+  it("al acabar la pieza entera el resumen sigue saliendo, con sus cifras", async () => {
+    // La positiva de la de arriba: el tramo que ES la pieza entera no pierde nada.
+    vi.stubGlobal("fetch", crearFetchFalso());
+    render(<Carril />);
+    fireEvent.click(await screen.findByRole("button", { name: /empezar/i }));
+    enviarEstado(
+      enCurso({
+        completado: true,
+        instante_s: 4.0,
+        indice_actual: 2,
+        total: 3,
+        total_de_compases: 4,
+        primer_compas: 1,
+        ultimo_compas: 4,
+        tocadas: [
+          { indice: 0, midi: 40, nombre: "E2", cents: 0, desfase_s: 0.01,
+            clasificacion: "a_tiempo", acertada: true, afinada: true },
+        ],
+      }),
+    );
+    expect(await screen.findByText(/Pieza terminada/i)).toBeTruthy();
+    expect(screen.getByText(/1 de 3 notas acertadas/i)).toBeTruthy();
+    expect(screen.queryByText(/Tramo terminado/i)).toBeNull();
   });
 
   /**

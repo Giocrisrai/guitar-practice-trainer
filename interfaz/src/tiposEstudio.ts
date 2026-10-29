@@ -44,8 +44,12 @@ export interface EstadoEstudio extends EstadoCarril {
   /** Lo que SUENA, no lo que se pidió: `false` sin salida de audio aunque el plan
    * diga `con_click`. */
   click_sonando: boolean;
-  /** Tempo que el servidor propone tras una racha buena, o `null` si no hay nada
-   * que sugerir (casi siempre). Es una propuesta: nunca se aplica sola. */
+  /** Tempo que el servidor propone para la pasada siguiente, o `null` si no hay
+   * nada que sugerir (casi siempre). Va en LAS DOS DIRECCIONES: dos pasadas
+   * seguidas por encima del 90 % de notas limpias lo suben un paso, y una sola
+   * por debajo del 70 % lo baja uno. Quien lo pinte tiene que comparar con
+   * `factor_tempo` para saber si es subir o bajar. Es una propuesta: nunca se
+   * aplica sola. */
   factor_sugerido: number | null;
 }
 

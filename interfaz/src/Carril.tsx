@@ -232,6 +232,25 @@ function tempoParaDibujar(pieza: Pieza, estado: EstadoEstudio | null): number {
   return efectivo !== undefined && efectivo > 0 ? efectivo : pieza.tempo;
 }
 
+/**
+ * Si el tramo que se estudia es la pieza ENTERA.
+ *
+ * Hace falta porque `completado` significa ahora «se acabó el TRAMO» (el núcleo lo
+ * sobrescribe a propósito), y `estado.total` sigue siendo las notas de la pieza
+ * entera: practicando los compases 3-4 de una pieza de 12 y acertando las dos
+ * notas, `ResumenCarril` titulaba «Pieza terminada» y decía «2 de 12». En la etapa
+ * 3a el resumen era correcto porque `completado` solo significaba el final de la
+ * pieza; la ampliación del significado es de la 3c, así que era una regresión.
+ *
+ * Se decide con los compases y no contando qué notas caen en el tramo: la interfaz
+ * NO convierte pulsos en compases (ver `tiposEstudio.ts`), y para contar las notas
+ * del tramo habría que hacer justo esa cuenta. Quien sí la sabe hacer es el núcleo,
+ * y su respuesta es el informe por compases, que se abre al lado y dice la verdad.
+ */
+function elTramoEsLaPiezaEntera(estado: EstadoEstudio): boolean {
+  return estado.primer_compas === 1 && estado.ultimo_compas === estado.total_de_compases;
+}
+
 /** El resumen de la pieza terminada: cómo llegó cada nota que se pudo adjudicar. */
 function ResumenCarril({ pieza, estado }: { pieza: Pieza; estado: EstadoEstudio }) {
   const acertadas = estado.tocadas.filter((tocada) => tocada.acertada).length;
@@ -567,7 +586,21 @@ export function Carril({ peticion = null }: PropiedadesCarril) {
         <canvas className="lienzo-carril" data-testid="lienzo-carril" ref={lienzoRef} />
       )}
 
-      {completado && estado !== null && <ResumenCarril pieza={pieza} estado={estado} />}
+      {/* El resumen cuenta sobre la pieza ENTERA, así que solo se muestra cuando
+          el tramo es la pieza entera. Acabar un tramo de dos compases no es
+          terminar la pieza, y decirlo con las cifras de la pieza era mentir; el
+          informe de la pasada, que sí sabe qué notas son del tramo, va debajo. */}
+      {completado &&
+        estado !== null &&
+        (elTramoEsLaPiezaEntera(estado) ? (
+          <ResumenCarril pieza={pieza} estado={estado} />
+        ) : (
+          <p className="aviso-carril">
+            Tramo terminado: compases {estado.primer_compas} a {estado.ultimo_compas} de{" "}
+            {estado.total_de_compases}. Lo tocado, compás a compás, está en el informe de
+            la pasada.
+          </p>
+        ))}
 
       {/* `indice_actual` es un INDICE (base 0) y esto es una CUENTA: en la
           ultima nota de una pieza de 12 se leia «11 / 12». La cuenta de la nota

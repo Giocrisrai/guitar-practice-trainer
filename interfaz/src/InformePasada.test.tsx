@@ -34,7 +34,9 @@ function fila(numero: number): HTMLElement {
   return encontrada!;
 }
 
-function celda(numero: number, clase: "celda-limpias" | "celda-desfase"): string {
+type Columna = "celda-acertadas" | "celda-a-tiempo" | "celda-limpias" | "celda-desfase";
+
+function celda(numero: number, clase: Columna): string {
   const elemento = fila(numero).querySelector(`.${clase}`);
   expect(elemento).not.toBeNull();
   return elemento!.textContent ?? "";
@@ -55,6 +57,37 @@ describe("el desfase en palabras", () => {
 });
 
 describe("el informe de la pasada", () => {
+  it("la tabla trae las acertadas, las que llegaron a tiempo y las limpias", () => {
+    // La spec §6 pide acertadas, a tiempo y desfase; las limpias son las que
+    // deciden el tempo. Con solo las limpias, un compás «1 de 4» no distingue un
+    // fallo de altura de uno de ritmo sin deducirlo de la columna del desfase, y
+    // los tres datos ya viajan en el paquete.
+    pintar({
+      compases: [compas(3, { acertadas: 3, a_tiempo: 2, limpias: 1, desfase_medio_s: 0.09 })],
+    });
+    expect(celda(3, "celda-acertadas")).toBe("3 de 4");
+    expect(celda(3, "celda-a-tiempo")).toBe("2 de 4");
+    expect(celda(3, "celda-limpias")).toBe("1 de 4");
+    expect(celda(3, "celda-desfase")).toBe("90 ms tarde");
+    const cabeceras = Array.from(document.querySelectorAll("thead th")).map(
+      (th) => th.textContent,
+    );
+    expect(cabeceras).toEqual([
+      "Compás",
+      "Acertadas",
+      "A tiempo",
+      "Notas limpias",
+      "Desfase medio",
+    ]);
+  });
+
+  it("un compás con acordes no finge cifras en ninguna de las tres columnas", () => {
+    pintar({ compases: [compas(7, { notas_medibles: 1, tiene_acordes: true })] });
+    for (const columna of ["celda-acertadas", "celda-a-tiempo", "celda-limpias"] as const) {
+      expect(celda(7, columna)).toBe("con acordes");
+    }
+  });
+
   it("enseña el desfase medio con signo y en milisegundos", () => {
     // "40 ms tarde" es un diagnostico; "fallas el 19" no lo es.
     pintar({ compases: [compas(19, { desfase_medio_s: 0.04 })] });
