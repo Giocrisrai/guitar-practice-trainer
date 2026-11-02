@@ -192,6 +192,8 @@ git commit -m "feat: la cuerda pulsada del gemelo, reconocida por el detector re
 
   @dataclass(frozen=True)
   class Interpretacion:
+      pieza: Pieza            # la pieza interpretada: la necesita `juzgar` para
+                              # excluir acordes y notas repetidas (ruling previo 1)
       muestras: np.ndarray
       eventos: tuple[EventoTocado, ...]
       frecuencia_muestreo: int
@@ -1008,7 +1010,7 @@ git commit -m "test: el gemelo contra la guitarra real, con las tolerancias escr
 ## Task 14: Los cuatro defectos pequeños del núcleo
 
 **Files:**
-- Modify: `nucleo/piezas/estudio.py` (`congelar_en`/`_observar`, `pausar`, `reanudar`), `nucleo/piezas/modelo.py` (docstring de `Seccion`), `tests/test_app_estudio.py` (la prueba que miente)
+- Modify: `nucleo/piezas/estudio.py` (`congelar_en`/`_observar`, `pausar`, `reanudar`), `nucleo/piezas/modelo.py` (docstring de `Seccion`), `tests/test_sesion_carril.py:402` (la prueba que miente — comprobado con grep: NO está en `test_app_estudio.py`)
 - Test: `tests/test_estudio.py`
 
 Cuatro arreglos a la vista, agrupados porque son el mismo tamaño y un solo repaso los cubre.
