@@ -38,17 +38,16 @@ from dataclasses import dataclass
 import numpy as np
 
 from nucleo.afinaciones import PERFILES
-from nucleo.analisis.pipeline import Analizador
+from nucleo.analisis.pipeline import INTERVALO_DE_ANALISIS_S, Analizador
 from nucleo.gemelo.interprete import Interpretacion
-from nucleo.piezas.conductor import ConductorDeEstudio
+from nucleo.piezas.conductor import TECHO_TRAMO_S, ConductorDeEstudio
 from nucleo.piezas.estudio import EstadoEstudio, InformeDePasada
 from nucleo.piezas.seguimiento import NotaTocada
 
-# Cada cuanto se analiza una ventana, en segundos de la pasada. Es el intervalo
-# de produccion (`INTERVALO_ANALISIS` en `servidor/sesion.py`), y esta copiado y
-# no importado porque `nucleo/` no importa de `servidor/`: la cadena directa
-# existe precisamente para poder verificar la ruta del audio sin el servidor
-# delante.
+# El salto por omision es el de PRODUCCION, y sale de `nucleo.analisis.pipeline`,
+# que es donde vive la cadencia del analisis: la misma constante que alimenta el
+# hilo de trabajo del servidor alimenta esta cadena, que es la unica forma de que
+# el gemelo verifique la cadencia que produccion usa de verdad.
 #
 # NO es negociable, y 512 muestras no sirven aunque sean mas rapidas: las
 # constantes del detector estan acopladas a estos 21 ms
@@ -57,7 +56,6 @@ from nucleo.piezas.seguimiento import NotaTocada
 # tasa de analisis tiene que revisarlas-, asi que recorrer el audio a otra
 # cadencia es ejercitar un detector que nunca corre. Las sondas del diseño usaron
 # un salto de 512 y por eso sus numeros son indicativos y no de referencia.
-INTERVALO_DE_ANALISIS_S = 0.021
 
 
 @dataclass(frozen=True)
@@ -113,6 +111,15 @@ def pasar_por_la_cadena(
 
     Lanza `ValueError` si el analizador no trabaja a la frecuencia de la
     interpretacion o si el salto no es positivo.
+
+    UN `salto` DE MAS DE `ESPERA_SIN_CUADROS_S` (0,25 s, unas 12000 muestras a
+    48 kHz) NO RECORRE LA MISMA CADENA, y no se impide porque no es un error sino
+    otra cosa: el conductor lo lee como un HUECO DE AUDIO -`_hueco_de_audio` mide
+    exactamente ese umbral en el reloj del analisis- y en cada cuadro le recoloca
+    el reloj al estudio con `congelar_en` antes de darle de comer. El cabezal
+    deja entonces de avanzar con el audio y la pasada se queda clavada. Quien
+    quiera medir asi tiene que saber que esta midiendo el camino del apagon, no
+    el del audio; para eso el techo practico del salto es `ESPERA_SIN_CUADROS_S`.
     """
     frecuencia = interpretacion.frecuencia_muestreo
     analizador = _analizador_de(analizador, conductor, frecuencia)
@@ -146,7 +153,15 @@ def pasar_por_la_cadena(
     # registro es de ESTA pasada.
     cerradas_al_empezar = len(conductor.vueltas_cerradas)
 
-    instante = ventana / frecuencia
+    # Sin un solo cuadro, la mirada final cae en CERO y no en el primer instante:
+    # la ventana no se llega a llenar, asi que no ha pasado tiempo que meter en la
+    # pieza. Puesta en `ventana / frecuencia`, un audio de cero muestras movia el
+    # cabezal 85 ms sin que sonara nada.
+    instante = 0.0
+    if len(muestras):
+        _mirar_mientras_se_llena_la_ventana(
+            conductor, ventana / frecuencia, paso / frecuencia
+        )
     for inicio in range(0, len(muestras), paso):
         instante = (inicio + ventana) / frecuencia
         # MIRAR antes de OBSERVAR, y con el mismo instante, que es el orden del
@@ -161,11 +176,19 @@ def pasar_por_la_cadena(
         # servidor son dos caminos, uno por hilo; aqui no hay hilos, asi que los
         # dos caminos se recorren uno detras del otro en cada cuadro.
         #
+        # De la mirada NO se recoge nada, y es deliberado: lo unico que apila
+        # `NotaTocada` es `SeguidorPieza.procesar`, al que solo se llega por
+        # `observar`. Lo que la mirada puede hacerle a esa tupla es TIRARLA
+        # (`cerrar_repeticion`, `olvidar_tramo` al dar la vuelta), nunca añadirle
+        # nada, asi que recoger de la mirada no podia recoger ni un reporte que el
+        # cuadro anterior no hubiera dado ya. Estaba, y era codigo que ninguna
+        # prueba podia falsear.
+        #
         # `senal_ausente=False` siempre: el cable del gemelo esta enchufado y
         # entregando cuadros. Un audio en silencio son cuadros de silencio, que
         # es otra cosa -y el reloj de la pasada no se congela por ellos, igual que
         # no se congela con la guitarra callada y el cable puesto-.
-        _recoger(conductor.mirar(instante, False), vistas, reportes)
+        conductor.mirar(instante, False)
         resultado = analizador.procesar(_ventana_en(muestras, inicio, ventana))
         _recoger(conductor.observar(resultado, instante), vistas, reportes)
 
@@ -175,13 +198,45 @@ def pasar_por_la_cadena(
     # cuadro que la termino no la cierra -`observar` no cierra nada- y ya no viene
     # ningun cuadro mas.
     estado_final = conductor.mirar(instante, False)
-    _recoger(estado_final, vistas, reportes)
 
     return RegistroDeLaCadena(
         reportes=tuple(reportes),
         vueltas=tuple(conductor.vueltas_cerradas[cerradas_al_empezar:]),
         estado_final=estado_final,
     )
+
+
+def _mirar_mientras_se_llena_la_ventana(
+    conductor: ConductorDeEstudio, primer_instante: float, cadencia_s: float
+) -> None:
+    """Las miradas que pasan ANTES del primer cuadro, mientras la ventana se llena.
+
+    Entre la muestra cero y el primer cuadro pasa una ventana entera de tiempo
+    real -85 ms con guitarra estandar a 48 kHz, 171 ms con un bajo- y en
+    produccion ese tiempo pasa igual: el audio ya esta entrando y las miradas del
+    WebSocket, a 30 Hz, mueven el cabezal mientras el primer cuadro se llena. Son
+    varias miradas, no una.
+
+    Y tienen que ser varias AQUI TAMBIEN, porque `mover_el_reloj` acota lo que
+    entra en la pieza por cada aviso a `TECHO_TRAMO_S` (0,100 s) y lo acota
+    SIEMPRE, sin excepciones -cada excepcion a esa regla ha sido un camino nuevo
+    por el que un hueco largo volvia a entrar-. Con una sola mirada que tuviera
+    que tragarse la ventana entera, el techo mordia:
+    `PERFILES["bajo_4"].tamano_ventana(48000)` son 8192 muestras, o sea 0,1707 s,
+    asi que con cualquier pieza de bajo el cabezal arrancaba 71 ms corto y en
+    silencio. Medido: 0,1707 - 0,100.
+
+    La cadencia es la del propio analisis (21 ms), que es la que tendran los
+    cuadros en seguida, y se acota por el techo por si alguien conduce con un
+    salto enorme: lo que esta funcion garantiza es que NINGUNA mirada tenga que
+    recorrer mas de `TECHO_TRAMO_S`, que es la condicion para que el techo no
+    recorte nada.
+    """
+    paso_s = min(cadencia_s, TECHO_TRAMO_S)
+    ahora = paso_s
+    while ahora < primer_instante:
+        conductor.mirar(ahora, False)
+        ahora += paso_s
 
 
 def _analizador_de(

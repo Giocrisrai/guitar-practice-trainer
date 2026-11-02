@@ -21,6 +21,28 @@ from nucleo.musica import (
 )
 
 
+# Cada cuánto se analiza una ventana, en segundos. Es la CADENCIA DE PRODUCCIÓN, y
+# vive aquí -y no en quien alimenta el análisis- porque hay dos alimentadores: el
+# hilo de trabajo del servidor (`servidor/sesion.py`, que la importa con el nombre
+# `INTERVALO_ANALISIS`) y la cadena directa del gemelo digital
+# (`nucleo/gemelo/cadena.py`), que mete audio por la ruta real en tiempo virtual.
+# Con una copia en cada sitio, el gemelo verificaría una cadencia que producción no
+# usa, y lo haría en silencio.
+#
+# Por qué 21 ms: 512/48000 ≈ 10,67 ms es lo que tarda en llegar un bloque, y 21 ms
+# son unos 1008, es decir dos bloques. No hace falta analizar a la cadencia exacta
+# de los bloques, porque la emisión posterior hacia la interfaz va a 30 Hz (unos
+# 33 ms) y analizar más a menudo que eso no añadiría información visible, solo
+# gastaría CPU.
+#
+# **NO se cambia sin revisar el detector de pulsaciones.** Las constantes de
+# `nucleo/ejercicios/pulsaciones.py` están acopladas a este número y lo dice por
+# escrito: `CUADROS_PARA_NOTA_ESTABLE = 3` son 63 ms a 21 ms por cuadro y 32 ms a
+# 10,67 ms. Los mismos cuadros representan más tiempo con un intervalo mayor y
+# menos con uno menor, así que quien mueva esto tiene que volver a mirar allí.
+INTERVALO_DE_ANALISIS_S = 0.021
+
+
 class Suavizador:
     """Mediana móvil sobre las últimas frecuencias detectadas.
 
