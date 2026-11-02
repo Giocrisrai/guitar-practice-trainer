@@ -64,10 +64,23 @@ TRASTEO_DE_LA_NOTA_SUCIA = 0.7
 DESVIOS_DE_NOTA_MALA = (-2, -1, 1, 2)
 
 # Separacion entre las semillas de dos notas consecutivas. El ruido inicial de
-# cada cuerda sale de su propia semilla, derivada de la global y del numero de
-# pulsacion, para que la misma semilla de la misma interpretacion muestra a
-# muestra sin que dos notas compartan el mismo ruido.
+# cada cuerda sale de su propia semilla, derivada de la global y del SITIO de la
+# nota -su puesto dentro del tramo y el numero de vuelta-, para que la misma
+# semilla de la misma interpretacion muestra a muestra sin que dos notas
+# compartan el mismo ruido.
+#
+# El sitio y no el orden de llegada: si la semilla se derivase del numero de
+# pulsaciones ya generadas, solo creceria con las notas que NO se fallan, y
+# entonces subir `probabilidad_de_fallo` cambiaria el timbre de notas que no
+# fallaron. El generador global seguiria cumpliendo su contrato, pero este
+# segundo flujo de azar incumpliria su espiritu: dos interpretaciones que
+# deberian diferir en una cosa diferirian en el ruido de cada cuerda.
 PASO_DE_SEMILLA = 7919
+
+# Separacion entre las semillas de dos vueltas. Primo y mucho mayor que el numero
+# de notas de cualquier tramo, para que la vuelta 2 no herede las semillas de la
+# vuelta 1 desplazadas una nota.
+PASO_DE_SEMILLA_POR_VUELTA = 1_000_003
 
 
 @dataclass(frozen=True)
@@ -217,7 +230,7 @@ def interpretar(
             + (vuelta + 1) * segundos_de_cuenta_atras
             + vuelta * duracion_tramo_s
         )
-        for indice, nota, hueco_pulsos in a_tocar:
+        for puesto, (indice, nota, hueco_pulsos) in enumerate(a_tocar):
             pulsacion = _sortear_pulsacion(
                 indice=indice,
                 nota=nota,
@@ -227,7 +240,8 @@ def interpretar(
                 factor_tempo=factor_tempo,
                 inicio_tramo=inicio_tramo,
                 inicio_vuelta_s=inicio_vuelta_s,
-                numero=len(pulsaciones),
+                puesto=puesto,
+                vuelta=vuelta,
                 semilla=semilla,
                 frecuencia_muestreo=frecuencia_muestreo,
                 generador=generador,
@@ -297,7 +311,8 @@ def _sortear_pulsacion(
     factor_tempo: float,
     inicio_tramo: float,
     inicio_vuelta_s: float,
-    numero: int,
+    puesto: int,
+    vuelta: int,
     semilla: int,
     frecuencia_muestreo: int,
     generador: np.random.Generator,
@@ -353,7 +368,11 @@ def _sortear_pulsacion(
         evento=evento,
         fuerza=float(np.clip(fuerza, 0.05, 1.0)),
         trasteo=TRASTEO_DE_LA_NOTA_SUCIA if trastea else 0.0,
-        semilla=semilla + PASO_DE_SEMILLA * (numero + 1),
+        semilla=(
+            semilla
+            + PASO_DE_SEMILLA * (puesto + 1)
+            + PASO_DE_SEMILLA_POR_VUELTA * vuelta
+        ),
     )
 
 

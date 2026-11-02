@@ -16,7 +16,12 @@ import pytest
 
 from nucleo.afinaciones import PERFILES
 from nucleo.analisis.pipeline import Analizador
-from nucleo.gemelo.interprete import Interpretacion, interpretar
+from nucleo.gemelo.interprete import (
+    DESVIOS_DE_NOTA_MALA,
+    FRACCION_DE_CORTE,
+    Interpretacion,
+    interpretar,
+)
 from nucleo.gemelo.perfiles import (
     CAOS,
     INTERMEDIO,
@@ -32,6 +37,7 @@ from nucleo.gemelo.piezas_de_prueba import (
     pieza_de_demostracion,
     pieza_vacia,
 )
+from nucleo.musica import nombre_de_midi
 from nucleo.piezas.modelo import NotaEnPieza, Pieza, pulsos_a_segundos
 
 FS = 48000
@@ -56,6 +62,47 @@ def cents_por_ventana(interpretacion: Interpretacion) -> list[tuple[float, float
         if resultado.estado == "nota":
             lecturas.append(((inicio + ventana) / FS, resultado.cents))
     return lecturas
+
+
+def proporcion_de_notas_reconocidas(interpretacion: Interpretacion) -> float:
+    """Fraccion de TODAS las ventanas en que el detector da la nota que suena.
+
+    El denominador son todas las ventanas y no solo las que dieron nota: lo que el
+    trasteo le quita al detector no es el acierto del nombre, es la decision
+    (se calla por energia o por confianza). Contando solo las ventanas que ya
+    dieron nota, una cuerda muy sucia con dos lecturas buenas saldria al 100%.
+    """
+    frecuencia = interpretacion.frecuencia_muestreo
+    analizador = Analizador(GUITARRA, frecuencia_muestreo=frecuencia)
+    ventana = GUITARRA.tamano_ventana(frecuencia)
+    muestras = interpretacion.muestras
+
+    aciertos = 0
+    total = 0
+    for inicio in range(0, len(muestras) - ventana + 1, SALTO):
+        resultado = analizador.procesar(muestras[inicio : inicio + ventana])
+        total += 1
+        evento = evento_sonando(interpretacion, (inicio + ventana) / frecuencia)
+        if evento is None:
+            continue
+        if resultado.estado == "nota" and resultado.nota == nombre_de_midi(evento.midi):
+            aciertos += 1
+    return aciertos / total
+
+
+def picos_por_evento(interpretacion: Interpretacion) -> list[float]:
+    """Amplitud de pico del audio de cada evento, en su propio tramo.
+
+    Vale porque el perfil no solapa notas: el tramo de un evento solo contiene su
+    cuerda.
+    """
+    frecuencia = interpretacion.frecuencia_muestreo
+    picos = []
+    for evento in interpretacion.eventos:
+        desde = int(evento.instante_s * frecuencia)
+        hasta = desde + int(evento.duracion_s * frecuencia)
+        picos.append(float(np.max(np.abs(interpretacion.muestras[desde:hasta]))))
+    return picos
 
 
 def evento_sonando(interpretacion: Interpretacion, instante_s: float):
@@ -259,12 +306,22 @@ def test_el_interprete_no_solapa_dos_notas_consecutivas():
 
     Si el interprete los produjese sin querer, acusaria a la cadena de inventarse
     notas que en realidad se invento el. Provocarlos a proposito es `sustain`.
+
+    La desigualdad es ESTRICTA y con el margen que promete `FRACCION_DE_CORTE`, no
+    un `<=`: con la figura igual al hueco -el caso de esta escala y de cualquier
+    melodia de negras seguidas- un corte al 100% del hueco da igualdad exacta, asi
+    que un `<=` pasaria por empate y no por margen, y la constante que el modulo
+    llama «lo que garantiza que el interprete no solapa» podria subirse a 1,0 sin
+    que nada cayera.
     """
     interpretacion = interpretar(escala_de_ocho_notas(), PERFECTO)
 
     eventos = interpretacion.eventos
     for actual, siguiente in zip(eventos, eventos[1:], strict=False):
-        assert actual.instante_s + actual.duracion_s <= siguiente.instante_s
+        hueco_s = siguiente.instante_s - actual.instante_s
+        silencio_s = siguiente.instante_s - (actual.instante_s + actual.duracion_s)
+        assert silencio_s > 0.0
+        assert silencio_s >= (1.0 - FRACCION_DE_CORTE) * hueco_s - 1e-9
 
 
 def test_el_sustain_alto_si_solapa():
@@ -389,3 +446,219 @@ def test_la_pieza_de_demostracion_dura_unos_treinta_segundos_y_trae_secciones():
         "Puente",
         "Final",
     ]
+
+
+# --- El contrato de reproducibilidad --------------------------------------
+#
+# Las pruebas de aqui abajo son las que defienden que el azar se consume en el
+# orden del contrato y que cada campo del perfil esta conectado a algo. Sin
+# ellas, el revisor demostro que se podian hacer los seis sorteos condicionales,
+# invertir dos de ellos, anular el trasteo entero, ignorar la fuerza y multiplicar
+# el desfase por cero sin que ninguna de las veinte primeras pruebas cayera.
+
+
+def test_el_orden_en_que_se_consume_el_azar_es_el_del_contrato():
+    """El espejo del contrato: por nota, fallo, nota mala, trasteo, desfase,
+    desafinacion y fuerza, en ese orden y siempre.
+
+    Esta prueba vuelve a consumir el MISMO generador en el MISMO orden y compara
+    evento por evento. Es la unica forma de que el orden sea falsable: dos sorteos
+    seguidos del mismo flujo uniforme solo se distinguen contra una referencia, y
+    aqui la referencia es el contrato escrito, no unos literales medidos.
+
+    Lo que caza, y nada mas lo cazaba:
+      - saltarse un sorteo cuando su probabilidad o su sigma valen cero (el flujo
+        se desincroniza y a partir de ahi todo cambia),
+      - intercambiar dos sorteos (el valor que decide el fallo pasa a decidir la
+        nota mala),
+      - no consumir los cinco sorteos restantes cuando la nota ya se fallo.
+
+    El perfil lleva las tres probabilidades altas a proposito: con `INTERMEDIO`
+    tal cual (fallo 0,02) ninguna nota falla en ocho tiradas y el sorteo del fallo
+    quedaria sin observar.
+    """
+    perfil = replace(
+        INTERMEDIO,
+        probabilidad_de_fallo=0.3,
+        probabilidad_de_nota_mala=0.3,
+        probabilidad_de_trasteo=0.5,
+    )
+    pieza = escala_de_ocho_notas()
+    semilla = 11
+    interpretacion = interpretar(pieza, perfil, semilla=semilla)
+
+    espejo = np.random.default_rng(semilla)
+    esperados = []
+    for indice, nota in enumerate(pieza.notas):
+        falla = espejo.random() < perfil.probabilidad_de_fallo
+        es_mala = espejo.random() < perfil.probabilidad_de_nota_mala
+        desvio = DESVIOS_DE_NOTA_MALA[int(espejo.integers(0, len(DESVIOS_DE_NOTA_MALA)))]
+        trastea = espejo.random() < perfil.probabilidad_de_trasteo
+        desfase_s = perfil.desfase_medio_s + espejo.normal() * perfil.desviacion_desfase_s
+        cents = espejo.normal() * perfil.cents_de_desafinacion
+        espejo.normal()  # la fuerza: se consume aunque el evento no la publique
+        if falla:
+            continue
+        esperados.append(
+            (
+                indice,
+                nota.midi + (desvio if es_mala else 0),
+                interpretacion.silencio_de_cabecera_s
+                + pulsos_a_segundos(nota.inicio_pulsos, pieza.tempo)
+                + desfase_s,
+                cents,
+                trastea,
+            )
+        )
+
+    # Que el perfil de verdad ejercite los tres sorteos de decision, o la prueba
+    # estaria comprobando el orden de un flujo que nadie mira.
+    assert 0 < len(esperados) < len(pieza.notas)
+    assert any(esperado[4] for esperado in esperados)
+    assert any(esperado[1] != pieza.notas[esperado[0]].midi for esperado in esperados)
+
+    assert len(interpretacion.eventos) == len(esperados)
+    for evento, esperado in zip(interpretacion.eventos, esperados, strict=True):
+        indice, midi, instante_s, cents, trastea = esperado
+        assert evento.indice_pretendido == indice
+        assert evento.midi == midi
+        assert evento.instante_s == pytest.approx(instante_s, abs=1e-9)
+        assert evento.cents == pytest.approx(cents, abs=1e-9)
+        assert evento.trasteada is trastea
+
+
+def test_cambiar_la_desafinacion_no_cambia_nada_mas():
+    """Dos interpretaciones que difieren en un campo difieren en una sola cosa.
+
+    Es el motivo por el que el azar se consume siempre, tambien cuando el perfil
+    tiene el campo a cero: si el sorteo de la desafinacion se saltase con sigma
+    cero, todo el azar posterior -de esta nota y de todas las siguientes- se
+    desplazaria, y comparar un perfil afinado con el mismo perfil desafinado
+    dejaria de medir la desafinacion para medir el desplazamiento.
+    """
+    pieza = escala_de_ocho_notas()
+    afinado = interpretar(
+        pieza, replace(INTERMEDIO, cents_de_desafinacion=0.0), semilla=7
+    )
+    desafinado = interpretar(
+        pieza, replace(INTERMEDIO, cents_de_desafinacion=25.0), semilla=7
+    )
+
+    assert len(afinado.eventos) == len(desafinado.eventos) > 0
+    for limpio, desviado in zip(afinado.eventos, desafinado.eventos, strict=True):
+        assert desviado.indice_pretendido == limpio.indice_pretendido
+        assert desviado.midi == limpio.midi
+        assert desviado.instante_s == pytest.approx(limpio.instante_s, abs=1e-12)
+        assert desviado.duracion_s == pytest.approx(limpio.duracion_s, abs=1e-6)
+        assert desviado.trasteada is limpio.trasteada
+
+    assert all(evento.cents == 0.0 for evento in afinado.eventos)
+    assert all(abs(evento.cents) > 1e-6 for evento in desafinado.eventos)
+
+
+def test_fallar_notas_no_cambia_el_sonido_de_las_que_si_suenan():
+    """La semilla de cada cuerda sale de su SITIO, no del orden de llegada.
+
+    Si saliese del numero de pulsaciones ya generadas -que solo crece con las
+    notas que no se fallan-, subir `probabilidad_de_fallo` cambiaria el timbre de
+    notas que no fallaron, y el gemelo dejaria de servir para comparar perfiles.
+    Se compara el AUDIO muestra a muestra, porque es ahi donde vive ese segundo
+    flujo de azar: los eventos ya coincidirian de todas formas.
+    """
+    pieza = escala_de_ocho_notas()
+    entero = interpretar(pieza, replace(PERFECTO, probabilidad_de_fallo=0.0), semilla=13)
+    con_fallos = interpretar(
+        pieza, replace(PERFECTO, probabilidad_de_fallo=0.4), semilla=13
+    )
+
+    assert 0 < len(con_fallos.eventos) < len(entero.eventos)
+    for evento in con_fallos.eventos:
+        gemelo = next(
+            otro
+            for otro in entero.eventos
+            if otro.indice_pretendido == evento.indice_pretendido
+        )
+        assert evento == gemelo
+        desde = int(evento.instante_s * entero.frecuencia_muestreo)
+        hasta = desde + int(evento.duracion_s * entero.frecuencia_muestreo)
+        assert np.array_equal(
+            entero.muestras[desde:hasta], con_fallos.muestras[desde:hasta]
+        )
+
+
+def test_el_trasteo_del_perfil_llega_a_la_cuerda():
+    """`probabilidad_de_trasteo` tiene que ensuciar el audio, no solo un campo.
+
+    Lo juzga el detector de produccion: el trasteo no cambia el nombre de la nota,
+    le quita al detector la DECISION (se calla por energia o por confianza), asi
+    que el denominador son todas las ventanas y no solo las que dieron nota.
+    """
+    pieza = escala_de_ocho_notas()
+    limpia = interpretar(pieza, replace(PERFECTO, probabilidad_de_trasteo=0.0), semilla=4)
+    sucia = interpretar(pieza, replace(PERFECTO, probabilidad_de_trasteo=1.0), semilla=4)
+
+    assert not any(evento.trasteada for evento in limpia.eventos)
+    assert all(evento.trasteada for evento in sucia.eventos)
+    assert len(sucia.eventos) == len(limpia.eventos)
+    assert not np.array_equal(sucia.muestras, limpia.muestras)
+    assert proporcion_de_notas_reconocidas(sucia) < proporcion_de_notas_reconocidas(
+        limpia
+    )
+
+
+def test_la_fuerza_del_perfil_es_la_amplitud_de_la_pulsacion():
+    pieza = escala_de_ocho_notas()
+    floja = interpretar(pieza, replace(PERFECTO, fuerza_media=0.3), semilla=4)
+    fuerte = interpretar(pieza, replace(PERFECTO, fuerza_media=0.9), semilla=4)
+
+    assert np.max(np.abs(floja.muestras)) == pytest.approx(0.3, abs=1e-6)
+    assert np.max(np.abs(fuerte.muestras)) == pytest.approx(0.9, abs=1e-6)
+
+
+def test_el_temblor_de_la_fuerza_hace_que_no_todas_las_notas_suenen_igual():
+    pieza = escala_de_ocho_notas()
+    perfil = replace(PERFECTO, fuerza_media=0.6, desviacion_fuerza=0.2)
+    temblorosa = interpretar(pieza, perfil, semilla=4)
+    firme = interpretar(pieza, replace(perfil, desviacion_fuerza=0.0), semilla=4)
+
+    picos_temblorosos = picos_por_evento(temblorosa)
+    picos_firmes = picos_por_evento(firme)
+    assert all(pico == pytest.approx(0.6, abs=1e-6) for pico in picos_firmes)
+    assert float(np.std(picos_temblorosos)) > 0.05
+
+
+def test_el_desfase_medio_atrasa_todas_las_notas():
+    pieza = escala_de_ocho_notas()
+    perfil = replace(PERFECTO, desfase_medio_s=0.050)
+    interpretacion = interpretar(pieza, perfil, semilla=4)
+
+    for indice, evento in enumerate(interpretacion.eventos):
+        en_su_sitio = interpretacion.silencio_de_cabecera_s + indice * pulsos_a_segundos(
+            1.0, pieza.tempo
+        )
+        assert evento.instante_s == pytest.approx(en_su_sitio + 0.050, abs=1e-9)
+
+
+def test_el_temblor_del_desfase_dispersa_las_notas():
+    """El temblor cae a los dos lados del sitio y no todo al mismo.
+
+    Con sigma cero las ocho notas caen exactamente en la rejilla; con sigma 0,04
+    ninguna afirmacion sobre una nota concreta seria estable, asi que lo que se
+    afirma es la dispersion y que haya desviaciones de los dos signos.
+    """
+    pieza = escala_de_ocho_notas()
+    perfil = replace(PERFECTO, desviacion_desfase_s=0.040)
+    interpretacion = interpretar(pieza, perfil, semilla=4)
+
+    rejilla = [
+        interpretacion.silencio_de_cabecera_s
+        + indice * pulsos_a_segundos(1.0, pieza.tempo)
+        for indice in range(len(interpretacion.eventos))
+    ]
+    desviaciones = [
+        evento.instante_s - sitio
+        for evento, sitio in zip(interpretacion.eventos, rejilla, strict=True)
+    ]
+    assert float(np.std(desviaciones)) > 0.010
+    assert any(desviacion > 0.0 for desviacion in desviaciones)
+    assert any(desviacion < 0.0 for desviacion in desviaciones)
