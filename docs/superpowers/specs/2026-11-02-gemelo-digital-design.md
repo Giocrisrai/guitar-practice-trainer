@@ -223,6 +223,13 @@ Reglas:
 - Todo el azar sale de un único `numpy.random.default_rng(semilla)`. La misma
   semilla y el mismo perfil dan byte a byte la misma interpretación, en
   cualquier máquina.
+- **Silencio de cabecera obligatorio** antes de la primera nota, de al menos una
+  ventana de análisis (4096 muestras, 85 ms a 48 kHz). Sin él, el primer cuadro
+  que llega a la cadena ya contiene la primera nota, el reloj de la pieza se
+  ancla ahí, y todo lo que viene después se lee 85 ms adelantado. Medido: una
+  sonda sin cabecera informaba −69 ms de desfase en una interpretación perfecta.
+  Es un artefacto del gemelo, no de la cadena, y por eso se arregla en el
+  gemelo.
 
 ### 3.3 `nucleo/gemelo/dispositivo.py` — el cable falso
 
@@ -268,9 +275,26 @@ def pasar_por_la_cadena(
 
 Recorre las muestras en ventanas solapadas, llama al `Analizador` real, y le
 pasa cada resultado al `SeguidorPieza` real con el instante **virtual** de la
-ventana (el que correspondería al reloj si el audio fuese en vivo). Ese instante
-es el centro de la ventana, no su principio: es la convención que usa la cadena
-real y copiarla mal haría que el gemelo midiera un desfase que no existe.
+ventana (el que correspondería al reloj si el audio fuese en vivo).
+
+**Ese instante es el FINAL de la ventana**, no su centro ni su principio, y esto
+está medido, no razonado. En vivo, el cuadro se entrega cuando el último bloque
+acaba de llegar: la ventana termina en «ahora». Una sonda de este diseño midió
+el error entre el onset real y el que firma el detector con las tres
+convenciones, sobre ocho notas sintéticas:
+
+| convención | error mediano |
+|---|---|
+| principio de la ventana | −78,7 ms |
+| centro de la ventana | −36,0 ms |
+| **final de la ventana** | **+6,7 ms** |
+
+El +6,7 ms es la latencia propia del detector, que es real y debe aparecer. Los
+−36 ms del centro son un sesgo inventado por la convención: un gemelo construido
+sobre el centro habría acusado a la cadena de adelantar cada nota 36 ms, y
+cualquier aserción de desfase habría estado corrupta. La primera versión de esta
+spec decía «el centro»; la sonda la corrigió antes de escribir una línea de
+código, que es para lo que sirven las sondas.
 
 Una canción de tres minutos a 48 kHz son unos 8600 análisis; a 48000/512 ≈ 94 Hz
 la cadena directa los hace en menos de un segundo. Eso la hace viable en la
@@ -394,9 +418,31 @@ las pruebas que leen grabaciones y se saltan si falta.
 La 3c los aparcó medidos. El gemelo los convierte en pruebas, así que se arreglan
 aquí:
 
-1. **Con bucle se pierde la última nota de cada vuelta** (hasta 250 ms). Es el
-   mismo defecto que se arregló sin bucle; el bucle es donde el usuario va a
-   pasar el rato.
+1. **El bucle arrastra el reloj unos 18 ms por vuelta, y desde la segunda vuelta
+   NINGUNA nota cuenta como limpia.** La 3c aparcó esto como «con bucle se pierde
+   la última nota de cada vuelta (250 ms)». Una sonda de este diseño lo midió y
+   es bastante peor. Intérprete perfecto, ocho notas, tramo de dos compases,
+   cuatro vueltas:
+
+   | vuelta | acertadas | limpias | desfase que informa |
+   |---|---|---|---|
+   | 1 | 8/8 | 5/8 | −69 ms |
+   | 2 | 7/8 | **0/8** | −91 ms |
+   | 3 | 7/8 | **0/8** | −101 ms |
+   | 4 | 7/8 | **0/8** | −123 ms |
+
+   El alumno no cambió nada entre vueltas: el intérprete es perfecto en las
+   cuatro. Lo que cambia es que `_al_dia` da la vuelta en cuanto el reloj CRUZA
+   el final, sin esperar como sí espera la rama sin bucle, y cada vuelta se
+   re-ancla perdiendo el exceso. El efecto compuesto es que el programa le dice a
+   quien machaca un compás que se adelanta cada vez más, y que el tempo
+   automático **nunca puede subir con el bucle puesto** porque la proporción
+   limpia es cero desde la segunda vuelta.
+
+   Esto convierte el defecto en el más grave de la lista: el bucle es el uso
+   central de la 3c -«machacar el compás que fallé»- y está roto de una forma que
+   1039 pruebas no ven, porque todas las del bucle usan dobles que avanzan el
+   reloj a mano.
 2. El historial, `peores_compases` y la regla del tempo pierden la nota del final
    cuando el detector la firma tras el tick del WebSocket.
 3. Durante esos 250 ms, `indice_actual` y el contador de progreso delatan el
@@ -445,3 +491,15 @@ empieza a dar valor en cuanto existan esas grabaciones.
 - **La cadena directa puede divergir de la real.** Mitigación: el nivel de sesión
   completa, con sus pocas pruebas lentas, existe justamente para detectar esa
   divergencia.
+- **Las notas que se solapan generan ataques fantasma, y eso es de la cadena, no
+  del gemelo.** Medido con una sonda: ocho notas sintéticas que suenan el 95 %
+  del pulso -o sea, cada cola sigue sonando cuando entra la siguiente- producen
+  **doce** pulsaciones, con parejas separadas 32 ms (`B2` a 2,432 s y `D3` a
+  2,464 s). Al 60 % del pulso salen ocho exactas. En una guitarra de verdad las
+  cuerdas SÍ siguen sonando unas sobre otras, así que esto no es un artefacto de
+  laboratorio: es un acierto fantasma esperando a pasar, y en la etapa 3e -donde
+  un acierto fantasma rompe una racha o la regala- importa el doble. El gemelo
+  tiene que poder producirlo a propósito (notas largas, perfil con sustain) y la
+  cadena tiene que decidir qué hace con él. Esta spec NO lo arregla: lo deja
+  medido y nombrado, porque arreglarlo es cambiar el detector de ataques, que es
+  el corazón de las etapas 2a y 3a, y eso merece su propia decisión.
