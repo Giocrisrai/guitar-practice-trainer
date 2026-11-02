@@ -42,7 +42,7 @@ AMORTIGUACION_DE_TRASTEO = 3.0
 
 
 def cuerda_pulsada(
-    midi: int,
+    midi: float,
     duracion_s: float,
     frecuencia_muestreo: int = 48000,
     brillo: float = 0.5,
@@ -53,7 +53,12 @@ def cuerda_pulsada(
     """Sintetiza una cuerda pulsada a la altura `midi`.
 
     Parametros:
-        midi: altura de la nota (69 es el La4 de 440 Hz).
+        midi: altura de la nota (69 es el La4 de 440 Hz). Admite DECIMALES: la
+            frecuencia sale de `midi_a_frecuencia`, que es continua, y el largo
+            del anillo es fraccionario, asi que una altura de 69,25 son 25 cents
+            por encima del La4 y suenan como tales. El interprete del gemelo lo
+            usa asi para meter la desafinacion de su perfil en el AUDIO y no solo
+            en un campo de la verdad.
         duracion_s: duracion en segundos. Tiene que ser positiva y dar para al
             menos un periodo de la nota; por debajo de eso el anillo no da ni
             una vuelta y lo que saldria es ruido sin altura, asi que se rechaza.
