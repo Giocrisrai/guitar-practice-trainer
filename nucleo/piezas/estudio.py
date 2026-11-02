@@ -494,9 +494,11 @@ class SesionDeEstudio:
     def _ataques_en_vuelo(self) -> bool:
         """Si todavia puede quedar un ataque del final del tramo por resolver.
 
-        Solo se abre esta ventana cuando el tramo acabo CON AUDIO entrando (ver
-        `_al_dia`): sin audio no hay nada en vuelo, y `_ultimo_analisis` se queda
-        viejo, asi que preguntarselo daria «si» para siempre.
+        Solo esta abierta mientras los avisos llegan CON AUDIO (ver `_al_dia`, que
+        es quien pone y quita la marca): `_ultimo_analisis` solo lo mueve
+        `procesar`, asi que en cuanto el audio se para la resta se congela y
+        preguntarselo daria «si» para siempre. De ahi que el primer aviso sin
+        cuadros cierre la ventana, que es lo que la acota.
         """
         marca = self._analisis_al_acabar
         if marca is None or self._ultimo_analisis is None:
@@ -562,7 +564,21 @@ class SesionDeEstudio:
             # romperia esa regla por detras.
             if not self._tramo_terminado:
                 self._tramo_terminado = True
-                self._analisis_al_acabar = self._ultimo_analisis if con_audio else None
+                self._analisis_al_acabar = self._ultimo_analisis
+            if not con_audio:
+                # Un aviso SIN cuadros cierra la ventana, y no solo en la
+                # transicion: esta linea es el tope del aplazamiento y sin ella el
+                # reloj se escapaba sin limite. `_ultimo_analisis` solo lo mueve
+                # `procesar`, asi que si el tramo acaba CON audio y el audio se
+                # para en seguida -el alumno termina la pasada y deja de tocar, o
+                # desenchufa- la resta de `_ataques_en_vuelo` se congela por
+                # debajo de la ventana y decia «si» para siempre: `avanzar`
+                # empujaba el cabezal `TECHO_TRAMO_S` por mirada y, con el tramo
+                # acabando en 8,0 s, a los 10 s de miradas iba por 17,8 y a los 40
+                # s por 47,8. Y aqui no hay nada que aplazar, porque sin cuadros no
+                # puede haber ninguna pulsacion en vuelo: es el mismo argumento de
+                # `ESPERA_SIN_CUADROS_S`.
+                self._analisis_al_acabar = None
             if self._ataques_en_vuelo():
                 return
             self._seguidor.avanzar_a(self._fin_s())

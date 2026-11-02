@@ -10,7 +10,12 @@ import pytest
 from nucleo.analisis.pipeline import ResultadoAnalisis
 from nucleo.piezas.modelo import NotaEnPieza, Pieza
 from servidor.configuracion import Configuracion
-from servidor.piezas import ARRANQUE_NINGUNO, ESPERA_SIN_CUADROS_S, SesionCarril
+from servidor.piezas import (
+    ARRANQUE_NINGUNO,
+    ESPERA_SIN_CUADROS_S,
+    TECHO_TRAMO_S,
+    SesionCarril,
+)
 from servidor.sesion import INTERVALO_ANALISIS
 
 
@@ -143,6 +148,14 @@ def agotar_cuenta_atras(sesion_carril, reloj, paso=0.0625, tope=600):
     El tope esta para que un fallo sea un fallo y no una suite colgada.
     """
     estudio = sesion_carril._estudio
+    # Y lo primero, que HAYA cuenta que agotar: sin esto el ayudante devuelve en
+    # silencio con la cuenta ya apagada, y la asercion «mientras la cuenta baja el
+    # cabezal no se mueve» pasa identica sin cuenta ninguna. Es la misma trampa que
+    # este ayudante existe para evitar, un piso mas abajo.
+    assert estudio._cuenta_atras_restante_s > 0, (
+        "no hay cuenta atras que agotar: esta prueba se cree que la tiene delante "
+        "y no la tiene"
+    )
     for _ in range(tope):
         if estudio._cuenta_atras_restante_s == 0:
             return sesion_carril.estado()
@@ -555,6 +568,14 @@ def test_un_hueco_corto_de_audio_no_mueve_el_cabezal_mas_de_lo_acotado():
     No es el agujero de los 30 s: esta acotado por `ESPERA_SIN_CUADROS_S`, no por
     lo que dure el corte, porque pasada esa franja la recolocacion lo corta. Esta
     prueba lo fija para que la cota no crezca en silencio.
+
+    OJO con el primer caso, que es de la etapa 3a y NO PODIA FALLAR: el hueco que
+    provoca es de 0,2 s y la cota que exige es 0,28, asi que ninguna
+    implementacion puede pasarse -hoy el hueco entra entero y pasa, y pasaria
+    igual si el cabezal no se moviera nada-. La rotura que deberia matarla (quitar
+    el `min(..., TECHO_TRAMO_S)` de `_mirar`) la dejaba verde, medido. De ahi el
+    segundo caso, con un hueco de 0,5 s: ahi el techo SI muerde, y son 0,5 s de
+    cabezal con la rotura puesta contra 0,1 sin ella.
     """
     reloj = RelojFalso()
     sesion_carril, sesion = carril(reloj)
@@ -571,6 +592,16 @@ def test_un_hueco_corto_de_audio_no_mueve_el_cabezal_mas_de_lo_acotado():
 
     despues = sesion_carril.estado()["instante_s"]
     assert despues - instante <= ESPERA_SIN_CUADROS_S + 0.03
+
+    # Y un hueco mas largo que el techo del tramo: aqui el techo es lo unico que
+    # impide que entre entero, asi que la cota es la del techo y no la del hueco.
+    antes_del_hueco = sesion_carril.estado()["instante_s"]
+    reloj.avanzar(0.5)
+    publicar(sesion, reloj, SILENCIO, cuadros=1)
+    tras_el_hueco = sesion_carril.estado()["instante_s"]
+    assert tras_el_hueco - antes_del_hueco <= TECHO_TRAMO_S + 0.03, (
+        "el hueco de 0,5 s entro en la pieza: el techo del tramo no esta mordiendo"
+    )
     sesion_carril.detener()
     sesion.detener()
 

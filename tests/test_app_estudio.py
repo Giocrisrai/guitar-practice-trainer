@@ -941,6 +941,54 @@ def test_tras_la_cuenta_atras_el_cabezal_no_salta_hacia_delante():
         sesion.detener()
 
 
+def test_el_reloj_se_clava_en_el_final_aunque_el_audio_se_corte_dentro_de_la_ventana():
+    """El tope del aplazamiento de `_al_dia`, que es donde el diff se rompio solo.
+
+    Acabar el tramo CON audio entrando abre la ventana de ataques en vuelo, y esa
+    ventana se mide con el reloj del ANALISIS, que solo mueve `procesar`. Asi que
+    si el audio se para justo despues -el caso normal: el alumno acaba la pasada y
+    deja de tocar, o desenchufa-, la resta se congela por debajo de la ventana y
+    decia «si» para siempre: `_al_dia` no clavaba el reloj nunca y el `avanzar` sin
+    cuadros lo empujaba `TECHO_TRAMO_S` por mirada, sin limite. Medido con el tramo
+    acabando en 8,0 s: a los 10 s de miradas el cabezal iba por 17,8, y a los 40 s
+    por 47,8.
+
+    Es exactamente el invariante que el aplazamiento prometia conservar, asi que la
+    prueba mide lo prometido: pasada la ventana, el cabezal se queda en el final del
+    tramo por muchas miradas que pasen.
+    """
+    carril, sesion, reloj = carril_a_mano()
+    try:
+        # A 600 ppm el compas 1 de 4/4 acaba en 0,4 s, y la cuenta atras del plan
+        # por defecto dura otros 0,4: los dos se agotan con cuadros de audio, que es
+        # lo que hace falta aqui (el tramo tiene que acabarse CON audio).
+        carril.iniciar(pieza_rapida(), PlanDePasada(primer_compas=1, ultimo_compas=1))
+        final_del_tramo = 0.4
+        for _ in range(200):
+            publicar(sesion, reloj, SILENCIO, cuadros=1)
+            if carril.estado()["tramo_terminado"]:
+                break
+        estado = carril.estado()
+        assert estado["tramo_terminado"] is True, "el tramo no se acabo con audio"
+        # Con audio el cabezal se pasa del final mientras la ventana esta abierta, y
+        # el exceso esta acotado por ella: es el precio declarado del aplazamiento.
+        exceso = estado["instante_s"] - final_del_tramo
+        assert 0 <= exceso <= 0.25 + 0.03, f"exceso de {exceso:.3f} s con audio"
+
+        # Y ahora se corta el audio: ni un cuadro mas, solo las miradas del
+        # WebSocket. Diez segundos de miradas y el cabezal sigue en el final.
+        estado = mirar_hasta(carril, reloj, lambda e: False, pasos=300)
+        assert estado["instante_s"] == pytest.approx(final_del_tramo, abs=1e-6)
+        # Y no es que se haya quedado quieto un rato: cuarenta segundos despues,
+        # igual. Sin el tope, aqui iba por 47,8.
+        estado = mirar_hasta(carril, reloj, lambda e: False, pasos=1200)
+        assert estado["instante_s"] == pytest.approx(final_del_tramo, abs=1e-6)
+        assert estado["tramo_terminado"] is True
+    finally:
+        carril.detener()
+        sesion.detener()
+
+
 def test_el_tempo_automatico_sin_bucle_sugiere_y_no_reinicia_la_pasada():
     """Sin bucle la pasada se ha acabado, y no hay nada que acelerar.
 
