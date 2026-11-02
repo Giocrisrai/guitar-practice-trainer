@@ -45,47 +45,58 @@ con `PERFECTO` y el salto de produccion):
 * **En un bucle, el cabezal VUELVE ATRAS en cada vuelta**, asi que el reporte de
   la nota 0 de la vuelta 3 llega con el cabezal en 0,2 s y no en 10 s. Medido:
   con tres vueltas de la escala, los reportes de las vueltas 2 y 3 empiezan otra
-  vez cerca de cero. Por eso de cada vuelta se descuenta tambien lo que las
-  anteriores ocupan en el audio, que sale de la aritmetica de `interpretar`:
-  `(duracion_s - cabecera_tecnica) / vueltas` es cuenta atras mas tramo. Sin eso,
-  un bucle salia con todas las notas de las vueltas 2 y 3 perdidas e inventadas,
-  y el arreglo del bucle de la T7 no habria tenido como medirse.
+  vez cerca de cero (0,189 y 0,252). Sin descontarlo, un bucle salia con todas
+  las notas de las vueltas 2 y 3 perdidas e inventadas, y el arreglo del bucle de
+  la T7 no habria tenido como medirse.
+* **El cabezal de un tramo que no empieza en el compas 1 no arranca en cero**:
+  arranca en el instante escrito de ese compas. Medido con el tramo 2-2 de la
+  escala: los reportes de la vuelta 1 caen en 2,6 s mientras los ataques estan a
+  0,128 s del audio. Ese instante se suma, y por eso `Interpretacion` lleva dentro
+  el tramo, el factor de tempo, las vueltas y la cuenta atras con que se toco: sin
+  ellos esta traduccion no se puede hacer, y las secciones de una cancion casi
+  nunca empiezan en el compas 1.
 
-Dos condiciones que el veredicto NO puede comprobar, y por eso se escriben:
+Queda UNA condicion que el veredicto no puede comprobar, y por eso se escribe: la
+cuenta atras del plan de la pasada y los `segundos_de_cuenta_atras` de la
+interpretacion tienen que ser la misma, y el tramo del plan el mismo que el de la
+interpretacion. Si quien conduce estudia otro tramo del que el gemelo toco, los
+dos relojes se separan por esa diferencia y el veredicto no puede saberlo: el
+registro no dice con que plan se condujo.
 
-1. La cuenta atras del plan de la pasada y los `segundos_de_cuenta_atras` de la
-   interpretacion tienen que ser la misma. Si quien conduce pide un compas de
-   aviso que el gemelo no toco (o al contrario), los dos relojes se separan por
-   esa diferencia.
-2. **El tramo tiene que empezar en el principio de la pieza.** El cabezal no
-   arranca en cero cuando la pasada estudia del compas 3 al 5: arranca en el
-   instante escrito de ese compas (medido: con el tramo 2-2 de la escala, los
-   reportes de la vuelta 1 caen en 2,6 s). Ese desplazamiento es el instante de
-   inicio del tramo, y `Interpretacion` no lo lleva dentro -ni el tramo ni el
-   `factor_tempo` con el que se toco-, asi que el veredicto no puede calcularlo.
-   Juzgar un tramo que no empieza en el compas 1 saca todas las notas perdidas.
-   El arreglo es de una sola linea, pero no es de aqui: es añadir el inicio del
-   tramo a `Interpretacion`, en el modulo del interprete.
-
-**LA TOLERANCIA ES DE EMPAREJAMIENTO, NO DE CALIDAD.** 120 ms, no 15. Su unico
-trabajo es decidir si el reporte X habla del ataque Y; la calidad -si esa nota
-estaba a tiempo- la decide la cadena y no es asunto de aqui. Con 15 ms casi toda
-nota saldria perdida y el oraculo seria rojo por construccion, midiendo la
-tolerancia en vez de la cadena.
+**LA TOLERANCIA ES DE EMPAREJAMIENTO, NO DE CALIDAD.** Su unico trabajo es
+decidir si el reporte X habla del ataque Y; la calidad -si esa nota estaba a
+tiempo- la decide la cadena y no es asunto de aqui. Es el techo del propio
+detector, `VENTANA_ATAQUE_COMO_ONSET_S`, y no un numero escrito aqui: ver el
+comentario de `TOLERANCIA_DE_EMPAREJAMIENTO_MS`.
 """
 
 from dataclasses import dataclass
 
 import numpy as np
 
-from nucleo.afinaciones import PERFILES
+from nucleo.ejercicios.pulsaciones import VENTANA_ATAQUE_COMO_ONSET_S
 from nucleo.gemelo.cadena import RegistroDeLaCadena, ReporteDeLaCadena
-from nucleo.gemelo.interprete import VENTANAS_DE_CABECERA, Interpretacion
-from nucleo.piezas.modelo import Pieza
+from nucleo.gemelo.interprete import Interpretacion
+from nucleo.piezas.compases import pulsos_por_compas, total_de_compases
+from nucleo.piezas.modelo import Pieza, pulsos_a_segundos
 
-# La holgura de emparejamiento por omision, en milisegundos. Ver el docstring del
-# modulo: es la que decide si un reporte habla de un ataque, y nada mas.
-TOLERANCIA_DE_EMPAREJAMIENTO_MS = 120.0
+# La holgura de emparejamiento por omision: EL TECHO DEL PROPIO DETECTOR, no un
+# numero elegido aqui.
+#
+# `VENTANA_ATAQUE_COMO_ONSET_S` es lo mas viejo que un ataque puede ser para que
+# el detector lo firme como el onset de la pulsacion que esta resolviendo, o sea
+# exactamente lo que la cadena puede tardar en hablar de un ataque. Un reporte mas
+# tardio que eso ya no habla de ese ataque, y uno mas temprano si. Se nombra la
+# constante y no se escribe el numero para que la holgura siga al detector el dia
+# que alguien mueva su techo: un 250 suelto aqui se desacoplaria en silencio.
+#
+# Y 120 ms no servia, medido: la escala de ocho notas con `PERFECTO` salia con 5
+# de 8 notas perdidas, porque `instante_pasada_s` no lleva el instante del onset
+# sino el del cabezal CUANDO EL REPORTE SE PUBLICA, y entre los dos hay otros
+# ~165 ms de estabilizacion. Con la holgura en el techo del detector, cero
+# perdidas. Apretarla es como se pone un oraculo rojo por construccion: la prueba
+# mediria la tolerancia y no la cadena.
+TOLERANCIA_DE_EMPAREJAMIENTO_MS = VENTANA_ATAQUE_COMO_ONSET_S * 1000.0
 
 
 @dataclass(frozen=True)
@@ -250,33 +261,65 @@ def _adelantos_por_vuelta(
     """Lo que hay que descontarle al eje del audio, vuelta a vuelta, para caer en
     el eje del cabezal.
 
-    Son dos terminos, y el docstring del modulo dice de donde sale cada uno:
+    **Esta traduccion esta MEDIDA, y la intuicion de que hay que restar el
+    silencio de cabecera entero es la equivocada.** Queda escrito aqui con los
+    numeros porque es la trampa de este modulo y el proximo que lo lea va a tener
+    la misma intuicion.
 
-    * La cuenta atras, en todas las vueltas. Es lo que queda del silencio de
-      cabecera al quitarle la cabecera tecnica -que NO se descuenta, porque
-      durante ella el cabezal ya corre-, y la tecnica se calcula igual que en
-      `interpretar`: ventana y media del perfil de la pieza.
-    * Lo que ocupan en el audio las vueltas anteriores, porque el cabezal vuelve
-      atras en cada una. `(duracion_s - cabecera_tecnica) / vueltas` es cuenta
-      atras mas tramo, que es exactamente lo que `interpretar` pone entre dos
-      vueltas; no se estima de los eventos para que una nota fallada en la
-      frontera no desplace el eje de la vuelta entera.
+    Lo que `instante_pasada_s` lleva dentro no es un cronometro de la pasada: es
+    la POSICION DEL CABEZAL cuando el reporte se publico. Y el cabezal arranca en
+    la muestra cero -la cadena hace `fijar_la_mirada(0.0)`- y avanza con cada
+    mirada, asi que **durante la cabecera tecnica el cabezal ya corre**: cuando la
+    primera nota suena, 128 ms dentro del audio, el cabezal ya marca 128 ms.
+    Sonda sobre la escala de ocho notas con `PERFECTO` y el salto de produccion:
 
-    El numero de vueltas se cuenta de los eventos, asi que una ultima vuelta en
-    la que se fallaran TODAS las notas no se veria y el paso saldria largo. Con
-    ocho notas y el peor perfil es uno entre diez mil, y el precio de equivocarse
-    es un veredicto sucio -nunca uno limpio de mentira-, asi que se acepta y se
-    escribe.
+        ataque(audio)  cabezal al publicar   crudo    restando la cabecera
+            0,1280           0,3163        +188,3 ms       +316,3 ms
+            0,7280           0,7993         +71,3           +199,3
+            1,3280           1,4923        +164,3           +292,3
+            ...              ...            ...              ...
+                                   mediana +130 ms      mediana +258 ms
+
+    La columna cruda (mediana +130 ms) es lo que la cadena tarda en PUBLICAR un
+    ataque: ~20 ms de deteccion mas ~165 de estabilizacion. La otra pasa del techo
+    del propio detector (250 ms) y es un sesgo inventado por la traduccion.
+
+    La comprobacion independiente, que es la que zanja el asunto: el `desfase_s`
+    que la cadena firma para la nota 0 es **148,3 ms = 128 de cabecera + 20 de
+    deteccion**. Si el cabezal fuera 128 ms por DETRAS del audio, ese desfase
+    habria salido 20 ms. Salio 148: el cabezal va con el audio, y restar la
+    cabecera es meter el sesgo, no quitarlo.
+
+    Lo que si se descuenta son las tres cosas en las que los dos ejes se separan
+    de verdad, y las tres salen de los argumentos que `Interpretacion` registra:
+
+    * La cuenta atras, en TODAS las vueltas: mientras dura, `SesionDeEstudio`
+      recoloca el cabezal en el inicio en cada mirada y en cada cuadro, asi que se
+      queda quieto mientras el audio sigue corriendo.
+    * Lo que ocupan las vueltas anteriores (cuenta atras mas tramo), porque el
+      cabezal vuelve atras en cada vuelta.
+    * Y en sentido contrario SE SUMA el inicio del tramo, porque el cabezal de una
+      pasada que estudia del compas 2 al 2 arranca en el instante escrito de ese
+      compas. Es `_inicio_s` de `SesionDeEstudio`, calculado igual: pulsos a
+      segundos, divididos por el factor de tempo.
     """
-    ventana = PERFILES[interpretacion.pieza.perfil].tamano_ventana(
-        interpretacion.frecuencia_muestreo
-    )
-    tecnica_s = VENTANAS_DE_CABECERA * ventana / interpretacion.frecuencia_muestreo
-    cuenta_atras_s = max(0.0, interpretacion.silencio_de_cabecera_s - tecnica_s)
-    total = max(vueltas, default=1)
-    paso_s = max(0.0, interpretacion.duracion_s - tecnica_s) / total
+    pieza = interpretacion.pieza
+    ancho = pulsos_por_compas(pieza)
+    # Una pieza sin compases se interpreta como un compas de silencio, con la
+    # misma convencion que `interpretar`.
+    tope = max(1, total_de_compases(pieza))
+    ultimo = tope if interpretacion.ultimo_compas is None else interpretacion.ultimo_compas
+    inicio_pulsos = (interpretacion.primer_compas - 1) * ancho
+    factor = interpretacion.factor_tempo
+    inicio_tramo_s = pulsos_a_segundos(inicio_pulsos, pieza.tempo) / factor
+    tramo_s = pulsos_a_segundos(ultimo * ancho - inicio_pulsos, pieza.tempo) / factor
+    cuenta_atras_s = interpretacion.segundos_de_cuenta_atras
+
+    total = max(interpretacion.repeticiones, max(vueltas, default=1))
     return {
-        vuelta: cuenta_atras_s + (vuelta - 1) * paso_s
+        vuelta: cuenta_atras_s
+        + (vuelta - 1) * (cuenta_atras_s + tramo_s)
+        - inicio_tramo_s
         for vuelta in range(1, total + 1)
     }
 

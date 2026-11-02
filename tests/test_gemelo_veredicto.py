@@ -27,21 +27,28 @@ from pathlib import Path
 
 import pytest
 
-from nucleo.afinaciones import PERFILES
-from nucleo.gemelo.cadena import RegistroDeLaCadena, ReporteDeLaCadena
-from nucleo.gemelo.interprete import (
-    VENTANAS_DE_CABECERA,
-    Interpretacion,
-    interpretar,
+from nucleo.gemelo.cadena import (
+    RegistroDeLaCadena,
+    ReporteDeLaCadena,
+    pasar_por_la_cadena,
 )
+from nucleo.gemelo.interprete import Interpretacion, interpretar
 from nucleo.gemelo.perfiles import PERFECTO
 from nucleo.gemelo.piezas_de_prueba import (
     escala_de_ocho_notas,
     pieza_con_acorde,
     pieza_con_nota_repetida,
+    pieza_de_demostracion,
 )
-from nucleo.gemelo.veredicto import Veredicto, juzgar
-from nucleo.piezas.compases import pulsos_por_compas, total_de_compases
+from nucleo.ejercicios.pulsaciones import VENTANA_ATAQUE_COMO_ONSET_S
+from nucleo.gemelo.veredicto import (
+    TOLERANCIA_DE_EMPAREJAMIENTO_MS,
+    Veredicto,
+    juzgar,
+)
+from nucleo.piezas.compases import pulsos_del_compas
+from nucleo.piezas.conductor import ConductorDeEstudio
+from nucleo.piezas.estudio import PlanDePasada, SesionDeEstudio
 from nucleo.piezas.modelo import pulsos_a_segundos
 from nucleo.piezas.seguimiento import NotaTocada
 
@@ -52,6 +59,11 @@ FUENTE_DEL_VEREDICTO = (
 # Lo que la cadena DECIDE y el veredicto no tiene derecho a consultar. Son campos
 # de `NotaTocada` y funciones del seguidor: un veredicto que los leyera estaria
 # preguntandole a la cadena si la cadena lo hizo bien.
+# Lo que la cadena tardo en PUBLICAR cada uno de los ocho ataques de
+# `escala_de_ocho_notas` interpretada por `PERFECTO`, medido con el salto de
+# produccion. Es el numero que decide si una holgura de emparejamiento sirve.
+RETRASOS_MEDIDOS_MS = (188.3, 71.3, 164.3, 131.3, 98.3, 128.3, 74.3, 167.3)
+
 DECISIONES_DE_LA_CADENA = frozenset(
     {
         "acertada",
@@ -131,21 +143,24 @@ def _reporte(
 def _adelanto_s(interpretacion: Interpretacion, vuelta: int) -> float:
     """Cuanto va el eje del audio por delante del eje del cabezal en esa vuelta.
 
-    La cuenta atras -la parte del silencio de cabecera que no es tecnica- mas lo
-    que ocupan las vueltas anteriores. El tramo se mide de la PIEZA, con los
-    ayudantes de produccion, y no de `duracion_s`: asi la cuenta de las pruebas no
-    es la misma cuenta que hace el veredicto.
+    La cuenta atras, mas lo que ocupan las vueltas anteriores, menos el instante
+    en que empieza el tramo -que es donde el cabezal arranca cuando la pasada no
+    estudia desde el compas 1-. La cabecera tecnica NO entra: durante ella el
+    cabezal ya corre.
+
+    El tramo se mide con `pulsos_del_compas`, que es el mismo ayudante con el que
+    `SesionDeEstudio._inicio_s` coloca el cabezal, y no repitiendo la aritmetica
+    del veredicto: asi la cuenta de las pruebas llega por otro camino que la del
+    modulo que se prueba.
     """
-    ventana = PERFILES[interpretacion.pieza.perfil].tamano_ventana(
-        interpretacion.frecuencia_muestreo
-    )
-    tecnica = VENTANAS_DE_CABECERA * ventana / interpretacion.frecuencia_muestreo
-    cuenta_atras = interpretacion.silencio_de_cabecera_s - tecnica
     pieza = interpretacion.pieza
-    tramo_s = pulsos_a_segundos(
-        total_de_compases(pieza) * pulsos_por_compas(pieza), pieza.tempo
-    )
-    return cuenta_atras + (vuelta - 1) * (cuenta_atras + tramo_s)
+    factor = interpretacion.factor_tempo
+    desde, _ = pulsos_del_compas(pieza, interpretacion.primer_compas)
+    _, hasta = pulsos_del_compas(pieza, interpretacion.ultimo_compas)
+    inicio_tramo_s = pulsos_a_segundos(desde, pieza.tempo) / factor
+    tramo_s = pulsos_a_segundos(hasta - desde, pieza.tempo) / factor
+    cuenta_atras = interpretacion.segundos_de_cuenta_atras
+    return cuenta_atras + (vuelta - 1) * (cuenta_atras + tramo_s) - inicio_tramo_s
 
 
 def _registro(*reportes: ReporteDeLaCadena) -> RegistroDeLaCadena:
@@ -317,23 +332,81 @@ def test_el_cabezal_vuelve_atras_en_cada_vuelta():
     assert veredicto.desfase_introducido_ms == pytest.approx(40.0, abs=0.5)
 
 
-def test_la_tolerancia_empareja_y_no_juzga():
-    """120 ms es holgura de EMPAREJAMIENTO, no de calidad.
+def test_la_tolerancia_es_el_techo_del_detector_y_no_un_numero_de_aqui():
+    """La holgura de emparejamiento ES `VENTANA_ATAQUE_COMO_ONSET_S`.
 
-    Su trabajo es decidir si el reporte X habla del ataque Y. Un reporte a 100 ms
-    es la misma nota y su retraso se anota; a 130 ms ya no se puede afirmar que
-    hable de ese ataque, y entonces la nota se perdio y el reporte se invento.
+    Esa constante es lo mas viejo que un ataque puede ser para que el detector lo
+    firme como el onset de la pulsacion que esta resolviendo: justo lo que la
+    cadena puede tardar en hablar de un ataque. Si alguien mueve el techo del
+    detector, la holgura tiene que moverse con el, y un numero suelto en el
+    veredicto se habria desacoplado en silencio.
+    """
+    assert TOLERANCIA_DE_EMPAREJAMIENTO_MS == pytest.approx(
+        VENTANA_ATAQUE_COMO_ONSET_S * 1000.0
+    )
+
+
+def test_la_tolerancia_empareja_y_no_juzga():
+    """La holgura es de EMPAREJAMIENTO, no de calidad, y se afirman sus dos lados.
+
+    Su trabajo es decidir si el reporte X habla del ataque Y. Un reporte 20 ms por
+    dentro del techo del detector es la misma nota y su retraso se anota; 20 ms
+    por fuera ya no se puede afirmar que hable de ese ataque, y entonces la nota
+    se perdio y el reporte se invento. Los dos lados se escriben RESPECTO de la
+    constante, no con numeros: con literales, subir el techo del detector dejaba
+    esta prueba verde midiendo otra cosa.
     """
     interpretacion = _interpretacion()
+    margen_s = 0.020
+    techo_s = TOLERANCIA_DE_EMPAREJAMIENTO_MS / 1000.0
 
-    dentro = juzgar(interpretacion, _todo_reportado(interpretacion, 0.100))
+    dentro = juzgar(interpretacion, _todo_reportado(interpretacion, techo_s - margen_s))
     assert dentro.perdidas == ()
     assert dentro.inventadas == 0
-    assert dentro.desfase_introducido_ms == pytest.approx(100.0, abs=0.5)
+    assert dentro.desfase_introducido_ms == pytest.approx(
+        TOLERANCIA_DE_EMPAREJAMIENTO_MS - 1000.0 * margen_s, abs=0.5
+    )
 
-    fuera = juzgar(interpretacion, _todo_reportado(interpretacion, 0.130))
+    fuera = juzgar(interpretacion, _todo_reportado(interpretacion, techo_s + margen_s))
     assert len(fuera.perdidas) == 8
     assert fuera.inventadas == 8
+
+
+def test_apretar_la_tolerancia_pone_el_oraculo_rojo_por_construccion():
+    """Con los retrasos MEDIDOS de la cadena, una tolerancia de 120 ms pierde
+    cinco de ocho notas de un interprete perfecto.
+
+    Los ocho retrasos son los que la sonda midio sobre `escala_de_ocho_notas` con
+    `PERFECTO` y el salto de produccion: lo que la cadena tarda en PUBLICAR cada
+    ataque, que es lo que `instante_pasada_s` lleva dentro. Cinco de los ocho pasan
+    de 120 ms.
+
+    Esta prueba existe para que nadie «arregle» un oraculo rojo apretando la
+    tolerancia: apretarla no mejora la cadena, hace que el veredicto deje de
+    reconocer sus reportes, y entonces la prueba mide la tolerancia en vez de la
+    cadena. Con la holgura en el techo del detector, las ocho se emparejan.
+    """
+    interpretacion = _interpretacion()
+    vueltas = _vueltas_de(interpretacion)
+    registro = _registro(
+        *(
+            _reporte(interpretacion, evento, vuelta, retraso_s=retraso_ms / 1000.0)
+            for evento, vuelta, retraso_ms in zip(
+                interpretacion.eventos, vueltas, RETRASOS_MEDIDOS_MS, strict=True
+            )
+        )
+    )
+
+    apretada = juzgar(interpretacion, registro, tolerancia_de_emparejamiento_ms=120.0)
+    assert len(apretada.perdidas) == 5
+    assert apretada.inventadas == 5
+
+    honesta = juzgar(interpretacion, registro)
+    assert honesta.perdidas == ()
+    assert honesta.inventadas == 0
+    assert honesta.limpio is True
+    assert honesta.desfase_introducido_ms == pytest.approx(129.8, abs=0.5)
+    assert honesta.desfase_maximo_ms == pytest.approx(188.3, abs=0.5)
 
 
 # -- lo que no se juzga -------------------------------------------------------
@@ -439,3 +512,70 @@ def test_un_veredicto_limpio_se_distingue_de_uno_sucio():
     assert replace(base, perdidas=((1, 2),)).limpio is False
     assert replace(base, inventadas=1).limpio is False
     assert replace(base, mal_adjudicadas=((1, 2, 64),)).limpio is False
+
+
+# -- el tramo que no empieza en el compas 1 -----------------------------------
+
+
+def test_un_tramo_que_no_empieza_en_el_compas_uno_se_juzga_bien():
+    """El cabezal de una pasada que estudia el compas 2 arranca en 2,4 s, no en 0.
+
+    Es el caso NORMAL, no un borde: las secciones de una cancion casi nunca
+    empiezan en el compas 1 y el escaparate practica por secciones. Antes de que
+    `Interpretacion` registrara el tramo, el veredicto no podia saberlo y daba las
+    cuatro notas por perdidas.
+
+    La primera asercion es la que impide que esta prueba pase por casualidad: los
+    reportes de este registro NO estan cerca de cero, estan cerca de 2,4 s, asi
+    que un veredicto que no sumara el inicio del tramo no emparejaria ninguno.
+    """
+    interpretacion = _interpretacion(ultimo_compas=2, primer_compas=2)
+    registro = _todo_reportado(interpretacion, 0.030)
+
+    assert [evento.indice_pretendido for evento in interpretacion.eventos] == [4, 5, 6, 7]
+    # 2,4 del inicio del tramo + 0,128 de cabecera tecnica (que el cabezal
+    # recorre) + los 30 ms de retraso del reporte.
+    assert registro.reportes[0].instante_pasada_s == pytest.approx(2.4 + 0.128 + 0.030)
+
+    veredicto = juzgar(interpretacion, registro)
+
+    assert veredicto.limpio is True
+    assert veredicto.perdidas == ()
+    assert veredicto.inventadas == 0
+    assert veredicto.notas_tocadas == 4
+    assert veredicto.desfase_introducido_ms == pytest.approx(30.0, abs=0.5)
+
+
+def test_una_seccion_entera_se_juzga_limpia_pasando_por_la_cadena_de_verdad():
+    """La unica prueba del archivo que pasa por la cadena, y esta aqui por un
+    motivo: un registro a mano demuestra que la traduccion es coherente consigo
+    misma, no que coincida con lo que la cadena hace de verdad.
+
+    Se estudia la seccion «Puente» de la pieza de demostracion -compases 7 a 9,
+    doce notas, que no empieza en el compas 1- con el interprete perfecto. Medido:
+    veredicto limpio, mediana +164,4 ms y maximo +204,6 ms, los dos por debajo del
+    techo del detector. Con el tramo sin registrar, esto daba doce perdidas y doce
+    inventadas.
+
+    No hay bucle a proposito: el defecto del bucle es de la T7 y esta prueba no es
+    el sitio donde medirlo.
+    """
+    pieza = pieza_de_demostracion()
+    interpretacion = interpretar(
+        pieza, PERFECTO, primer_compas=7, ultimo_compas=9
+    )
+    estudio = SesionDeEstudio(
+        pieza,
+        PlanDePasada(primer_compas=7, ultimo_compas=9, compases_de_cuenta_atras=0),
+    )
+    estudio.arrancar()
+    conductor = ConductorDeEstudio(estudio, al_cambiar_repeticion=None)
+
+    veredicto = juzgar(interpretacion, pasar_por_la_cadena(interpretacion, conductor))
+
+    assert veredicto.notas_tocadas == 12
+    assert veredicto.perdidas == ()
+    assert veredicto.inventadas == 0
+    assert veredicto.mal_adjudicadas == ()
+    assert veredicto.limpio is True
+    assert veredicto.desfase_introducido_ms < TOLERANCIA_DE_EMPAREJAMIENTO_MS
