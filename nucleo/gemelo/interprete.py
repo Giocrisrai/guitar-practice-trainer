@@ -111,6 +111,21 @@ class Interpretacion:
     exclusiones se determinan DESDE LA PIEZA y no desde lo que la cadena hizo. Una
     interpretacion es la interpretacion DE una pieza: sin ella dentro, el
     veredicto no puede cumplir su contrato.
+
+    Y LLEVA DENTRO LOS ARGUMENTOS CON QUE SE TOCO -el tramo, el factor de tempo,
+    las vueltas y la cuenta atras-, porque sin ellos `juzgar` no puede traducir
+    del eje del audio al del cabezal. El cabezal de una pasada que estudia del
+    compas 2 al 2 NO arranca en cero: arranca en el instante escrito de ese
+    compas, que es `pulsos_a_segundos(inicio_del_tramo) / factor_tempo`. Medido
+    con el tramo 2-2 de la escala: los reportes de la vuelta 1 caen en 2,6 s
+    mientras los ataques estan a 0,128 s del audio, y un veredicto que no supiera
+    el tramo daba las cuatro notas por perdidas sin poder decir por que. Las
+    secciones de una cancion casi nunca empiezan en el compas 1, asi que esto es
+    el caso normal y no un borde.
+
+    Los valores por omision son los mismos que los de `interpretar`, para que una
+    interpretacion armada a mano -un buffer de silencio, por ejemplo- no tenga que
+    repetirlos.
     """
 
     pieza: Pieza
@@ -119,6 +134,11 @@ class Interpretacion:
     frecuencia_muestreo: int
     duracion_s: float
     silencio_de_cabecera_s: float
+    primer_compas: int = 1
+    ultimo_compas: int | None = None
+    factor_tempo: float = 1.0
+    repeticiones: int = 1
+    segundos_de_cuenta_atras: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -261,6 +281,14 @@ def interpretar(
         frecuencia_muestreo=frecuencia_muestreo,
         duracion_s=muestras.size / frecuencia_muestreo,
         silencio_de_cabecera_s=silencio_de_cabecera_s,
+        primer_compas=primer_compas,
+        # El tramo se guarda YA RESUELTO: `ultimo` es el tope de la pieza cuando
+        # llega `None`, y asi quien lea la interpretacion no tiene que volver a
+        # resolverlo (ni equivocarse al resolverlo) para saber donde acababa.
+        ultimo_compas=ultimo,
+        factor_tempo=factor_tempo,
+        repeticiones=repeticiones,
+        segundos_de_cuenta_atras=segundos_de_cuenta_atras,
     )
 
 

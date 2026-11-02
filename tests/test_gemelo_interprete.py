@@ -662,3 +662,38 @@ def test_el_temblor_del_desfase_dispersa_las_notas():
     assert float(np.std(desviaciones)) > 0.010
     assert any(desviacion > 0.0 for desviacion in desviaciones)
     assert any(desviacion < 0.0 for desviacion in desviaciones)
+
+
+def test_la_interpretacion_registra_con_que_argumentos_se_toco():
+    """Los cinco argumentos de la pasada viajan DENTRO de la interpretacion.
+
+    No es contabilidad: sin ellos el veredicto no puede traducir del eje del audio
+    al del cabezal, porque el cabezal de un tramo que no empieza en el compas 1
+    arranca en el instante escrito de ese compas y no en cero. El tramo se guarda
+    ya RESUELTO -`ultimo_compas=None` se convierte en el tope de la pieza-, para
+    que nadie tenga que volver a resolverlo.
+    """
+    pieza = escala_de_ocho_notas()
+
+    interpretacion = interpretar(
+        pieza,
+        PERFECTO,
+        factor_tempo=0.5,
+        primer_compas=2,
+        ultimo_compas=2,
+        repeticiones=3,
+        segundos_de_cuenta_atras=0.7,
+    )
+
+    assert interpretacion.primer_compas == 2
+    assert interpretacion.ultimo_compas == 2
+    assert interpretacion.factor_tempo == 0.5
+    assert interpretacion.repeticiones == 3
+    assert interpretacion.segundos_de_cuenta_atras == 0.7
+
+    hasta_el_final = interpretar(pieza, PERFECTO)
+    assert hasta_el_final.ultimo_compas == 2
+    assert hasta_el_final.primer_compas == 1
+    assert hasta_el_final.factor_tempo == 1.0
+    assert hasta_el_final.repeticiones == 1
+    assert hasta_el_final.segundos_de_cuenta_atras == 0.0
