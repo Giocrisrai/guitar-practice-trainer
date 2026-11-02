@@ -7,6 +7,7 @@ recibe el audio del cable. Si la cuerda sintetica no se parece a una cuerda, el
 detector no la reconoce y la prueba cae.
 """
 
+import re
 import time
 
 import numpy as np
@@ -69,6 +70,19 @@ def proporcion_sobre_todas_las_ventanas(onda: np.ndarray, nota_esperada: str) ->
     return aciertos / total
 
 
+def cents_leidos(onda: np.ndarray) -> list[float]:
+    """Desviacion en cents que el detector real lee en cada ventana con nota."""
+    analizador = Analizador(GUITARRA, frecuencia_muestreo=FS)
+    ventana = GUITARRA.tamano_ventana(FS)
+
+    cents = []
+    for inicio in range(0, len(onda) - ventana + 1, SALTO):
+        resultado = analizador.procesar(onda[inicio : inicio + ventana])
+        if resultado.estado == "nota":
+            cents.append(resultado.cents)
+    return cents
+
+
 def rms(muestras: np.ndarray) -> float:
     """Valor eficaz, la medida de energia de un tramo."""
     return float(np.sqrt(np.mean(np.square(muestras.astype(np.float64)))))
@@ -96,6 +110,23 @@ def test_la_cuerda_suena_a_la_altura_pedida(midi):
     assert proporcion > 0.9, (
         f"Solo el {proporcion:.0%} de las ventanas dio {esperada} para midi {midi}"
     )
+
+
+@pytest.mark.parametrize("midi", ALTURAS)
+def test_la_cuerda_esta_afinada(midi):
+    """La cuerda sintetica no puede salir desafinada, y menos sin motivo.
+
+    Con un anillo de un numero entero de muestras la altura solo cae exacta en
+    las frecuencias que dividen los 48 kHz y el resto salen hasta 10 cents altas.
+    Eso no es inarmonicidad de una cuerda real: es desafinacion, y `cents` y
+    `afinada` del `Analizador` se leen en tareas posteriores y se pintan en
+    pantalla. El retardo fraccionario del lazo es lo que mantiene esto por
+    debajo de 5 cents.
+    """
+    cents = cents_leidos(cuerda_pulsada(midi, 0.6, semilla=1))
+    assert cents, f"El detector no leyo ninguna nota para midi {midi}"
+    peor = max(abs(valor) for valor in cents)
+    assert peor < 5.0, f"midi {midi} sale {peor:.2f} cents desafinado"
 
 
 def test_la_cuerda_decae():
@@ -136,15 +167,39 @@ def test_el_trasteo_ensucia_la_nota():
     ) < proporcion_sobre_todas_las_ventanas(limpia, esperada)
 
 
-def test_el_trasteo_cero_no_toca_la_cuerda_limpia():
+# Las ocho primeras muestras y el valor eficaz de `cuerda_pulsada(50, 0.05,
+# semilla=17)`, medidos sobre la cuerda limpia. Son valores dorados: los unicos
+# de la suite que no se derivan de nada. Existen porque la decision "trasteo=0,0
+# es exactamente la cuerda limpia" no se puede comprobar comparando dos llamadas
+# —las dos pasarian cero y recorrerian el mismo camino— sino solo contra una
+# referencia externa. Si una llamada con el trasteo por defecto deja de dar esto,
+# algo contamino el camino limpio. Para regenerarlos cuando cambie la sintesis a
+# proposito: imprimir `onda[:8].tolist()` y el RMS de esa misma llamada.
+MUESTRAS_DORADAS = (
+    0.554600179195404,
+    -0.5448800921440125,
+    0.0928063616156578,
+    -0.2120203822851181,
+    -0.458141952753067,
+    -0.18350228667259216,
+    -0.11545318365097046,
+    0.17894934117794037,
+)
+RMS_DORADO = 0.2692625431203252
+
+
+def test_el_trasteo_cero_da_exactamente_la_cuerda_limpia():
     """El valor por defecto no puede contaminar al resto de la etapa.
 
     Todos los perfiles del gemelo salvo uno dejan `trasteo` en cero: si con cero
-    se colase algo de ruido o de acortamiento, ensuciaria todas las demas pruebas.
+    se colase algo de ruido o de acortamiento, ensuciaria todas las demas
+    pruebas. El RMS vigila toda la onda y no solo la cabeza, para que un
+    acortamiento del decaimiento tampoco pueda pasar: un trasteo de 0,01, cien
+    veces menor que el que usa la prueba de suciedad, ya mueve las dos medidas.
     """
-    por_defecto = cuerda_pulsada(50, 0.4, semilla=17)
-    explicito = cuerda_pulsada(50, 0.4, trasteo=0.0, semilla=17)
-    assert np.array_equal(por_defecto, explicito)
+    onda = cuerda_pulsada(50, 0.05, semilla=17)
+    assert onda[:8].tolist() == pytest.approx(MUESTRAS_DORADAS, abs=1e-7)
+    assert rms(onda) == pytest.approx(RMS_DORADO, rel=1e-9)
 
 
 @pytest.mark.parametrize("duracion_s", [0.1, 0.5, 2.0])
@@ -161,12 +216,33 @@ def test_la_onda_es_float32_y_mono():
 
 @pytest.mark.parametrize("duracion_s", [0.0, -1.0])
 def test_una_duracion_no_positiva_se_rechaza(duracion_s):
-    with pytest.raises(ValueError, match=str(duracion_s)):
+    with pytest.raises(ValueError, match=re.escape(str(duracion_s))):
         cuerda_pulsada(40, duracion_s)
 
 
-def test_generar_una_nota_es_barato():
+def test_una_nota_mas_corta_que_un_periodo_se_rechaza():
+    """Por debajo de una vuelta del anillo no hay altura, hay ruido.
+
+    No esta en el brief, pero las tareas siguientes generan notas cortas a
+    tempos rapidos y una nota sin altura haria fallar sus pruebas de
+    reconocimiento por el motivo equivocado. Mejor un error que lo diga. El
+    limite es diminuto: un periodo del E2 son 12 ms y uno del C5, 2 ms.
+    """
+    un_periodo_de_e2 = 1.0 / 82.41
+    with pytest.raises(ValueError, match="periodo"):
+        cuerda_pulsada(40, un_periodo_de_e2 * 0.9)
+    # Justo por encima del limite si sale, y sale con la duracion pedida.
+    onda = cuerda_pulsada(40, un_periodo_de_e2 * 1.1)
+    assert len(onda) == int(un_periodo_de_e2 * 1.1 * FS)
+
+
+@pytest.mark.parametrize("midi", [40, 72])
+def test_generar_una_nota_es_barato(midi):
     """La suite genera miles de notas: una de 0,6 s tiene que costar < 5 ms.
+
+    Las dos alturas son los dos extremos del coste: el E2 tiene un anillo de 582
+    muestras y da ~50 vueltas, y el C5 lo tiene de 91 y da ~316, asi que el caso
+    aguda es el que de verdad roza el tope.
 
     Se mide la mediana de varias repeticiones para que una pausa del recolector
     de basura no haga fallar la prueba.
@@ -174,7 +250,9 @@ def test_generar_una_nota_es_barato():
     costes = []
     for indice in range(9):
         inicio = time.perf_counter()
-        cuerda_pulsada(40, 0.6, semilla=indice)
+        cuerda_pulsada(midi, 0.6, semilla=indice)
         costes.append(time.perf_counter() - inicio)
     mediana_ms = float(np.median(costes)) * 1000
-    assert mediana_ms < 5.0, f"Una nota de 0,6 s costo {mediana_ms:.2f} ms"
+    assert mediana_ms < 5.0, (
+        f"Una nota de 0,6 s en midi {midi} costo {mediana_ms:.2f} ms"
+    )

@@ -8,12 +8,22 @@ pasandolo por un promedio de dos muestras. El anillo fija la altura; el promedio
 es un filtro paso bajo que en cada vuelta se come un poco de agudo, y de ahi sale
 sola la envolvente de una cuerda: ataque brillante, cola oscura.
 
-    y[m] = p · y[m-N] + (1-p) · y[m-N+1]
+El anillo no mide un numero entero de muestras. Si midiese `round(fs / f0)`, la
+altura solo podria caer en las frecuencias que dividen exacto los 48 kHz y el
+resto saldrian desafinadas hasta 10 cents, que es desafinacion audible y ademas
+mentira: una guitarra afinada no la tiene. Asi que el retardo del lazo es
+fraccionario, interpolando linealmente entre las dos muestras que rodean el
+periodo exacto. El lazo completo son tres tomas:
 
-con N = max(2, round(fs / f0)) muestras de anillo y p el peso que sale de `brillo`.
+    y[m] = a · y[m-M] + b · y[m-M-1] + c · y[m-M-2]
+
+y su retardo —la suma de cada toma por su peso— se iguala al periodo exacto
+`fs / f0`. Ver `_pesos_del_lazo`.
 """
 
 import numpy as np
+
+from nucleo.musica import midi_a_frecuencia
 
 # Pesos del promedio del anillo. 0,5 es la media simple (el maximo de
 # amortiguacion: anula del todo la frecuencia de Nyquist en cada vuelta) y hacia
@@ -31,11 +41,6 @@ RUIDO_DE_TRASTEO = 0.3
 AMORTIGUACION_DE_TRASTEO = 3.0
 
 
-def frecuencia_de_midi(midi: int, referencia_a4: float = 440.0) -> float:
-    """Frecuencia de una nota MIDI en Hz: f = f_A4 · 2^((midi - 69) / 12)."""
-    return referencia_a4 * 2.0 ** ((midi - 69) / 12.0)
-
-
 def cuerda_pulsada(
     midi: int,
     duracion_s: float,
@@ -49,10 +54,16 @@ def cuerda_pulsada(
 
     Parametros:
         midi: altura de la nota (69 es el La4 de 440 Hz).
-        duracion_s: duracion en segundos, estrictamente positiva.
+        duracion_s: duracion en segundos. Tiene que ser positiva y dar para al
+            menos un periodo de la nota; por debajo de eso el anillo no da ni
+            una vuelta y lo que saldria es ruido sin altura, asi que se rechaza.
         frecuencia_muestreo: muestras por segundo.
         brillo: 0 es la media simple del anillo (la pulsacion mas oscura, la que
             decae mas rapido) y 1 la mas brillante. Se recorta a [0, 1].
+            Atencion: **el 0 es la media simple, no el 0,5**. El filtro del
+            anillo tiene la misma respuesta en magnitud con peso p que con 1-p,
+            asi que un mapa centrado en 0,5 haria que `brillo` 0,1 y 0,9 sonasen
+            exactamente igual. Ver `_peso_del_promedio`.
         fuerza: amplitud de pico exacta de la onda devuelta.
         trasteo: suciedad de la pulsacion, en [0, 1]. Anade ruido de banda ancha
             y acorta el decaimiento. Con 0,0 la cuerda sale exactamente limpia:
@@ -69,19 +80,19 @@ def cuerda_pulsada(
         raise ValueError(f"la duracion tiene que ser positiva, no {duracion_s}")
 
     total = int(duracion_s * frecuencia_muestreo)
-    if total <= 0:
+    periodo = frecuencia_muestreo / midi_a_frecuencia(midi)
+    peso = _peso_del_promedio(brillo)
+    largo_anillo, pesos = _pesos_del_lazo(periodo, peso)
+    if total < largo_anillo:
+        minimo = largo_anillo / frecuencia_muestreo
         raise ValueError(
-            f"la duracion {duracion_s} s a {frecuencia_muestreo} Hz no da ni una muestra"
+            f"la duracion {duracion_s} s no llega a un periodo de la nota midi "
+            f"{midi}: hacen falta al menos {minimo:.4f} s ({largo_anillo} muestras) "
+            f"para que el anillo de una vuelta, y por debajo de eso no hay altura"
         )
 
     generador = np.random.default_rng(semilla)
-    peso = PESO_MINIMO + (PESO_MAXIMO - PESO_MINIMO) * float(np.clip(brillo, 0.0, 1.0))
-    onda = _anillo_de_karplus_strong(
-        largo_anillo=max(2, round(frecuencia_muestreo / frecuencia_de_midi(midi))),
-        total=total,
-        peso=peso,
-        generador=generador,
-    )
+    onda = _anillo_de_karplus_strong(largo_anillo, pesos, total, generador)
 
     if trasteo > 0.0:
         # El ruido del traste y la cuerda que se apaga antes. Las dos cosas van
@@ -95,32 +106,79 @@ def cuerda_pulsada(
     return _normalizada_al_pico(onda, fuerza)
 
 
+def _peso_del_promedio(brillo: float) -> float:
+    """Peso del promedio del anillo a partir de `brillo`, en [0, 1].
+
+    `brillo` = 0 da la media simple (`PESO_MINIMO`) y 1 el promedio que menos
+    filtra (`PESO_MAXIMO`). El mapa es monotono en todo el rango a proposito: la
+    respuesta en magnitud del promedio, |p + (1-p)e^{jω}|, es simetrica al
+    cambiar p por 1-p, asi que un peso de 0,3 suena exactamente igual que uno de
+    0,7 y cualquier mapa centrado en 0,5 dejaria media escala de `brillo`
+    duplicando la otra mitad.
+    """
+    return PESO_MINIMO + (PESO_MAXIMO - PESO_MINIMO) * float(np.clip(brillo, 0.0, 1.0))
+
+
+def _pesos_del_lazo(
+    periodo: float, peso: float
+) -> tuple[int, tuple[float, float, float]]:
+    """Largo entero del anillo y los tres pesos del lazo, para un periodo exacto.
+
+    El lazo encadena dos filtros: el promedio de dos muestras que oscurece la
+    cuerda (pesos `peso` y `1 - peso`, retardo `1 - peso`) y un interpolador
+    lineal que reparte el retardo entre dos muestras vecinas (pesos `1 - δ` y
+    `δ`, retardo `δ`). Convolucionarlos da tres tomas a los retardos M, M+1 y
+    M+2, cuyo retardo total es M + (1 - peso) + δ. Igualarlo al periodo exacto
+    deja M = ⌊periodo - 1 + peso⌋ y δ la parte fraccionaria.
+
+    Se usa el retardo en continua, que para un filtro FIR es Σ k·h[k]; en la
+    frecuencia fundamental el retardo real difiere en centesimas de muestra, muy
+    por debajo del cent.
+    """
+    retardo = max(2.0, periodo - 1.0 + peso)
+    largo_anillo = int(retardo)
+    fraccion = retardo - largo_anillo
+    pesos = (
+        (1.0 - fraccion) * peso,
+        (1.0 - fraccion) * (1.0 - peso) + fraccion * peso,
+        fraccion * (1.0 - peso),
+    )
+    return largo_anillo, pesos
+
+
 def _anillo_de_karplus_strong(
-    largo_anillo: int, total: int, peso: float, generador: np.random.Generator
+    largo_anillo: int,
+    pesos: tuple[float, float, float],
+    total: int,
+    generador: np.random.Generator,
 ) -> np.ndarray:
     """Hace circular un anillo de ruido y devuelve `total` muestras en float64.
 
-    Se recorre por periodos y no muestra a muestra: el bloque de muestras de una
-    vuelta del anillo depende entero del bloque anterior, asi que cada vuelta son
-    dos operaciones de numpy sobre vectores de `largo_anillo` y no `largo_anillo`
-    iteraciones de Python. Para una nota de 0,6 s son ~50 vueltas en lugar de
-    29 000 pasos, que es la diferencia entre microsegundos y decimas de segundo.
+    Se recorre por periodos y no muestra a muestra: las tres tomas del lazo estan
+    a retardos M, M+1 y M+2, todos mayores o iguales que el largo del anillo, asi
+    que un bloque entero de M muestras depende solo de muestras anteriores a el y
+    sale de tres multiplicaciones de numpy. Para una nota de 0,6 s son ~50
+    vueltas en lugar de 29 000 pasos de Python, que es la diferencia entre
+    microsegundos y decimas de segundo.
 
-    El unico detalle del troceo es la ultima muestra de cada bloque: su "siguiente"
-    ya pertenece al bloque nuevo (es su primera muestra, recien calculada), no al
-    viejo.
+    Las dos muestras de prehistoria en cabeza son las que leen las tomas M+1 y
+    M+2 durante la primera vuelta; valen cero y no se devuelven.
     """
+    primera, segunda, tercera = pesos
     vueltas = -(-total // largo_anillo)  # division entera hacia arriba
-    buzon = np.empty(vueltas * largo_anillo, dtype=np.float64)
-    buzon[:largo_anillo] = generador.uniform(-1.0, 1.0, largo_anillo)
+    buzon = np.zeros(2 + vueltas * largo_anillo, dtype=np.float64)
+    buzon[2 : 2 + largo_anillo] = generador.uniform(-1.0, 1.0, largo_anillo)
 
     for vuelta in range(1, vueltas):
-        anterior = buzon[(vuelta - 1) * largo_anillo : vuelta * largo_anillo]
-        actual = buzon[vuelta * largo_anillo : (vuelta + 1) * largo_anillo]
-        actual[:-1] = peso * anterior[:-1] + (1.0 - peso) * anterior[1:]
-        actual[-1] = peso * anterior[-1] + (1.0 - peso) * actual[0]
+        inicio = 2 + vuelta * largo_anillo
+        anterior = inicio - largo_anillo
+        buzon[inicio : inicio + largo_anillo] = (
+            primera * buzon[anterior:inicio]
+            + segunda * buzon[anterior - 1 : inicio - 1]
+            + tercera * buzon[anterior - 2 : inicio - 2]
+        )
 
-    return buzon[:total]
+    return buzon[2 : 2 + total]
 
 
 def _normalizada_al_pico(onda: np.ndarray, fuerza: float) -> np.ndarray:
@@ -129,9 +187,6 @@ def _normalizada_al_pico(onda: np.ndarray, fuerza: float) -> np.ndarray:
     Se divide en float64 y se multiplica ya en float32 para que el pico sobreviva
     al cambio de precision: la muestra mayor vale 1,0 exacto antes de la conversion.
     """
-    pico = float(np.max(np.abs(onda)))
-    if pico == 0.0:
-        return np.zeros(onda.size, dtype=np.float32)
-    normalizada = (onda / pico).astype(np.float32)
+    normalizada = (onda / np.max(np.abs(onda))).astype(np.float32)
     normalizada *= np.float32(fuerza)
     return normalizada
