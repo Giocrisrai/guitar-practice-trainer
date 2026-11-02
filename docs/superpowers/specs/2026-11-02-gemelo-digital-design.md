@@ -266,12 +266,32 @@ El camino rápido, el que corre en la suite. No abre hilos, no duerme, no toca
 ```python
 def pasar_por_la_cadena(
     interpretacion: Interpretacion,
-    pieza: Pieza,
-    seguidor: SeguidorPieza,
+    conductor: ConductorDeEstudio,
     analizador: Analizador | None = None,
     salto: int | None = None,
-) -> EstadoCarril
+) -> RegistroDeLaCadena
 ```
+
+Toma el **conductor** (ver §3.7), no un `SeguidorPieza`: lo que esta etapa viene a
+verificar —el bucle, la cuenta atrás, el informe, la regla del tempo— no vive en
+el seguidor, y un gemelo que solo llegue al seguidor no prueba ninguna de las
+cinco primeras pruebas del §5.
+
+**La ventana y la cadencia son las de producción, y eso no es negociable:** la
+ventana es `perfil.tamano_ventana(fs)` (4096 muestras con guitarra estándar,
+85 ms a 48 kHz) y el salto es `INTERVALO_ANALISIS = 0.021` s, o sea 1008
+muestras (`servidor/sesion.py`). `salto=None` significa exactamente eso. La razón
+es que las constantes del detector están acopladas a esos 21 ms
+—`CUADROS_PARA_NOTA_ESTABLE = 3` son 63 ms a 21 ms y 32 ms a 10,7 ms, y
+`pulsaciones.py` advierte por escrito de que quien cambie la tasa de análisis
+tiene que revisarlas—, así que recorrer el audio a otra cadencia es ejercitar un
+detector que nunca corre: el anti-objetivo del §2 entrando por la otra puerta.
+Las sondas de este diseño usaron un salto de 512 y por eso sus números son
+indicativos, no de referencia.
+
+Una pieza de tres minutos son 180 / 0,021 = 8571 análisis. (La primera versión de
+esta spec decía «94 Hz»: eso era 48000/512, el salto de la sonda, no el de
+producción.)
 
 Recorre las muestras en ventanas solapadas, llama al `Analizador` real, y le
 pasa cada resultado al `SeguidorPieza` real con el instante **virtual** de la
@@ -311,21 +331,67 @@ de sesión completa, con pocas pruebas y lentas.
 
 ```python
 @dataclass(frozen=True)
+class ReporteDeLaCadena:
+    # Una NotaTocada tal y como la cadena la publico, con su vuelta.
+    repeticion: int
+    tocada: NotaTocada
+    instante_pasada_s: float   # el reloj de la pasada cuando se publico
+
+@dataclass(frozen=True)
+class RegistroDeLaCadena:
+    # TODO lo que la cadena reporto, vuelta a vuelta, sin perder nada.
+    reportes: tuple[ReporteDeLaCadena, ...]
+    vueltas: tuple[InformeDePasada, ...]
+    estado_final: EstadoEstudio
+
+@dataclass(frozen=True)
 class Veredicto:
     notas_de_la_pieza: int
-    notas_tocadas: int            # eventos que el intérprete generó
-    perdidas: tuple[int, ...]     # índices tocados que la cadena no reportó
-    inventadas: int               # reportadas que nadie tocó
-    mal_adjudicadas: tuple[tuple[int, int], ...]  # (pretendido, reportado)
-    desfase_introducido_ms: float  # mediana de |reportado - real|
+    notas_tocadas: int             # eventos que el interprete genero
+    perdidas: tuple[tuple[int, int], ...]   # (vuelta, indice) no reportados
+    inventadas: int                # reportadas que nadie toco
+    mal_adjudicadas: tuple[tuple[int, int, int], ...]  # (vuelta, pretendido, reportado)
+    excluidas: tuple[tuple[int, int], ...]  # (vuelta, indice) que no se juzgan
+    desfase_introducido_ms: float  # mediana de (reportado - real), CON signo
     desfase_maximo_ms: float
 
 def juzgar(
     interpretacion: Interpretacion,
-    estado: EstadoCarril,
-    tolerancia_ms: float = 15.0,
+    registro: RegistroDeLaCadena,
+    tolerancia_de_emparejamiento_ms: float = 120.0,
 ) -> Veredicto
 ```
+
+**Por qué un registro y no un `EstadoCarril`.** `EstadoCarril.tocadas` solo trae
+lo que el seguidor lleva sin volcar, y `cerrar_repeticion` lo vacía en cada
+vuelta: al acabar cuatro repeticiones, el estado final solo conoce la última. Y
+los índices se repiten vuelta a vuelta, así que «se perdió la nota 11» no
+distingue «en la vuelta 3» de «en todas». El registro lo recoge la cadena directa
+mientras pasa, que es el único momento en que esa información existe.
+
+**`tolerancia_de_emparejamiento_ms = 120`, no 15.** Es holgura de
+EMPAREJAMIENTO, no de calidad: su trabajo es decidir si el reporte X habla del
+ataque Y, y el detector firma un onset hasta 250 ms después del ataque, con la
+mediana de 5 del `Suavizador`, `ESPERA_ESTABILIZACION_S = 0,060` y tres cuadros
+de racha estable por delante. Con 15 ms casi toda nota saldría «perdida» y el
+oráculo sería rojo por construcción: la prueba habría medido la tolerancia, no la
+cadena.
+
+**El oráculo NO afirma `desfase_introducido_ms == 0`.** Hay un suelo real y no
+nulo que ningún perfil puede anular, el de los retardos de arriba. La primera
+tarea del plan es MEDIRLO sobre el oráculo e inscribir el número medido en la
+prueba, con margen. Escribir la aserción suponiendo cero es como se empieza una
+etapa con una prueba roja que no delata ningún defecto y que se «arregla»
+tocando la cadena buena.
+
+**Las notas repetidas se EXCLUYEN, como los acordes, y se declara.**
+`DetectorPulsaciones` declara por escrito que no distingue dos pulsaciones
+seguidas de la misma nota sin un hueco de tres cuadros sin nota creíble, y una
+cuerda que sigue sonando puede no abrir ese hueco nunca. Si el veredicto las
+juzgara, el oráculo saldría rojo por una limitación aceptada del programa en vez
+de por un defecto, y el ejecutable del §4 saldría siempre con error. Van a
+`excluidas`, con el mismo argumento que los acordes: no es un fallo del alumno,
+es un límite del programa. Cerrar esa limitación del detector no es esta etapa.
 
 `juzgar` no importa nada de `seguimiento.py` salvo los tipos que lee. No
 reimplementa la ventana de acierto ni la clasificación: compara eventos con
@@ -341,6 +407,108 @@ reportada 8 ms después de sonar es la misma nota, y el gemelo lo anota en
 
 Los cuatro perfiles de fábrica y nada más, para que `interprete.py` no cargue con
 constantes y para que una prueba pueda añadir el suyo sin tocar el módulo.
+
+### 3.7 `nucleo/piezas/conductor.py` — la política del estudio, sacada del servidor
+
+**(mía, y es la decisión que más cambia el tamaño de esta etapa.)**
+
+La política que de verdad decide cómo se estudia no está en `nucleo/`: está en
+`SesionCarril` (`servidor/piezas.py`). Ahí viven `_observar`, `_mirar` con su
+`TECHO_TRAMO_S = 0,100`, `_sin_cuadros` con `ESPERA_SIN_CUADROS_S`, y
+`_cerrar_lo_que_termino`, que es quien detecta la transición de vuelta, llama a
+`cerrar_repeticion`, anota en el `HistorialDeEstudio` y aplica `factor_sugerido`.
+Es decir: **los cuatro primeros defectos del §8 viven en código del servidor**, y
+`nucleo/gemelo/` no puede importar de `servidor/` (regla del proyecto).
+
+Las dos salidas posibles eran malas:
+
+- Que la cadena directa reimplemente esa política para poder correr sin FastAPI.
+  Entonces el gemelo valida una política paralela, y el riesgo del §10 —«la
+  cadena directa puede divergir de la real»— se materializa exactamente en el
+  código que la etapa viene a arreglar. Es el anti-objetivo del §2 con otro
+  disfraz: el gemelo se daría la razón.
+- Que el gemelo llegue solo hasta `SeguidorPieza`. Entonces las pruebas 2, 3, 4 y
+  5 del §5 no son ejecutables en el nivel rápido y caen todas al nivel lento,
+  que esta spec quiere mínimo. O sea: la etapa no verificaría el bucle, que es su
+  motivo.
+
+Así que **se extrae**. `ConductorDeEstudio` se lleva de `SesionCarril` la política
+del reloj y del cierre de vueltas, sin FastAPI, sin WebSocket y sin audio:
+
+```python
+class ConductorDeEstudio:
+    def __init__(
+        self,
+        estudio: SesionDeEstudio,
+        historial: HistorialDeEstudio | None = None,
+        al_cambiar_repeticion: Callable[[EstadoEstudio], None] | None = None,
+        techo_tramo_s: float = TECHO_TRAMO_S,
+        espera_sin_cuadros_s: float = ESPERA_SIN_CUADROS_S,
+    ) -> None: ...
+
+    def observar(self, resultado: ResultadoAnalisis, instante_analisis: float) -> EstadoEstudio: ...
+    def mirar(self, ahora: float, senal_ausente: bool) -> EstadoEstudio: ...
+    @property
+    def vueltas_cerradas(self) -> tuple[InformeDePasada, ...]: ...
+```
+
+El click **no** entra: se queda en el servidor, enganchado a
+`al_cambiar_repeticion`. Esa es la línea que mantiene a `nucleo/` libre del
+dispositivo de sonido, que es una regla que ya existe y que la etapa 3c cumple
+igual (`estudio.py` lo dice en su primera página: «NO ABRE AUDIO»).
+
+Después de la extracción, `SesionCarril` se queda con lo que de verdad es del
+servidor: HTTP, WebSocket, el click, el espejo del estado y la pausa por falta de
+señal.
+
+**Lo que esto cuesta, dicho en claro.** Es un refactor de `servidor/piezas.py`
+(898 líneas) con 1734 líneas de pruebas vivas en `tests/test_app_estudio.py` que
+tienen que seguir pasando sin tocarlas. No es gratis y no es lo que el usuario
+pidió: él pidió un gemelo. Lo hago porque sin esto el gemelo no puede juzgar el
+bucle, y juzgar el bucle es para lo que existe. **Si el usuario prefiere no
+mover el servidor, la alternativa honesta es renunciar a las pruebas 2 a 5 en el
+nivel rápido y aceptar un gemelo que solo llega al seguidor**; está a tiempo de
+decirlo y es una vuelta atrás de una tarea, no de la etapa.
+
+### 3.8 Lo que el dispositivo simulado hace cuando se acaba el audio
+
+Tres caminos distintos en `Sesion`, y el documento no elegía ninguno:
+
+- Si el stream deja de empujar bloques, `total_capturado` se congela y a los 0,5 s
+  (`TIEMPO_SIN_MUESTRAS_SILENCIO`) se publica silencio; a los 5 s
+  (`SEGUNDOS_SIN_SENAL`) el carril se pausa por falta de señal.
+- Si el dispositivo desaparece de `listar`, el hilo cierra la captura y la señal
+  se da por ausente **de inmediato**.
+
+**Decisión (mía): el stream sigue empujando silencio indefinidamente y el
+dispositivo nunca desaparece de `listar`.** Es lo que hace un cable enchufado a
+una guitarra que nadie toca, es el único camino en que las últimas notas llegan a
+cobrarse antes de que algo pause la pasada, y es la condición para que la prueba
+8 del §5 pueda afirmar «veredicto limpio».
+
+Y `StreamSimulado` tiene que cumplir el contrato entero, no solo
+`start/stop/close`: `CapturaAudio.latencia_ms` lee `self._stream.latency`, así
+que sin ese atributo el diagnóstico reventaría la primera vez que alguien lo
+pidiera. Expone `latency` con un valor plausible y declarado.
+
+El ejecutable del §4 **no termina solo**: imprime el veredicto cuando la pasada
+se completa y se queda vivo, porque su razón de ser es que el usuario mire. Con
+`--salir-al-acabar` termina y devuelve el código de salida, que es la forma de
+usarlo desde un script.
+
+### 3.9 Cómo suena cada nota
+
+`EventoTocado` gana `duracion_s`. La nota se renderiza por su figura escrita y se
+deja decaer, pero **el intérprete nunca solapa dos notas consecutivas por su
+cuenta**: corta la anterior al 85 % del hueco hasta la siguiente. La razón está
+medida en el §10: las colas que se solapan generan ataques fantasma, y un gemelo
+que los produzca sin querer acusará a la cadena de inventarse notas que en
+realidad se inventó él.
+
+Producirlos **a propósito** sí es parte del gemelo: `PerfilDeDestreza` gana
+`sustain` (0 corta siempre, 1 deja sonar la figura entera), y el perfil `CAOS` lo
+lleva alto. Así el fantasma se puede provocar, medir y nombrar en una prueba que
+dice lo que hoy pasa, sin pretender arreglarlo aquí.
 
 ## 4. La sesión completa
 
@@ -359,7 +527,11 @@ Qué hace:
 3. Arranca el servidor de verdad en el puerto 8420 con `Sesion(crear_captura=...,
    listar=...)` apuntando al dispositivo simulado.
 4. Llama a los endpoints de la 3c (`/api/piezas/plan`, `iniciar`) como los
-   llamaría la interfaz.
+   llamaría la interfaz, con `urllib.request` de la biblioteca estándar: `httpx`
+   está en el grupo `dev` del `pyproject.toml`, no en las dependencias de
+   ejecución, y usarlo aquí rompería el §7. El servidor sí se levanta de verdad
+   con `uvicorn`, que sí es dependencia de ejecución, porque la razón de ser de
+   este módulo es que el navegador del usuario se conecte a él.
 5. Imprime el veredicto al terminar, y sale con código distinto de cero si hay
    notas perdidas o inventadas.
 
@@ -385,8 +557,14 @@ Lo que el gemelo hace posible y hoy no existe:
 5. **La regla del tempo.** Perfil perfecto dos pasadas: el tempo sube. Perfil
    malo: no sube.
 6. **El trasteo no cuenta como acierto limpio.**
-7. **El gemelo contra la guitarra real** (se salta sin grabaciones): misma nota
-   detectada, decaimiento del mismo orden.
+7. **El gemelo contra la guitarra real** (se salta sin grabaciones): el detector
+   le da la misma nota a los dos, la proporción de ventanas acertadas del gemelo
+   no es MAYOR que la de la grabación real más 0,10 —si el gemelo es más fácil
+   que la guitarra, se quiere saber, y esa es la forma de preguntarlo—, y el
+   tiempo hasta que la energía cae a la mitad queda dentro de un factor 2 del de
+   la grabación. Hoy `tests/audio/` está vacío salvo `.gitkeep` y la prueba se
+   salta siempre; las tolerancias están escritas ahora para que el día que
+   existan las grabaciones nadie las elija a conveniencia de lo que salga.
 8. **La sesión completa, a tiempo real** (marcada lenta): una pieza corta
    atraviesa `Sesion`, el servidor y el WebSocket, y el veredicto sale limpio.
    Pocas, porque cuestan segundos de reloj.
@@ -443,6 +621,39 @@ aquí:
    central de la 3c -«machacar el compás que fallé»- y está roto de una forma que
    1039 pruebas no ven, porque todas las del bucle usan dobles que avanzan el
    reloj a mano.
+   **Cómo se arregla (mía).** Son dos causas, no una, y la segunda solo la vio la
+   sonda:
+
+   - **El exceso perdido.** `_dar_la_vuelta` llama a `avanzar_a(inicio)` y tira el
+     exceso con que el reloj cruzó el final. El audio de la vuelta siguiente
+     empieza donde tocaba, pero el reloj empieza re-anclado, y la diferencia se
+     acumula vuelta a vuelta: son los ~18 ms por vuelta de la tabla. Se arregla
+     dando la vuelta a `inicio + exceso` en vez de a `inicio`: el reloj conserva
+     lo que ya había corrido, que es lo único que mantiene las dos líneas de
+     tiempo juntas.
+   - **La nota de la frontera.** `avanzar_a` deja `_analisis_desde` sin fijar y
+     `_adjudicar` descarta por contrato los onsets anteriores al primer cuadro
+     posterior al salto; el detector firma hasta 250 ms después, así que la última
+     nota de cada vuelta cae siempre en ese agujero. La salida que usó la 3c sin
+     bucle —APLAZAR la recolocación— aquí no sirve: la vuelta tiene que darse a
+     tiempo o deja de ser música.
+
+     De las tres opciones posibles elijo **retener las pulsaciones en vuelo y
+     volcarlas al informe de la vuelta que cierra**, sin cirugía en
+     `seguimiento.py`. Es la que no toca el módulo que el propio código declara
+     el más delicado del proyecto, y la que deja la semántica donde pertenece.
+
+     **La semántica, dicha en claro: una nota pertenece a la vuelta en que se
+     ATACÓ, no a la vuelta en que el detector la resolvió.** Una nota atacada 50
+     ms antes del final del tramo cuenta en la vuelta que cierra, aunque su onset
+     se firme ya dentro de la vuelta nueva. Es lo que diría cualquiera mirando sus
+     propios dedos, y la alternativa —cobrarla en la vuelta que abre— le regala a
+     la vuelta nueva una nota que no tocó en ella y se la roba a la que la pagó.
+
+   El defecto 4 (`peores_compases` no multiplica por `repeticiones`) **no cae por
+   sí solo** con esta elección: sigue siendo un arreglo independiente, y por eso
+   está en la lista con su propio número.
+
 2. El historial, `peores_compases` y la regla del tempo pierden la nota del final
    cuando el detector la firma tras el tick del WebSocket.
 3. Durante esos 250 ms, `indice_actual` y el contador de progreso delatan el
