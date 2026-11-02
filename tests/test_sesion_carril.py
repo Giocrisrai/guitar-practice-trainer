@@ -5,9 +5,14 @@ a mano. Tampoco se abre ningun dispositivo de audio: la sesion de audio es un
 doble con las tres cosas que `SesionCarril` le pide.
 """
 
+import threading
+
 import pytest
 
 from nucleo.analisis.pipeline import ResultadoAnalisis
+from nucleo.piezas.conductor import ESPERA_SIN_CUADROS_S as ESPERA_DEL_NUCLEO
+from nucleo.piezas.conductor import TECHO_TRAMO_S as TECHO_DEL_NUCLEO
+from nucleo.piezas.estudio import PlanDePasada
 from nucleo.piezas.modelo import NotaEnPieza, Pieza
 from servidor.configuracion import Configuracion
 from servidor.piezas import (
@@ -768,3 +773,88 @@ def test_desenchufar_con_el_carril_en_marcha_lo_pausa_por_captura_cerrada():
     finally:
         sesion_carril.detener()
         real.detener()
+
+
+def test_las_constantes_del_reloj_se_siguen_leyendo_del_servidor():
+    """Se mudaron al nucleo en la etapa 3d y aqui se leen donde estaban.
+
+    Este archivo las importa de `servidor.piezas` desde la etapa 3a y las usa en
+    media docena de pruebas: reexportarlas es lo que impide que un cambio de
+    domicilio rompa a quien las lea, y esta prueba es lo que impide que la
+    reexportacion se caiga sin que nadie se entere.
+    """
+    assert TECHO_TRAMO_S is TECHO_DEL_NUCLEO
+    assert ESPERA_SIN_CUADROS_S is ESPERA_DEL_NUCLEO
+
+
+def candado_tomado(candado) -> bool:
+    """Si ese candado esta tomado ahora mismo. No espera a nadie.
+
+    Se pregunta desde OTRO hilo a proposito: un `RLock` se deja tomar otra vez
+    por el hilo que ya lo tiene, asi que preguntarselo desde el hilo que lo tomo
+    diria siempre "libre" y la prueba no comprobaria nada.
+    """
+    ajeno = []
+
+    def intentar():
+        tomado = candado.acquire(blocking=False)
+        ajeno.append(not tomado)
+        if tomado:
+            candado.release()
+
+    hilo = threading.Thread(target=intentar)
+    hilo.start()
+    hilo.join()
+    return ajeno[0]
+
+
+def test_el_oyente_del_click_toma_el_candado_del_carril():
+    """El oyente del click se protege a si mismo, venga el aviso de donde venga.
+
+    `_ajustar_click` lee y escribe `_metronomo`, `_clave_del_click` y `_pausado`,
+    que son de esta clase y los lee el hilo HTTP. Cuando el aviso de la vuelta
+    llegaba desde `estado()`, el candado estaba tomado por casualidad -lo tenia
+    ese hilo-, y eso bastaba mientras el carril fuera el unico que conducia la
+    pasada. Ya no lo es: el gemelo digital conduce `ConductorDeEstudio.mirar`
+    directamente, sin ningun candado de este servidor por encima, y el conductor
+    avisa con el suyo SUELTO a proposito (si avisara con el tomado, un oyente que
+    tomara este invertiria el orden de las tomas y plantaria el servidor). Por ese
+    camino el oyente se quedaba sin exclusion ninguna.
+
+    Se comprueba en dos mitades, porque son dos cosas que pueden romperse por
+    separado: que lo que el conductor tiene enganchado es la version que toma el
+    candado, y que esa version lo toma de verdad. Mira dos campos privados -el
+    oyente del conductor y el candado del carril- porque el contrato es
+    justamente interno: si se comprobara solo por fuera, volveria a cumplirse por
+    casualidad, que es lo que esta prueba existe para impedir.
+    """
+    reloj = RelojFalso()
+    sesion_carril, sesion = carril(reloj)
+    estado_inicial = sesion_carril.iniciar(
+        pieza_de([40, 41, 42, 43]),
+        PlanDePasada(en_bucle=True, compases_de_cuenta_atras=0),
+    )
+    assert estado_inicial["repeticion"] == 1
+    try:
+        conductor = sesion_carril._conductor
+        # Mitad 1: el enganche. `__func__` porque lo enganchado es un metodo ya
+        # ligado a esta instancia.
+        assert (
+            conductor._al_cambiar_repeticion.__func__
+            is SesionCarril._ajustar_click_bajo_candado
+        )
+        # Mitad 2: la exclusion. Se llama al oyente como lo llamaria el conductor
+        # -desde un hilo sin ningun candado de este servidor tomado, que es el
+        # caso del gemelo- y se mira desde dentro si el candado esta tomado.
+        tomado = []
+        sesion_carril._ajustar_click = lambda estado: tomado.append(
+            candado_tomado(sesion_carril._candado)
+        )
+        assert candado_tomado(sesion_carril._candado) is False, (
+            "nadie deberia tener el candado antes del aviso"
+        )
+        conductor._al_cambiar_repeticion(sesion_carril._estudio.estado)
+        assert tomado == [True]
+    finally:
+        sesion_carril.detener()
+        sesion.detener()

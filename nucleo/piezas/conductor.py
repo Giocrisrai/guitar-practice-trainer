@@ -181,6 +181,18 @@ class ConductorDeEstudio:
         # reanudar todavia cae en la rama "sin cuadros" y le recoloca el reloj al
         # seguidor antes de que vuelva a comer audio. Es lo que hace falta.
         self._ultimo_cuadro: float | None = None
+        # Y cuando llego el ultimo cuadro en el reloj del ANALISIS, que es el que
+        # lo acompaña. None es "ninguno todavia".
+        #
+        # Son dos sellos del mismo hecho en dos relojes, y los dos hacen falta
+        # porque las dos preguntas son distintas: la mirada pregunta "¿puedo mover
+        # el reloj a mano?" y la hace en el reloj de quien conduce, que es el unico
+        # que tiene cuando no llegan cuadros; `observar` pregunta "¿hubo un hueco
+        # de audio?" y la hace en el reloj de los cuadros, que es el unico que
+        # tiene dentro de un cuadro. En produccion los dos son `time.monotonic()`
+        # y miden el mismo intervalo; preguntar en el reloj equivocado es lo que
+        # dejaba el hueco abierto (ver `observar`).
+        self._ultimo_analisis: float | None = None
         # Si el reloj esta congelado por falta de señal. Es la mitad de la pausa
         # que SI es del nucleo -el reloj quieto-; que ademas se publique, se
         # dibuje o se cuente como un estado del servidor no es cosa de aqui.
@@ -259,12 +271,17 @@ class ConductorDeEstudio:
         por separado (`mover_el_reloj`, `cerrar_lo_que_termino`) porque el camino
         del audio solo necesita el primero: cerrar una vuelta puede acabar en un
         callback de quien conduce, y el hilo del analisis no es sitio para eso.
+
+        El aviso de la vuelta sale FUERA del candado de esta clase. Ver
+        `_avisar_de_la_repeticion`: no es un detalle de implementacion sino lo
+        que impide un abrazo mortal con el oyente.
         """
         with self._candado:
             self.mover_el_reloj(ahora, senal_ausente)
             estado = self._estudio.estado
-            self.cerrar_lo_que_termino(estado)
-            return estado
+            aviso = self._cerrar(estado)
+        self._avisar_de_la_repeticion(aviso)
+        return estado
 
     def observar(
         self, resultado: ResultadoAnalisis, instante_analisis: float
@@ -279,6 +296,13 @@ class ConductorDeEstudio:
         con el mismo instante (es lo que hace el servidor en su observador), asi
         que la mirada es ese instante. Sin ninguna mirada todavia se usa el reloj
         del analisis, que en produccion es el mismo `time.monotonic()`.
+
+        Pero el hueco de audio NO se decide con esa mirada, o se decidiria con un
+        reloj que puede estar viejo: se decide tambien en el reloj de los cuadros
+        (`_hueco_de_audio`), que es el que `observar` tiene siempre de primera
+        mano. El servidor mira antes de cada cuadro y las dos preguntas le dan lo
+        mismo; quien meta cuadros sin mirar -el gemelo digital- se quedaba sin la
+        unica que podia ver el hueco, y el apagon entero le entraba en la pieza.
 
         Con el reloj congelado por falta de señal el cuadro NO llega al estudio.
         No es un detalle: con el cable enchufado y callado los cuadros de silencio
@@ -312,9 +336,10 @@ class ConductorDeEstudio:
                 return self._estudio.estado
             mirada = self._ultima_mirada
             ahora = instante_analisis if mirada is None else mirada
-            if self._sin_cuadros(ahora):
+            if self._sin_cuadros(ahora) or self._hueco_de_audio(instante_analisis):
                 self._estudio.congelar_en(self._instante)
             self._ultimo_cuadro = ahora
+            self._ultimo_analisis = instante_analisis
             # El espejo del reloj NO se actualiza con el cuadro, y es a proposito:
             # lo adopta la mirada (`mover_el_reloj`), que es quien lo lee. Si se
             # actualizara aqui, una señal que se fuera justo despues congelaria el
@@ -389,6 +414,28 @@ class ConductorDeEstudio:
             # saltaba hacia delante al acabar cada cuenta atras.
             self._instante = estudio.estado.carril.instante_s
 
+    def _hueco_de_audio(self, instante_analisis: float) -> bool:
+        """Si entre el cuadro anterior y este hay un hueco, medido en SU reloj.
+
+        Es la misma pregunta que `_sin_cuadros` y el mismo umbral, pero hecha en
+        el reloj del ANALISIS, que es el unico que `observar` tiene de su cosecha.
+        Hacen falta las dos porque `_sin_cuadros` mide contra la ultima MIRADA, y
+        un conductor al que se le meten cuadros sin mirar entre medias -el gemelo
+        digital- tiene esa mirada vieja y no ve el hueco: con 5 s de apagon y sin
+        mirada por medio, el cabezal se iba a 5 s. Medido.
+
+        Y es ademas el reloj correcto para la pregunta de fondo, que es si puede
+        quedar una pulsacion EN VUELO: la ventana del detector
+        (`VENTANA_ATAQUE_COMO_ONSET_S`) esta medida en el reloj del analisis, y es
+        contra el contra el que la mide `SesionDeEstudio._ataques_en_vuelo`. Sin
+        cuadros durante esa ventana no hay nada que resolver, asi que recolocar el
+        reloj no le quita una nota a nadie.
+        """
+        return (
+            self._ultimo_analisis is None
+            or instante_analisis - self._ultimo_analisis >= self._espera_sin_cuadros_s
+        )
+
     def _sin_cuadros(self, ahora: float) -> bool:
         """Si el seguidor lleva tanto sin recibir audio que se le puede mover el
         reloj a mano sin costarle una pulsacion. Ver `ESPERA_SIN_CUADROS_S`."""
@@ -424,14 +471,28 @@ class ConductorDeEstudio:
         El aviso de la repeticion nueva (`al_cambiar_repeticion`) sale AL FINAL,
         con el plan ya movido si habia que moverlo: quien escuche quiere saber
         contra que tempo se vuelve a empezar, y en el servidor ese oyente es el
-        click.
+        click. Y sale con el candado de esta clase ya SUELTO (ver
+        `_avisar_de_la_repeticion`), que es lo que permite que el oyente tome el
+        suyo sin invertir el orden de las tomas.
+        """
+        with self._candado:
+            aviso = self._cerrar(estado)
+        self._avisar_de_la_repeticion(aviso)
+
+    def _cerrar(self, estado: EstadoEstudio) -> EstadoEstudio | None:
+        """El cuerpo de `cerrar_lo_que_termino`. BAJO candado.
+
+        Devuelve el estado del que hay que avisar -el de la vuelta nueva- o None
+        si no hay de que avisar. Lo devuelve en vez de avisar el mismo para que el
+        aviso pueda salir con el candado suelto, que es el contrato que
+        `_avisar_de_la_repeticion` explica.
         """
         with self._candado:
             estudio = self._estudio
             termino = estado.tramo_terminado and not self._termino_anunciado
             dio_la_vuelta = estado.repeticion != self._repeticion_anunciada
             if not termino and not dio_la_vuelta:
-                return
+                return None
             self._termino_anunciado = estado.tramo_terminado
             self._repeticion_anunciada = estado.repeticion
             # Al dar la vuelta, `_dar_la_vuelta` ya cerro la repeticion por dentro
@@ -442,13 +503,12 @@ class ConductorDeEstudio:
                 estudio.ultima_vuelta if dio_la_vuelta else estudio.cerrar_repeticion()
             )
             if informe is None:
-                return
+                return None
             self._historial.anotar(informe)
             self._vueltas_cerradas += (informe,)
             if estudio.plan.tempo_automatico:
                 self._mover_el_tempo(estudio)
-            if dio_la_vuelta:
-                self._avisar_de_la_repeticion(estado)
+            return estado if dio_la_vuelta else None
 
     def _mover_el_tempo(self, estudio: SesionDeEstudio) -> None:
         """Pregunta al historial por el factor de la pasada siguiente y lo aplica.
@@ -471,16 +531,33 @@ class ConductorDeEstudio:
         else:
             self._factor_sugerido = sugerido
 
-    def _avisar_de_la_repeticion(self, estado: EstadoEstudio) -> None:
-        """Le cuenta a quien conduce que la repeticion cambio. Bajo candado.
+    def _avisar_de_la_repeticion(self, estado: EstadoEstudio | None) -> None:
+        """Le cuenta a quien conduce que la repeticion cambio. SIN candado.
 
-        Va bajo candado a proposito, y no por descuido: en el servidor el oyente
-        es el click, que se ajusta siempre bajo el mismo candado que el reloj, y
-        soltarlo aqui dejaria que el estado se moviera entre el aviso y lo que el
-        oyente haga con el. El precio es que un oyente lento retiene el candado,
-        que es el mismo trato que ya tenia en `SesionCarril`.
+        **El oyente se protege a si mismo, y este contrato es la mitad de la
+        razon de que esta clase exista.** El conductor no le presta su exclusion a
+        nadie: avisa con el candado ya suelto, asi que un oyente que toque estado
+        compartido tiene que tomar el suyo. El del servidor lo hace
+        (`SesionCarril._ajustar_click_bajo_candado`).
+
+        Por que no al contrario, que seria lo comodo: si el aviso saliera con este
+        candado tomado, un oyente que tomara el suyo invertiria el orden de las
+        tomas -el hilo HTTP toma el del carril y luego el del conductor; el hilo
+        que conduce tomaria el del conductor y luego el del carril- y los dos
+        hilos se quedarian esperandose. El abrazo mortal no es hipotetico: el
+        gemelo digital conduce `mirar` y `observar` DIRECTAMENTE, sin ningun
+        candado de servidor por encima, que es justo el caso que esta clase se
+        extrajo para permitir.
+
+        El precio es que el estado puede moverse entre el cierre y el aviso si dos
+        hilos conducen el mismo conductor. Por eso el aviso lleva el estado de la
+        vuelta DENTRO, en vez de pedirle al oyente que lo vuelva a leer: lo que el
+        oyente recibe es la foto del momento en que la vuelta se cerro.
+
+        `None` es "no hay de que avisar", y asi quien cierra no tiene que
+        preguntarse si hubo vuelta: lo dice el valor.
         """
-        if self._al_cambiar_repeticion is not None:
+        if estado is not None and self._al_cambiar_repeticion is not None:
             self._al_cambiar_repeticion(estado)
 
     def cambiar_plan(self, plan: PlanDePasada) -> EstadoEstudio:

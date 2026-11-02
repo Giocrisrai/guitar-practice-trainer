@@ -20,8 +20,8 @@ Reparto de trabajo con el nucleo, que es lo que explica todo lo demas:
   sabe nada de cables.
 
 Al conductor se le dan dos avisos y nada mas: `mirar(ahora, ausente)` cuando pasa
-tiempo de pared y `observar(cuadro, instante)` cuando llega audio. Lo que decida
-se adopta (`_instante`) y se publica.
+tiempo de pared y `observar(cuadro, instante)` cuando llega audio. El estado que
+devuelve es lo que se publica.
 
 Dos pausas, y tampoco se mezclan: `pausado` es "no llega senal del cable" y la
 decide esta clase mirando el audio; `en_pausa` la decide el usuario y la lleva la
@@ -120,9 +120,15 @@ class SesionCarril:
     - El del ANALISIS, que acompaña a cada cuadro de audio, llega al estudio tal
       cual (`procesar`), porque sus esperas estan medidas en el.
 
-    `self._instante` NO es la cuenta de esta clase: es el ESPEJO del reloj del
-    estudio, que es la verdad, adoptado del conductor tras cada aviso (ver
-    `_mirar`).
+    `self._instante` NO es la cuenta de esta clase y hoy ya no es de nadie: es un
+    espejo del reloj del conductor que se adopta tras cada aviso y que ningun
+    codigo de produccion lee. Lo que se publica sale del `EstadoEstudio` que
+    devuelve el conductor, no de aqui. Se queda porque su unico lector vivo es
+    `tests/test_sesion_carril.py`, que lo usa para afirmar que la pausa por falta
+    de señal deja el cabezal quieto, y porque es barato: una asignacion por aviso
+    a cambio de que esa prueba pueda mirar el reloj desde fuera. Si algun dia
+    estorba, lo que hay que hacer es cambiar esa prueba por una que lea el estado
+    publicado, no borrar el campo por detras.
 
     En produccion los dos son `time.monotonic()`; el reloj se inyecta para que las
     pruebas lo muevan a mano, y debe ser monotonico.
@@ -198,7 +204,12 @@ class SesionCarril:
         # adivinar, y dos piezas del mismo tamaño -tocar dos veces la misma
         # escala- se confundian: salia el resumen de la anterior sobre la nueva.
         self._arranque = ARRANQUE_NINGUNO
-        self._candado = threading.Lock()
+        # Reentrante, y no por comodidad: el oyente que el conductor avisa al dar
+        # la vuelta el bucle (`_ajustar_click_bajo_candado`) toma este candado el
+        # mismo, y en el camino del WebSocket ese aviso llega con el ya tomado por
+        # este hilo -`estado()` lo tiene cuando llama al conductor-. Con un `Lock`
+        # pelado eso es un abrazo mortal consigo mismo.
+        self._candado = threading.RLock()
         # Candado de arranque y parada, aparte del otro. Sin el, dos `iniciar()`
         # a la vez desde el hilo HTTP pueden registrar el observador dos veces y
         # `quitar_observador` solo quita uno, asi que quedaria un observador
@@ -207,8 +218,8 @@ class SesionCarril:
         self._candado_arranque = threading.RLock()
         # El ESPEJO del reloj de la pieza y la pausa por falta de señal, las dos
         # bajo `_candado`. El reloj de verdad lo lleva el conductor -y antes de
-        # el, la sesion de estudio-; esto es lo que esta clase publica, y se
-        # adopta tras cada aviso.
+        # el, la sesion de estudio-; esto se adopta tras cada aviso y no lo lee
+        # nadie en produccion (ver el docstring de la clase).
         #
         # La pausa se queda aqui porque es un concepto del SERVIDOR: el nucleo no
         # sabe nada de cables y el conductor solo sabe que tiene el reloj
@@ -280,10 +291,15 @@ class SesionCarril:
                 # lo demas (el tempo nuevo, la pausa, el fin del tramo) y lo que
                 # hace que llamarlo dos veces en la vuelta no cueste nada: con la
                 # misma clave no reabre nada.
+                #
+                # Y se engancha la version QUE TOMA EL CANDADO, porque el aviso
+                # puede llegar de un hilo que no sea el del WebSocket: quien
+                # conduzca el conductor directamente -el gemelo digital- avisa sin
+                # ningun candado de este servidor por encima.
                 self._conductor = ConductorDeEstudio(
                     self._estudio,
                     historial=self._historial,
-                    al_cambiar_repeticion=self._ajustar_click,
+                    al_cambiar_repeticion=self._ajustar_click_bajo_candado,
                 )
                 self._arranque += 1
                 # NO cero: con un plan que empieza en el compas 5 el cabezal
@@ -447,8 +463,9 @@ class SesionCarril:
 
         Lo que queda aqui son las dos cosas que no son del nucleo: `_pausado`, que
         es la falta de señal como estado publicable -el nucleo no sabe nada de
-        cables-, y `_instante`, el espejo del reloj que lee el WebSocket. El
-        conductor tiene el suyo y es la verdad; esto lo adopta.
+        cables, y esto si lo lee la instantanea-, y `_instante`, que es un espejo
+        del reloj del conductor que hoy solo lee una prueba (ver el docstring de
+        la clase). El reloj de verdad es el del conductor; esto lo copia.
         """
         conductor = self._conductor
         if conductor is None:
@@ -512,6 +529,25 @@ class SesionCarril:
             "factor_sugerido": self._conductor.factor_sugerido,
             "arranque": self._arranque,
         }
+
+    def _ajustar_click_bajo_candado(self, estado: EstadoEstudio) -> None:
+        """El oyente que el conductor avisa al dar la vuelta el bucle.
+
+        Existe para no depender de quien llame. El conductor avisa SIN su candado
+        -tiene que ser asi: si avisara con el tomado y este metodo tomara el de
+        aqui, los dos candados se tomarian en ordenes distintos segun el hilo y se
+        plantaria el servidor-, asi que la exclusion de `_ajustar_click` la toma
+        este metodo y no se hereda de nadie. `_metronomo`, `_clave_del_click` y
+        `_pausado` son de esta clase y se tocan aqui dentro.
+
+        Por el camino del WebSocket el candado ya esta tomado por este mismo hilo
+        (`estado()` lo tiene cuando llama al conductor) y por eso es reentrante.
+        Por el camino de quien conduzca el conductor a mano -el gemelo digital, en
+        otro hilo y sin ningun candado de servidor- se toma aqui, que es el unico
+        sitio donde se puede saber que hace falta.
+        """
+        with self._candado:
+            self._ajustar_click(estado)
 
     def _ajustar_click(self, estado: EstadoEstudio) -> None:
         """Arranca, para o rearranca el click segun el plan y la señal. BAJO candado.
