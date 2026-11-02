@@ -198,18 +198,22 @@ def interpretar(
     pieza: Pieza,
     perfil: PerfilDeDestreza,
     factor_tempo: float = 1.0,
-    desde_pulso: float = 0.0,
-    hasta_pulso: float | None = None,
+    primer_compas: int = 1,
+    ultimo_compas: int | None = None,
     repeticiones: int = 1,
-    compases_de_cuenta_atras: int = 0,
+    segundos_de_cuenta_atras: float = 0.0,
     semilla: int = 0,
     frecuencia_muestreo: int = 48000,
 ) -> Interpretacion
 ```
 
-`desde_pulso`/`hasta_pulso`/`repeticiones` existen para poder interpretar **un
-bucle**, que es donde la 3c sabe que se pierden notas. `compases_de_cuenta_atras`
-mete el silencio de la cuenta atrás, porque ahí murió la cuenta atrás en la 3c.
+El tramo se dice **en compases y no en pulsos**, con los mismos nombres y la
+misma convención que `PlanDePasada` (1 es el primer compás, `None` es «hasta el
+final»): el gemelo tiene que poder interpretar exactamente el tramo que el plan
+de la pasada describe, y traducir compases a pulsos en dos sitios distintos es
+cómo se desalinean. `repeticiones` existe para poder interpretar **un bucle**, que
+es donde la 3c sabe que se pierden notas, y `segundos_de_cuenta_atras` mete el
+silencio de la cuenta atrás, porque ahí murió la cuenta atrás en la 3c.
 
 Reglas:
 
