@@ -191,9 +191,11 @@ RMS_DORADO = 0.2692625431203252
 def test_el_trasteo_cero_da_exactamente_la_cuerda_limpia():
     """El valor por defecto no puede contaminar al resto de la etapa.
 
-    Todos los perfiles del gemelo salvo uno dejan `trasteo` en cero: si con cero
-    se colase algo de ruido o de acortamiento, ensuciaria todas las demas
-    pruebas. El RMS vigila toda la onda y no solo la cabeza, para que un
+    Casi todas las notas del gemelo se pulsan con `trasteo` en cero: el perfil
+    `PERFECTO`, que es el oraculo de la etapa, lo deja a cero SIEMPRE, y los otros
+    tres solo lo levantan en las notas que sortean trasteadas (del 5% al 50%
+    segun el perfil). Si con cero se colase algo de ruido o de acortamiento,
+    ensuciaria todas las demas pruebas. El RMS vigila toda la onda y no solo la cabeza, para que un
     acortamiento del decaimiento tampoco pueda pasar: un trasteo de 0,01, cien
     veces menor que el que usa la prueba de suciedad, ya mueve las dos medidas.
     """
