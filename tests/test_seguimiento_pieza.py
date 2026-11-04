@@ -759,16 +759,18 @@ def _hasta_la_vuelta(seguidor, fin=4.0, desde=2.9, paso=0.021):
 
     Imita a `SesionDeEstudio._dar_la_vuelta` con audio, porque el reparto de la
     frontera solo tiene sentido contra esa vuelta: cuadros hasta que el reloj
-    CRUZA el final, y entonces `olvidar_tramo` mas un salto continuo a
-    `exceso + un cuadro` -el exceso con que el reloj se paso, mas el cuadro que el
-    re-anclaje congela- con la frontera en el instante en que el reloj paso por el
-    final, que es `exceso` segundos antes del cuadro que lo vio.
+    CRUZA el final, y entonces `olvidar_tramo` mas un salto continuo al `exceso`
+    con que el reloj se paso, con la frontera -y la correspondencia- en el
+    instante en que el reloj paso por el final, que es `exceso` segundos antes del
+    cuadro que lo vio.
 
-    Imitarlo entero no es ceremonia: es lo que hace que la correspondencia nueva
-    mande el instante 4,0 del reloj del analisis al 0,0 de la pieza, o sea que el
-    reloj sea CONTINUO en la frontera. Con un salto a 0,0 pelado, el mismo onset
-    sale 13 ms corrido y los numeros de estas pruebas dejan de ser redondos sin
-    que nada este mal.
+    Imitarlo entero no es ceremonia: es lo que hace que la correspondencia mande
+    el instante 4,0 del reloj del analisis al 0,0 de la pieza, o sea que el reloj
+    sea CONTINUO en la frontera, y los numeros de estas pruebas sean redondos
+    porque lo son y no porque se hayan redondeado.
+
+    Devuelve el instante del cuadro SIGUIENTE al que dio la vuelta, que es donde
+    estas pruebas meten la pulsacion que el detector firma tarde.
     """
     silencio = suena("E2", nivel=-90.0, confianza=0.0)
     seguidor.avanzar_a(desde)
@@ -780,7 +782,11 @@ def _hasta_la_vuelta(seguidor, fin=4.0, desde=2.9, paso=0.021):
         instante += paso
     exceso = estado.instante_s - fin
     seguidor.olvidar_tramo(0.0, fin)
-    seguidor.avanzar_a(exceso + paso, frontera_del_salto_s=instante - exceso)
+    seguidor.avanzar_a(
+        exceso,
+        frontera_del_salto_s=instante - exceso,
+        instante_analisis_s=instante,
+    )
     return instante + paso
 
 
@@ -788,7 +794,7 @@ def test_un_onset_de_antes_de_la_frontera_se_retiene_en_la_cola():
     """La nota atacada antes de la vuelta es de la vuelta que CIERRA.
 
     **Es la semantica de la Task 7 medida en el sitio donde se decide.** El onset
-    esta en 3,9 -el reloj de la pieza marcaba 3,9 cuando se atacó, con la nota 3
+    esta en 3,9 -el reloj de la pieza marcaba 3,9 cuando se ataco, con la nota 3
     escrita en 3,0- y el detector lo firma en un cuadro POSTERIOR a la vuelta, que
     es lo que pasa de verdad: el detector tarda hasta 250 ms en firmar un ataque.
 
@@ -822,25 +828,37 @@ def test_un_onset_de_antes_de_la_frontera_se_retiene_en_la_cola():
 def test_un_onset_de_despues_de_la_frontera_es_de_la_vuelta_que_abre():
     """Y la de despues es de la vuelta que ABRE. Sin este lado no hay frontera.
 
-    Mismo montaje y resultado contrario: el onset esta en 4,05, o sea 50 ms
+    Mismo montaje y resultado contrario: el onset esta en 4,02, o sea 20 ms
     DESPUES del instante en que el reloj paso por el final del tramo, asi que se
-    atacó ya en la vuelta nueva. Se adjudica con la correspondencia nueva -el
-    reloj de la pieza marca 0,05 en ese onset-, va a la nota 0 «a tiempo» y sale
+    ataco ya en la vuelta nueva. Se adjudica con la correspondencia del salto -el
+    reloj de la pieza marca 0,02 en ese onset-, va a la nota 0 «a tiempo» y sale
     en `estado.tocadas`, que es donde el carril la pinta.
 
-    Antes de la Task 7 este onset tambien se descartaba, y era la perdida que el
-    gemelo medía una vez cada tres vueltas: la primera nota de la vuelta.
+    **El 4,02 esta elegido y no es cualquier numero posterior a la frontera.** El
+    cuadro que dio la vuelta cae en 4,013 y el siguiente en 4,034, asi que 4,02
+    esta en la ventana que ANTES de la Task 7 se descartaba entera: `_adjudicar`
+    tiraba todo onset anterior al primer cuadro posterior al salto, y ese cuadro
+    era el 4,034. Esa era la perdida que el gemelo media una vez cada tres
+    vueltas: la primera nota de la vuelta.
+
+    Con un onset posterior a 4,034 esta prueba no mediria nada -seria el camino de
+    siempre, y pasaria igual sin la frontera-, y asi estaba escrita: lo dijo una
+    revision y tenia razon.
     """
-    detector = DetectorDeUnSoloOnset("E2", onset=4.05, en_el_cuadro=1)
+    detector = DetectorDeUnSoloOnset("E2", onset=4.02, en_el_cuadro=1)
     seguidor = SeguidorPieza(pieza_de([40, 45, 47, 50]), detector=detector)
     instante = _hasta_la_vuelta(seguidor)
+    assert 4.0 < 4.02 < instante, (
+        "el onset tiene que caer entre la frontera y el primer cuadro posterior "
+        f"al salto ({instante}), que es la ventana que antes se descartaba"
+    )
     detector.cuadros = 0
 
     estado = seguidor.procesar(suena("E2"), instante)
 
     assert [t.indice for t in estado.tocadas] == [0]
     assert estado.tocadas[0].acertada is True
-    assert estado.tocadas[0].desfase_s == pytest.approx(0.05)
+    assert estado.tocadas[0].desfase_s == pytest.approx(0.02)
     assert estado.tocadas[0].clasificacion == "a_tiempo"
     assert seguidor.recoger_la_cola() == ()
 
@@ -877,7 +895,7 @@ def test_un_salto_ordinario_tira_la_cola_que_nadie_recogio():
     """Una cola sin recoger no sobrevive a abandonar el tramo de verdad.
 
     Si entre la vuelta y la recogida el usuario salta de compas o cambia el plan,
-    esa nota es de un tramo que ya no se esta estudiando y cobrarla la metería en
+    esa nota es de un tramo que ya no se esta estudiando y cobrarla la meteria en
     el informe de otra cosa.
     """
     detector = DetectorDeUnSoloOnset("D3", onset=3.9, en_el_cuadro=1)
@@ -889,3 +907,56 @@ def test_un_salto_ordinario_tira_la_cola_que_nadie_recogio():
     seguidor.avanzar_a(2.0)
 
     assert seguidor.recoger_la_cola() == ()
+
+
+def test_dos_pulsaciones_de_la_cola_no_se_adjudican_a_la_misma_nota():
+    """La cola no cobra dos veces la misma nota, igual que el camino normal.
+
+    Dos ataques pegados a la frontera -machacando un compas no es nada exotico-
+    que el detector firma los dos despues de la vuelta: los dos entran por la
+    cola, y el segundo NO puede volver a cobrar la nota que el primero cobro. Sin
+    esto, el informe de la vuelta acabaria con mas acertadas que notas escritas,
+    que es justo lo que la regla 1 de `_adjudicar` promete que no pasa.
+
+    El segundo no se lo lleva otra nota: la mas cercana libre es la 2, a 1,95 s de
+    su onset, muy fuera de su ventana de reclamo (1,08 s), asi que se descarta sin
+    anotar nada y sin contar como fallo. Es lo mismo que hace el camino normal con
+    una pulsacion que no alcanza a ninguna nota reclamable.
+
+    La otra mitad de este reparto -que la cola no cobre lo que la VUELTA ya habia
+    cobrado por el camino normal- no se puede decidir aqui y no se decide aqui: el
+    que repite llama a `olvidar_tramo` antes del salto, asi que para cuando el
+    salto llega el seguidor ya no sabe que llevaba cobrado el tramo que se va. Lo
+    sabe quien cerro la vuelta, y ahi esta vigilado
+    (`SesionDeEstudio._cobrar_la_cola`, con su prueba en `tests/test_estudio.py`).
+    """
+    class DetectorDeLaCola:
+        """Suelta los dos onsets, pero solo cuando se le abre (tras la vuelta)."""
+
+        def __init__(self):
+            self.onsets = []
+
+        def reiniciar(self):
+            pass
+
+        def procesar(self, resultado, instante):
+            if self.onsets:
+                return Pulsacion(nota="D3", cents=0.0, instante=self.onsets.pop(0))
+            return None
+
+    detector = DetectorDeLaCola()
+    seguidor = SeguidorPieza(pieza_de([40, 45, 47, 50]), detector=detector)
+    instante = _hasta_la_vuelta(seguidor)
+    # Los dos ataques son ANTERIORES a la frontera (4,0) y el detector los firma
+    # despues de la vuelta, que es lo que los mete por la cola.
+    detector.onsets = [3.9, 3.95]
+
+    seguidor.procesar(suena("D3"), instante)
+    seguidor.procesar(suena("D3"), instante + 0.021)
+
+    cola = seguidor.recoger_la_cola()
+    assert [t.indice for t in cola] == [3], (
+        "la segunda pulsacion de la cola no puede cobrar la nota que cobro la "
+        f"primera; la cola trae {[t.indice for t in cola]}"
+    )
+    assert cola[0].desfase_s == pytest.approx(0.9)

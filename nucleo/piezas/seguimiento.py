@@ -235,10 +235,11 @@ class SeguidorPieza:
     - `duracion_s`: duracion de la pieza en segundos de la pasada.
     - `olvidar_tramo(desde_s, hasta_s)`: deja sin cobrar las notas de ese tramo
       y borra sus anotaciones, para poder repetir un bucle.
-    - `avanzar_a(instante_s, frontera_del_salto_s=None)`: con el segundo
-      argumento, el salto es CONTINUO -la vuelta de un bucle- y las pulsaciones
-      en vuelo no se tiran: las de antes de la frontera se adjudican con el reloj
-      en que se atacaron y se retienen en la COLA.
+    - `avanzar_a(instante_s, frontera_del_salto_s=None, instante_analisis_s=None)`:
+      con los dos ultimos, el salto es CONTINUO -la vuelta de un bucle-, trae su
+      correspondencia escrita y las pulsaciones en vuelo no se tiran: las de antes
+      de la frontera se adjudican con el reloj en que se atacaron y se retienen en
+      la COLA.
     - `recoger_la_cola()`: entrega esas notas retenidas y las olvida. No salen en
       `estado.tocadas`, que es el tramo que corre.
 
@@ -371,7 +372,10 @@ class SeguidorPieza:
             self._cobradas = np.zeros(len(self._inicios_s), dtype=bool)
             # Lo que la cola ya cobro, aparte de `_cobradas` y a proposito: la
             # nota de la frontera es de la vuelta que CERRO, asi que la vuelta que
-            # abre tiene que poder cobrar su propia copia de esa misma nota.
+            # abre tiene que poder cobrar su propia copia de esa misma nota. En
+            # cada salto continuo arranca como COPIA de `_cobradas` -lo que el
+            # tramo que se abandona llevaba cobrado-, que es lo que impide cobrar
+            # dos veces la misma nota de la misma vuelta (ver `avanzar_a`).
             self._cobradas_de_la_cola = np.zeros(len(self._inicios_s), dtype=bool)
 
     @property
@@ -434,7 +438,10 @@ class SeguidorPieza:
             return cola
 
     def avanzar_a(
-        self, instante_s: float, frontera_del_salto_s: float | None = None
+        self,
+        instante_s: float,
+        frontera_del_salto_s: float | None = None,
+        instante_analisis_s: float | None = None,
     ) -> EstadoCarril:
         """Mueve el reloj de la pieza a `instante_s`. No consume audio.
 
@@ -462,39 +469,83 @@ class SeguidorPieza:
         principio-. Y entonces el argumento de arriba no se aplica, porque se sabe
         DONDE paso cada cosa:
 
-        * Un onset POSTERIOR a la frontera se atacó ya en el tramo nuevo: se
+        * Un onset POSTERIOR a la frontera se ataco ya en el tramo nuevo: se
           adjudica con la correspondencia nueva, que es la que lo coloca bien, en
           vez de descartarse. Sin esto se perdia la primera nota de cada vuelta
           cuando su ataque caia en el mismo cuadro que la vuelta: medido con el
           gemelo, una nota cada tres vueltas con un interprete PERFECTO.
-        * Un onset ANTERIOR se atacó en el tramo que se abandona, asi que se
-          adjudica con la correspondencia RETIRADA -el reloj en que se atacó- y va
+        * Un onset ANTERIOR se ataco en el tramo que se abandona, asi que se
+          adjudica con la correspondencia RETIRADA -el reloj en que se ataco- y va
           a la COLA (`recoger_la_cola`), no a `estado.tocadas`. **Una nota
-          pertenece a la vuelta en que se atacó, no a la vuelta en que el detector
+          pertenece a la vuelta en que se ATACO, no a la vuelta en que el detector
           la resolvio**, y el detector firma hasta
           `VENTANA_ATAQUE_COMO_ONSET_S` despues.
+
+        **Y UN SALTO CONTINUO TRAE SU PROPIA CORRESPONDENCIA**
+        (`instante_analisis_s`, el instante del reloj del ANALISIS en que el reloj
+        de la pieza vale `instante_s`, o sea «ahora»). Es obligatorio con
+        `frontera_del_salto_s` y no se acepta sin ella: las dos o ninguna.
+
+        Esto es lo contrario de lo que hace un salto ordinario, y la razon es
+        medida. Un salto ordinario DEJA LA CORRESPONDENCIA SIN FIJAR y la fija el
+        cuadro siguiente, con el reloj donde el salto lo dejo, asi que entre los
+        dos cuadros el reloj de la pieza se queda QUIETO: en un bucle, eso es un
+        cuadro de analisis perdido en cada vuelta -21 ms a la cadencia de
+        produccion- y el arrastre que la Task 7 vino a quitar. Un salto continuo
+        no puede permitirselo, porque el audio no se para para que el reloj
+        espere: el reloj de la pieza es CONTINUO en la frontera y la
+        correspondencia se puede escribir exacta aqui mismo
+        (`instante_analisis_s - instante_s`), sin estimar nada.
+
+        Por eso `_analisis_desde` se fija en la FRONTERA y no en el cuadro
+        siguiente: lo que separa las dos vueltas es el instante en que el reloj
+        paso por el final del tramo, no el cuadro en que se entero nadie.
 
         Sin `frontera_del_salto_s` -el valor por omision y lo que hacen todos los
         demas llamadores: colocar, congelar, saltar de compas, la pausa, la cuenta
         atras, el hueco de audio- el comportamiento es exactamente el de antes:
-        todo lo que estaba en vuelo se descarta.
+        todo lo que estaba en vuelo se descarta y la correspondencia se vuelve a
+        fijar en el cuadro siguiente.
 
         La frontera NO sobrevive al salto siguiente: un salto ordinario la borra,
         y con ella la cola que nadie recogio, porque ese tramo ya se abandono de
         verdad.
+
+        Lanza `ValueError` si se da una de las dos cosas del salto continuo sin la
+        otra: una frontera sin correspondencia dejaria el cuadro congelado que
+        esto existe para no perder, y una correspondencia sin frontera adjudicaria
+        con el reloj nuevo lo que se ataco con el viejo.
         """
+        if (frontera_del_salto_s is None) != (instante_analisis_s is None):
+            raise ValueError(
+                "un salto continuo necesita la frontera Y la correspondencia: "
+                f"frontera={frontera_del_salto_s}, analisis={instante_analisis_s}"
+            )
         with self._candado:
             self._instante_pieza = float(instante_s)
             if frontera_del_salto_s is None:
+                self._cobradas_de_la_cola[:] = False
                 self._origen_retirado = None
                 self._frontera_del_salto = None
                 self._tocadas_de_la_cola = []
+                self._origen_analisis = None
+                self._analisis_desde = None
             else:
+                # LA COLA HEREDA LO COBRADO, y es lo que impide que una nota de la
+                # vuelta que cierra se cobre DOS VECES: una por el camino normal,
+                # antes del salto, y otra por la cola. Medido antes de arreglarlo:
+                # la nota 3 salia en `tocadas` «a tiempo» con +0,000 y otra vez en
+                # la cola «tarde» con +0,900, o sea un compas con mas acertadas que
+                # notas escritas. Arrancar la cola a cero era creerse que el tramo
+                # que se abandona no habia cobrado nada.
+                self._cobradas_de_la_cola[:] = self._cobradas
                 self._origen_retirado = self._origen_analisis
                 self._frontera_del_salto = float(frontera_del_salto_s)
-            self._cobradas_de_la_cola[:] = False
-            self._origen_analisis = None
-            self._analisis_desde = None
+                # La correspondencia, escrita y no estimada: el reloj de la pieza
+                # vale `instante_s` en `instante_analisis_s`, y de ahi en adelante
+                # corre con el analisis sin haberse parado un solo cuadro.
+                self._origen_analisis = float(instante_analisis_s) - self._instante_pieza
+                self._analisis_desde = float(frontera_del_salto_s)
             return self.estado
 
     def procesar(self, resultado: ResultadoAnalisis, instante_analisis: float) -> EstadoCarril:
@@ -553,7 +604,7 @@ class SeguidorPieza:
         3. El onset es anterior al primer cuadro de la correspondencia actual, es
            decir, se toco antes del ultimo `avanzar_a` (ver su docstring). **Con
            una excepcion: el salto CONTINUO**, donde un onset anterior no se
-           descarta sino que se adjudica con el reloj en que se atacó y va a la
+           descarta sino que se adjudica con el reloj en que se ataco y va a la
            cola (ver `avanzar_a` y `recoger_la_cola`).
 
         Descartar no es gratis, y se paga en el detector: el ya ha sellado esa nota
