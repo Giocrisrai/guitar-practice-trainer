@@ -21,12 +21,22 @@ una asercion en valor absoluto lo dejaria pasar y seria exactamente el defecto q
 nadie veria.
 
 **DOS PRUEBAS DE ESTE ARCHIVO ESTAN EN `xfail(strict=True)` y no es una tolerancia
-relajada**: son dos defectos medidos, con sus numeros en su docstring, que no se
-arreglan escribiendo pruebas. Van en `strict` para que el dia que alguien los
-arregle la suite se ponga ROJA y haya que venir aqui a quitar la marca: un
-`xfail` no estricto los dejaria desaparecer en silencio. Los numeros esperados son
-los correctos -8 notas limpias de 8, veredicto limpio con cualquier semilla- y no
-se tocan.
+relajada**, pero ya no son las mismas dos que al escribir el archivo. Van en
+`strict` para que el dia que dejen de fallar la suite se ponga ROJA y haya que
+venir aqui a quitar la marca: un `xfail` no estricto las dejaria desaparecer en
+silencio. Los numeros esperados son los correctos y no se tocan.
+
+- `..._las_cuenta_todas_como_limpias`: defecto medido que sigue abierto, la
+  cabecera tecnica sin descontar en el eje del cabezal (128 ms) mas el temblor
+  del onset. Su docstring lo descompone.
+- `..._el_suelo_conocido`: NO es un defecto, es una medicion **pendiente de
+  remedir**. El arreglo del camino A de la Task 6c movio la mediana del suelo y
+  la tarea siguiente la va a mover otra vez; el numero se reinscribe una sola
+  vez, cuando el eje del cabezal este decidido. Su razon de `xfail` lo explica.
+
+La que SI se arreglo y ya no lleva marca es
+`..._sigue_limpio_con_otra_semilla`: era el hallazgo gordo de la Task 6b y la
+Task 6c lo cerro en `nucleo/ejercicios/pulsaciones.py`.
 """
 
 import pytest
@@ -212,12 +222,35 @@ def test_el_oraculo_sin_bucle_las_cuenta_todas_como_limpias():
     assert _suma(informe, "limpias") == NOTAS
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "PENDIENTE DE REMEDIR, no una tolerancia relajada ni un defecto: el "
+        "arreglo del camino A (Task 6c) subio la mediana del suelo de +129,8 a "
+        "+152,3 ms, por encima de SUELO_DESFASE_MS + MARGEN_MS (145). El numero "
+        "NO se reinscribe aqui porque la tarea siguiente alinea el reloj de la "
+        "pieza con el final del silencio de cabecera del gemelo, lo que mueve el "
+        "suelo OTRA VEZ y por mas (los 128 ms de cabecera que hoy nadie "
+        "descuenta). Inscribir +152,3 ahora seria publicar un numero provisional "
+        "con cara de definitivo y tirarlo en la pasada siguiente. Se remide y se "
+        "reinscribe cuando el eje del cabezal este decidido; entonces esta marca "
+        "se cae sola y hay que venir a quitarla."
+    ),
+)
 def test_el_desfase_que_introduce_la_cadena_es_el_suelo_conocido():
     """El suelo: cuanto retrasa la cadena a quien toca exacto, y hacia donde.
 
-    Medido: mediana +129,8 ms, maximo +188,3 ms. Las dos por debajo del techo del
-    detector (250 ms), y esa holgura de 62 ms es lo que deja a la cadena seguir
+    Medido antes del arreglo del camino A: mediana +129,8 ms, maximo +188,3 ms.
+    **Medido despues (Task 6c): mediana +152,3 ms, maximo +188,3 ms** -el maximo
+    no se movio ni un milisegundo, porque el camino A ya no adelanta ningun
+    sellado; lo que subio es la mediana, porque ahora TODAS las notas esperan a
+    que la racha cuaje en vez de que algunas resolvieran antes de tiempo con la
+    altura equivocada-. Las dos siguen por debajo del techo del detector
+    (250 ms), con 62 ms de holgura, que es lo que deja a la cadena seguir
     reconociendo la nota que ella misma retraso.
+
+    Las constantes de este archivo son las de ANTES del arreglo, a proposito:
+    ver la razon del `xfail`.
 
     El signo se afirma aparte y antes del valor absoluto: positivo es «la cadena
     habla tarde», que es la latencia real del detector. Negativo seria que la
@@ -270,56 +303,45 @@ def test_el_oraculo_aguanta_el_tempo_minimo():
     assert _suma(informe, "limpias") == NOTAS
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "DEFECTO MEDIDO, no una tolerancia: con `semilla=3` la misma pasada "
-        "perfecta y sin bucle pierde dos notas, se inventa dos y adjudica una mal. "
-        "Ver el docstring de la prueba."
-    ),
-)
-def test_el_oraculo_sin_bucle_sigue_limpio_con_otra_semilla():
-    """El oraculo tiene que salir limpio SIEMPRE, no con la semilla por omision.
-    **ROJA, y es el hallazgo gordo de la tarea.**
+@pytest.mark.parametrize("semilla", (3, 9))
+def test_el_oraculo_sin_bucle_sigue_limpio_con_otra_semilla(semilla):
+    """El oraculo sale limpio SIEMPRE, no solo con la semilla por omision.
 
     `PERFECTO` tiene a cero todas sus desviaciones -ni desfase, ni temblor, ni
     fallos, ni trasteo, ni desafinacion, ni variacion de fuerza-, asi que la
-    semilla no deberia cambiar NADA de lo que se toca, y en efecto no cambia la
-    verdad: los `instante_s` de los ocho eventos son identicos con cualquier
-    semilla. Lo que si cambia es el audio, porque la sintesis de la cuerda saca de
-    la misma semilla el ruido de la pulsacion. Y ese ruido basta para que la
-    cadena se equivoque.
+    semilla no cambia NADA de lo que se toca: los `instante_s` y los `midi` de
+    los ocho eventos son identicos con cualquier semilla (comprobado sobre 30).
+    Lo que si cambia es el audio, porque la sintesis de la cuerda saca de la
+    misma semilla el ruido de la pulsacion. Si ese ruido bastara para que la
+    cadena perdiera notas, el defecto seria de la cadena.
 
-    Barrido de 30 semillas sobre la escala entera al tempo escrito y sin bucle:
-    **5 de 30 (17 %) dan un veredicto SUCIO**, siempre con la misma forma -una
-    nota adjudicada con la altura de la ANTERIOR y, a partir de ahi, la cola del
-    tramo perdida con sus reportes contados como inventados-:
+    **ESTA PRUEBA ESTUVO EN `xfail(strict=True)` Y SE ARREGLO EN LA TASK 6c.**
+    Lo que media: 5 de 30 semillas (3, 9, 11, 27 y 29) daban un veredicto SUCIO,
+    siempre con la misma forma -una nota adjudicada con la altura de la ANTERIOR
+    y, a partir de ahi, la cola del tramo perdida con sus reportes contados como
+    inventados-, y con la semilla 3 la cadena firmaba desfases de -343,7 y
+    -460,7 ms: medio segundo ANTES de que el ataque existiera.
 
         semilla  3: perdidas (1,6) (1,7), inventadas 2, mal adjudicada (1,5,62)
         semilla  9: perdidas (1,4)..(1,7), inventadas 4, mal adjudicada (1,3,59)
-        semilla 11: perdidas (1,6) (1,7), inventadas 2, mal adjudicada (1,5,62)
-        semilla 27: perdidas (1,5)..(1,7), inventadas 3, mal adjudicada (1,4,60)
-        semilla 29: perdidas (1,6) (1,7), inventadas 2, mal adjudicada (1,5,62)
 
-    (El 62 de la semilla 3 es la altura de la nota 4; la nota 5 es un 64. La
-    cadena le pone al ataque de la 5 la altura de la 4, y el emparejamiento por
-    puesto se desincroniza para lo que queda.)
+    La causa estaba en el camino A de `DetectorPulsaciones`, que sellaba el
+    ataque con la nota de UN cuadro suelto cuando el suavizador del pipeline
+    todavia publicaba la altura de la nota anterior. Hoy el camino A exige racha
+    estable y el barrido sale 0 de 30. El diagnostico completo esta en
+    `.superpowers/sdd/2026-11-02-gemelo-digital/task-6b-diagnostico.md`.
 
-    Con la semilla 3 la cadena firma ademas desfases de **-343,7 y -460,7 ms** en
-    las notas 6 y 7: medio segundo ANTES de que el ataque exista, que es
-    imposible. El veredicto no lo ve porque no consulta los campos de veredicto de
-    la cadena -y hace bien-, pero es la pista de donde esta el fallo: el ataque de
-    esas notas se adjudico al instante de otra.
+    **Las dos semillas son las dos FORMAS del defecto, no una repetida**: la 3
+    falla en la nota 5 con un cuadro de adelanto (-21 ms de margen) y pierde dos
+    notas; la 9 falla en la nota 3 con DOS cuadros (-42 ms) y pierde cuatro. Es
+    el caso peor medido del barrido, asi que es el que hay que tener clavado.
+    Son dos pasadas de nueve segundos de audio en tiempo virtual, no un barrido
+    de treinta: la suite no se entera.
 
-    Las medianas y maximos del suelo tambien bailan con la semilla: mediana de
-    +90,8 a +134,3 ms y maximo de +167,3 a +209,3 ms sobre las 30. El suelo que
-    este archivo inscribe es el de la semilla por omision, que es la unica con la
-    que se corre.
-
-    Esto NO es el defecto del bucle de la T7: aqui `en_bucle` es False y la vuelta
-    es la primera.
+    Esto NO es el defecto del bucle de la T7: aqui `en_bucle` es False y la
+    vuelta es la primera.
     """
-    veredicto, _, _ = _pasada_del_oraculo(semilla=3)
+    veredicto, _, _ = _pasada_del_oraculo(semilla=semilla)
 
     assert veredicto.perdidas == ()
     assert veredicto.inventadas == 0

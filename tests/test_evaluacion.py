@@ -405,6 +405,19 @@ def test_camino_b_registra_cuando_empezo_la_racha_no_cuando_termino():
     de confianza insuficiente de por medio para que el camino B no se
     adelante). Los tres instantes registrados deben quedar en 0.5, 1.0 y 1.5
     exactos, y la regularidad, en cero.
+
+    EL MONTAJE DE LA NOTA B CAMBIO EN LA TASK 6c, y lo que la prueba afirma
+    NO. Antes la nota B resolvia por el camino A con UN SOLO cuadro creible
+    en el instante de la espera de estabilizacion; hoy el camino A exige
+    `cuadros_para_nota_estable` cuadros creibles seguidos antes de sellar,
+    porque leer la nota de un cuadro suelto sellaba el ataque con la altura de
+    la nota ANTERIOR -la que el suavizador del pipeline sigue publicando
+    durante dos cuadros- y eso perdia notas enteras en el carril (ver el
+    docstring de `nucleo/ejercicios/pulsaciones.py`). Asi que la racha creible
+    de la nota B se mueve DESPUES de la espera de estabilizacion: el camino A
+    espera a que cuaje y sella con el instante del ataque, que es justo lo que
+    esta prueba existe para comprobar. El unico cambio es cuando llegan los
+    cuadros creibles; los instantes afirmados son los mismos.
     """
     evaluador = EvaluadorEjercicio(ejercicio_de([40, 42, 44]))
 
@@ -425,17 +438,20 @@ def test_camino_b_registra_cuando_empezo_la_racha_no_cuando_termino():
         evaluador.procesar(silencio(), instante)
         instante += 0.05
 
-    # Nota B (42): pura camino A. Ataque de energia exacto en t=1.000; los
-    # cuadros intermedios traen confianza insuficiente para que el camino B
-    # no acumule una racha propia antes de que el camino A resuelva en 1.060.
+    # Nota B (42): pura camino A. Ataque de energia exacto en t=1.000, y tres
+    # cuadros con confianza insuficiente detras -que es lo que el pipeline
+    # publica de verdad justo despues de una pua-, asi que la racha creible no
+    # empieza hasta 1.063 y no cuaja hasta 1.105. El camino A tiene su espera
+    # de estabilizacion vencida desde 1.060, pero no sella hasta que la racha
+    # cuaja; y cuando sella, firma con el instante del ATAQUE (1.000), no con
+    # el del cuadro que cerro la racha ni con el comienzo de la racha.
     instante = 1.000
-    evaluador.procesar(suena(42, nivel=-15.0, confianza=0.95), instante)
-    instante += 0.02
-    for _ in range(2):
+    for _ in range(3):
         evaluador.procesar(suena(42, nivel=-15.0, confianza=0.3), instante)
-        instante += 0.02
-    instante = 1.060
-    estado = evaluador.procesar(suena(42, nivel=-15.0, confianza=0.95), instante)
+        instante += PASO
+    for _ in range(CUADROS_PARA_NOTA_ESTABLE):
+        estado = evaluador.procesar(suena(42, nivel=-15.0, confianza=0.95), instante)
+        instante += PASO
     assert estado.indice == 2
 
     # Nota C (44): pura camino B otra vez, en t=1.500.

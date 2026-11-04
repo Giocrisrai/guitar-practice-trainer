@@ -9,13 +9,58 @@ dispararse por dos caminos independientes, resueltos a lo sumo uno por cuadro:
 
 Camino A - ataque de energia. `DetectorAtaques` marca un ataque por el salto de
 nivel; se anota una lectura pendiente para `instante + espera_estabilizacion_s`
-y se resuelve en la primera llamada posterior a ese momento. Es el camino que
-describe la Task 7 original.
+y se resuelve en la primera llamada posterior a ese momento EN QUE LA NOTA YA
+LLEVA RACHA ESTABLE. Es el camino que describe la Task 7 original, con la
+condicion de racha añadida en la Task 6c (ver mas abajo).
 
 Camino B - cambio estable de nota. Se cuenta cuantos cuadros seguidos trae la
 misma nota con confianza suficiente. Al llegar a `cuadros_para_nota_estable`
 cuadros, y si esa nota es distinta de la ultima ya resuelta, se dispara el
 evento sin esperar ningun salto de energia.
+
+EL CAMINO A APORTA EL ONSET Y EL CAMINO B APORTA LA ALTURA. Los dos caminos
+leen la MISMA racha estable para decidir QUE nota sono; lo que distingue al
+camino A es que, al haber visto un salto de energia, firma el onset con el
+instante de ESE salto en vez de con el comienzo de la racha. El camino A ya NO
+resuelve con la nota de un cuadro suelto, y esto esta MEDIDO, no elegido: la
+altura que el pipeline PUBLICA llega tarde respecto del ataque real, y
+`espera_estabilizacion_s` (60 ms) no alcanza a cubrir ese retraso.
+
+    ventana de analisis (4096 muestras a 48 kHz)        85,3 ms
+    suavizador de mediana 5 (nucleo/analisis/pipeline)  42,0 ms
+    -------------------------------------------------------------
+    la nota publicada gira hasta                       127,3 ms despues
+
+Los 42 ms son estructurales: la mediana de cinco no gira hasta que tres de sus
+cinco entradas son nuevas, o sea dos cuadros de 21 ms. Y son dos SIEMPRE, no a
+veces: medido sobre 30 semillas de sintesis x 7 fronteras de nota, la racha de
+cuadros creibles que publican LA NOTA ANTERIOR tras el ataque real es de 2 en
+los 150 casos, nunca de 1 y nunca de 3.
+
+Leyendo a los 60 ms, el camino A caia uno o dos cuadros antes de ese giro y
+sellaba el ataque de la nota nueva CON LA ALTURA DE LA ANTERIOR. Medido con el
+gemelo digital (interprete PERFECTO, escala de ocho notas, sin bucle): 5 de 30
+semillas de sintesis daban un veredicto sucio -una nota con la altura de la
+anterior y, a partir de ahi, la cola del tramo perdida- y la cadena firmaba
+desfases de hasta -460,7 ms. Con la racha exigida, 0 de 30. El diagnostico
+completo esta en `.superpowers/sdd/2026-11-02-gemelo-digital/task-6b-diagnostico.md`.
+
+No se subio `espera_estabilizacion_s` a 128 ms, que habria tapado lo mismo,
+porque seria ACOPLAR este modulo al tamaño de la ventana del pipeline y al de
+su suavizador: dos numeros que este detector no conoce ni debe conocer, y que
+cambian con el perfil de afinacion (un bajo tiene ventana de 171 ms). Exigir
+la racha no necesita saber cuanto tarda el tono en cuajar: espera a que cuaje.
+
+LA LECTURA PENDIENTE CADUCA. Como el camino A ya no resuelve en el primer
+cuadro posterior a su espera, puede quedarse esperando una racha que no llega;
+si siguiera esperando sin limite, firmaria con un ataque viejisimo la primera
+racha que apareciera, que pertenece a otra pulsacion. Asi que la lectura
+pendiente se abandona en cuanto el ataque pasa de `VENTANA_ATAQUE_COMO_ONSET_S`
+(0,25 s), que es el mismo techo con el que `_onset_camino_b` decide si un
+ataque todavia puede firmar un onset: pasado ese punto el ataque no sirve para
+nada en este modulo, ni para firmar ni para esperar. Lo que llegue despues lo
+resuelve el camino B con el comienzo de la racha, que es lo unico cierto que
+queda.
 
 Se necesito el camino B porque, con el decaimiento real de una guitarra
 (unos 8.7 dB/s), a tempo normal la nota anterior todavia suena casi al mismo
@@ -84,6 +129,13 @@ CUADROS_PARA_OLVIDAR_NOTA = 3
 # tempo de practica (los generadores producen de 60 a 95 ppm, es decir de 1.0 a
 # 0.63 s por nota), asi que un ataque mas viejo que esto pertenece a otra
 # pulsacion y no debe firmar este onset.
+#
+# TIENE UN SEGUNDO USO, y es el mismo criterio visto del otro lado: tambien es
+# cuanto espera el camino A a que la nota cuaje antes de abandonar su lectura
+# pendiente (ver `procesar`). Un ataque que ya no puede firmar un onset tampoco
+# merece que se le siga esperando: lo que llegue despues es de otra pulsacion.
+# Los dos usos tienen que mover juntos, que es la razon de que sea una sola
+# constante y no dos con el mismo valor.
 VENTANA_ATAQUE_COMO_ONSET_S = 0.25
 
 
@@ -190,15 +242,25 @@ class DetectorPulsaciones:
 
         Evalua los dos caminos de disparo y resuelve a lo sumo uno por cuadro:
 
-        Camino A. La lectura de un ataque es diferida: no se lee en su propio
-        instante, sino pasada la espera de estabilizacion. Justo en el ataque
-        la senal es caotica y leer ahi daria notas falsas.
+        Camino A. La lectura de un ataque es diferida DOS VECES: no se lee en su
+        propio instante -justo en el ataque la senal es caotica y leer ahi daria
+        notas falsas-, sino pasada la espera de estabilizacion Y cuando la nota
+        de este cuadro ya lleva racha estable. La segunda condicion es la que
+        impide sellar el ataque con la altura de la nota ANTERIOR, que el
+        pipeline sigue publicando hasta 42 ms despues de que su detector de tono
+        haya girado (ver el docstring del modulo). Si la racha no llega, la
+        lectura pendiente se abandona al pasar `VENTANA_ATAQUE_COMO_ONSET_S`
+        desde el ataque.
 
-        Camino B. Se sigue cuantos cuadros lleva la misma nota creible. Si el
-        camino A resuelve en este cuadro, la cuenta del camino B se reinicia
-        (ese ataque ya se leyo). Si es el camino B el que resuelve, se cancela
-        cualquier lectura pendiente del camino A para esa misma nota
-        sostenida, evitando contar el mismo evento dos veces.
+        Camino B. Se sigue cuantos cuadros lleva la misma nota creible. La
+        cuenta la lleva `_actualizar_candidata`, que se ejecuta UNA VEZ por
+        cuadro y ANTES de los dos caminos, porque los dos leen su resultado: el
+        camino A para saber si ya puede sellar y el camino B para saber si le
+        toca disparar. Si el camino A resuelve en este cuadro, la cuenta se
+        reinicia (ese ataque ya se leyo) y el camino B no vuelve a disparar con
+        la nota que sigue sonando. Si es el camino B el que resuelve, se cancela
+        cualquier lectura pendiente del camino A para esa misma nota sostenida,
+        evitando contar el mismo evento dos veces.
 
         Ademas, cuando se acumulan `cuadros_para_olvidar_nota` cuadros SEGUIDOS
         sin nota creible (silencio o confianza insuficiente) se libera
@@ -240,7 +302,32 @@ class DetectorPulsaciones:
 
         pulsacion: Pulsacion | None = None
 
-        if self._lectura_pendiente is not None and instante >= self._lectura_pendiente:
+        # La racha se actualiza UNA VEZ y antes de los dos caminos, porque los
+        # dos la leen: el camino A exige racha para poder sellar (si no, sellaria
+        # con la altura vieja que el suavizador sigue publicando) y el camino B
+        # dispara cuando la racha llega a su tope.
+        nota_estable = self._actualizar_candidata(resultado, instante)
+
+        # El ataque caduca como el que firma un onset, y por la misma razon: un
+        # ataque mas viejo que esto pertenece a otra pulsacion (ver
+        # VENTANA_ATAQUE_COMO_ONSET_S). Sin esta caducidad, una lectura que se
+        # queda esperando una racha que no llega acabaria firmando con un ataque
+        # viejisimo la primera racha que apareciera, que es de otra nota: medido,
+        # un ataque de 350 ms de antiguedad firmando el onset de la racha
+        # siguiente (ver
+        # test_el_onset_del_camino_b_es_el_comienzo_de_la_racha_no_el_final).
+        if (
+            self._lectura_pendiente is not None
+            and self._instante_ataque is not None
+            and instante - self._instante_ataque > VENTANA_ATAQUE_COMO_ONSET_S
+        ):
+            self._lectura_pendiente = None
+
+        if (
+            self._lectura_pendiente is not None
+            and instante >= self._lectura_pendiente
+            and nota_estable is not None
+        ):
             self._lectura_pendiente = None
             pulsacion = self._sellar(resultado, self._instante_ataque)
             if pulsacion is not None:
@@ -249,9 +336,12 @@ class DetectorPulsaciones:
                 self._nota_candidata = None
                 self._contador_candidata = 0
                 self._instante_inicio_candidata = None
+                # Y no se deja que el camino B mire esta misma racha mas abajo:
+                # ya esta resuelta, con el onset del ataque, que es mejor que el
+                # comienzo de la racha.
+                nota_estable = None
 
         if pulsacion is None:
-            nota_estable = self._actualizar_candidata(resultado, instante)
             if nota_estable is not None:
                 pulsacion = self._sellar(resultado, self._onset_camino_b(instante))
                 # Esta nota ya la vio el camino B: si habia una lectura pendiente

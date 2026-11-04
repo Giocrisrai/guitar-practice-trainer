@@ -269,3 +269,81 @@ def test_la_nota_nueva_que_de_verdad_suena_se_resuelve_igual_y_con_su_onset():
     salidas = correr(detector, cuadros_con_descarte_del_camino_b(4))
     assert [pulsacion.nota for pulsacion in salidas] == ["E2", "A2"]
     assert all(pulsacion.instante is not None for pulsacion in salidas)
+
+
+# La secuencia del defecto del gemelo digital, en miniatura. Los indices son
+# parte del caso y por eso tienen nombre: lo que hace la trampa es que la espera
+# de estabilizacion del camino A VENZA mientras el suavizador del pipeline
+# todavia publica la altura de la nota anterior.
+#
+#   0-5    silencio
+#   6-15   D4 a -25 dB: la primera pulsacion, que deja D4 sellada
+#   16-18  D4 sin confianza a -40 dB: el hueco que libera `_ultima_nota_resuelta`
+#   19-20  D4 sin confianza a -15 dB: el transitorio de la pua. EL ATAQUE ES AQUI
+#   21-22  D4 creible a -15 dB: los dos cuadros que el suavizador publica tarde
+#   23+    E4 creible: la altura que de verdad suena desde el cuadro 19
+CUADRO_DEL_ATAQUE = 19
+CUADROS_DE_ALTURA_VIEJA = (21, 22)
+
+
+def cuadros_con_la_altura_vieja_publicada_tarde():
+    """La frontera entre dos notas tal y como el pipeline la publica de verdad.
+
+    Reproduce con dobles lo medido sobre el gemelo: tras el ataque de la nota
+    nueva, el pipeline sigue publicando la altura de la ANTERIOR durante dos
+    cuadros, porque su suavizador es una mediana de cinco y no gira hasta que
+    tres de sus cinco entradas son nuevas. Esos dos cuadros son dos SIEMPRE
+    -medido sobre 30 semillas de sintesis y 7 fronteras de nota: 2 en los 150
+    casos, nunca 1 y nunca 3-, y la espera de estabilizacion del camino A
+    (60 ms, menos de tres cuadros) vence dentro de ellos.
+    """
+    return (
+        [silencio()] * 6
+        + [suena("D4", nivel=-25.0)] * 10
+        + [dudoso("D4", nivel=-40.0)] * 3
+        + [dudoso("D4", nivel=-15.0)] * 2
+        + [suena("D4", nivel=-15.0)] * 2
+        + [suena("E4", nivel=-15.0)] * 8
+    )
+
+
+def test_el_camino_a_no_sella_la_altura_vieja_que_el_suavizador_publica_tarde():
+    """**LA CAUSA del defecto del oraculo de la Task 6b, clavada aqui.**
+
+    El camino A no debe leer la nota de un cuadro suelto. Cuando su espera de
+    estabilizacion vence, la altura que el pipeline publica puede ser todavia la
+    de la nota ANTERIOR: la ventana de analisis mide 85,3 ms y el suavizador de
+    mediana 5 añade 42 ms, asi que el giro llega hasta 127 ms despues del ataque
+    y la espera son 60 ms. Leyendo ahi, el camino A sellaba el ataque de la nota
+    nueva CON LA ALTURA DE LA VIEJA.
+
+    Lo que eso costaba, medido sobre el gemelo: 5 de 30 semillas de sintesis
+    daban un veredicto sucio con un interprete PERFECTO, con la cola del tramo
+    perdida y desfases de hasta -460,7 ms. Esta prueba es la causa; el sintoma
+    esta en `test_el_oraculo_sin_bucle_sigue_limpio_con_otra_semilla`.
+
+    Contrafactual MEDIDO contra el detector de antes del arreglo, con esta misma
+    secuencia: salian TRES pulsaciones -D4 en el cuadro 8, un D4 FANTASMA en el
+    22 firmado con el ataque de la nota nueva (0,399) y E4 en el 25 con el
+    comienzo de la racha (0,483) en vez de con su ataque-. Las tres aserciones
+    de abajo son una por cada cosa que estaba mal.
+    """
+    detector = DetectorPulsaciones()
+    cuadros = cuadros_con_la_altura_vieja_publicada_tarde()
+
+    # La secuencia tiene que tender la trampa de verdad: la espera de
+    # estabilizacion vence DENTRO de los cuadros que publican la altura vieja.
+    instante_ataque = CUADRO_DEL_ATAQUE * PASO
+    vencimiento = instante_ataque + detector.espera_estabilizacion_s
+    primero, ultimo = CUADROS_DE_ALTURA_VIEJA
+    assert cuadros[primero].nota == cuadros[ultimo].nota == "D4"
+    assert cuadros[ultimo + 1].nota == "E4"
+    assert primero * PASO < vencimiento <= ultimo * PASO
+
+    salidas = correr(detector, cuadros)
+
+    # Una pulsacion por nota y ninguna fantasma: el D4 del cuadro 22 no esta.
+    assert [pulsacion.nota for pulsacion in salidas] == ["D4", "E4"]
+    # Y la nota nueva conserva el onset de SU ataque, no el comienzo de su racha:
+    # el camino A sigue aportando el onset aunque ahora espere a la altura.
+    assert salidas[1].instante == pytest.approx(instante_ataque)
