@@ -16,17 +16,32 @@ toca entonces es INVERTIRLAS -ocho ataques de ocho notas, cero inventadas- y
 dejar escrito quien lo arreglo. No se borran por molestas: son el unico sitio del
 programa donde esta escrito que esto pasaba.
 
-**Los numeros de la mitad del solape reproducen la sonda de la spec §10 a la
-cadencia de produccion.** La spec midio «ocho notas sinteticas que suenan el 95 %
-del pulso producen DOCE pulsaciones, con parejas separadas 32 ms». Aqui, con la
-escala de ocho notas al tempo escrito y `sustain=1.0` -notas de 780 ms cada 600,
-o sea 180 ms de cola sonando encima de la nota siguiente-, el detector de
-produccion firma **doce** pulsaciones de ocho notas, exactamente el numero de la
-spec. Lo que NO se reproduce es la separacion de 32 ms de las parejas: la sonda
-de la spec recorria el audio con un salto de 512 muestras (10,7 ms) y 32 ms son
-sus tres cuadros, mientras que aqui el salto es el de produccion (21 ms) y las
-parejas salen a 126 ms (seis cuadros). La separacion es del salto; el doce es del
-detector, y es el que se afirma.
+**LOS NUMEROS DE ESTE ARCHIVO SON UN RANGO MEDIDO SOBRE NUEVE SEMILLAS, NO EL DE
+UNA.** Con la escala de ocho notas al tempo escrito y `sustain=1.0` -notas de
+780 ms cada 600, o sea 180 ms de cola sonando encima de la nota siguiente-, el
+detector de produccion firma de **9 a 12** pulsaciones de ocho notas segun la
+semilla del ruido de pua (tabla `SOLAPE_MEDIDO`), y el veredicto cuenta de **1 a
+5** invenciones. Siempre mas de ocho ataques y siempre al menos una invencion.
+
+**Y ESTE ARCHIVO NO CORROBORA LOS NUMEROS DE LA SPEC §10, que es lo que la
+primera version decia.** La spec midio «ocho notas sinteticas que suenan el 95 %
+del pulso producen DOCE pulsaciones, con parejas separadas 32 ms», y ninguna de
+las dos cifras es reproducible aqui:
+
+* **el doce sale solo con la semilla 0** (y con la 42); escribirlo como «sale el
+  mismo doce» era exactamente la clase de numero de una sola realizacion que esta
+  tarea venia a desalojar. Ademas la sonda de la spec era **otra pieza** (nombra
+  `B2` y `D3`; esta escala va de G3 a G4) en **otro regimen** (95 % del pulso, no
+  el 130 % que da `sustain=1.0`), asi que la coincidencia habria sido eso;
+* **los 32 ms son el suelo de aquella sonda**, no un dato del detector: son
+  `CUADROS_PARA_NOTA_ESTABLE` (3) por su salto de 512 muestras (10,67 ms). A la
+  cadencia de produccion toda separacion es multiplo de 21 ms, asi que 32 ms es
+  imposible por construccion. El numero estructuralmente analogo -el suelo- es
+  **63 ms, tres cuadros**, y aparece con `sustain` 0,5-0,6. Con `sustain=1.0` y la
+  semilla 0 las separaciones estrechas son **dos, 105 y 126 ms**.
+
+Lo que si es de la spec y se sostiene es la FORMA del defecto: las colas que se
+solapan le hacen firmar al detector mas ataques que notas tocadas.
 
 **Y no es un artefacto del gemelo.** En una guitarra de verdad las cuerdas si
 siguen sonando unas sobre otras: una pieza con notas largas y un alumno que no
@@ -66,10 +81,33 @@ from nucleo.piezas.estudio import InformeDePasada, PlanDePasada, SesionDeEstudio
 # ningun acorde, asi que las ocho son medibles y ninguna se excluye.
 NOTAS = 8
 
-# Cuantas pulsaciones firma el detector de produccion sobre la escala con las
-# colas solapadas, MEDIDO: doce de ocho notas. Es el numero de la spec §10, y es
-# el defecto: cuatro de esas doce no las toco nadie.
-ATAQUES_CON_SOLAPE = 12
+# El solape, MEDIDO sobre nueve semillas: `(semilla, ataques_firmados,
+# inventadas)` con `sustain=1.0` sobre la escala de ocho notas.
+#
+# Va como TABLA y no como un numero suelto porque el numero depende de la semilla
+# del ruido de pua, y un valor de una sola realizacion presentado como «el»
+# numero es la clase de dato que esta tarea venia a desalojar. Lo que la tabla
+# deja afirmado es cada medicion por separado -asi un cambio en el detector
+# nombra la semilla en la que cambio- y, por encima de ella, los dos invariantes
+# que valen para las nueve: mas de ocho ataques y al menos una invencion.
+#
+# Las nueve semillas son las mismas que `tests/test_gemelo_contra_real.py` usa
+# para su barrido, para que los dos barridos de la etapa sean el mismo conjunto.
+SOLAPE_MEDIDO = (
+    (0, 12, 3),
+    (1, 9, 3),
+    (2, 10, 3),
+    (3, 10, 5),
+    (5, 9, 3),
+    (7, 9, 1),
+    (11, 10, 1),
+    (42, 12, 2),
+    (99, 10, 2),
+)
+
+# Las semillas del barrido, para la mitad de control (sin solape), que da el mismo
+# numero en todas: ocho ataques exactos y veredicto limpio.
+SEMILLAS = tuple(semilla for semilla, _, _ in SOLAPE_MEDIDO)
 
 # Lo que se le concede a una medicion de cents antes de llamarla otra cosa. El
 # maximo medido entre lo que el gemelo desafino y lo que la cadena leyo es de
@@ -190,16 +228,64 @@ def test_el_trasteo_no_cuenta_como_nota_limpia(semilla):
     assert sum(1 for evento in interpretacion.eventos if evento.trasteada) == NOTAS
 
     assert _suma(informe, "notas_medibles") == NOTAS
+    # El `== 0` ya es mas fuerte que el `< NOTAS` que el brief pedia, asi que el
+    # `< NOTAS` no se escribe: una asercion implicada por la de al lado no vigila
+    # nada y hace creer que vigila.
     assert _suma(informe, "limpias") == 0
     assert _suma(informe, "acertadas") == 0
-    assert _suma(informe, "limpias") < NOTAS
 
     assert len(veredicto.perdidas) + len(veredicto.mal_adjudicadas) == NOTAS
     assert veredicto.inventadas == 0
     assert veredicto.limpio is False
 
 
-def test_las_notas_que_se_solapan_generan_ataques_fantasma():
+@pytest.mark.parametrize(
+    ("semilla", "ataques", "inventadas"), SOLAPE_MEDIDO, ids=[f"semilla {s}" for s, _, _ in SOLAPE_MEDIDO]
+)
+def test_el_detector_firma_mas_ataques_que_notas_cuando_las_colas_se_solapan(
+    semilla, ataques, inventadas
+):
+    """**EL DEFECTO DE LA SPEC §10, EN SU FORMA CRUDA.** Afirmado a proposito.
+
+    Es la misma cosa que `test_las_notas_que_se_solapan_generan_ataques_fantasma`
+    medida un paso antes: ahi los ataques llegan ya adjudicados a notas escritas y
+    el exceso se reparte entre invenciones, perdidas y malas adjudicaciones; aqui
+    se cuentan tal y como el detector los firma, y entonces el defecto se ve como
+    un solo numero.
+
+    **Nueve semillas y nueve numeros, de 9 a 12 ataques para ocho notas.** El
+    invariante -mas ataques que notas- se afirma aparte y antes del numero de cada
+    semilla, porque es el que dice que hay defecto; los numeros dicen cuanto, y
+    estan medidos uno a uno para que un cambio en el detector nombre la semilla en
+    la que cambio.
+
+    **El doce de la spec §10 sale solo con dos de las nueve semillas** (0 y 42) y
+    sobre otra pieza y otro regimen que la sonda de la spec: no es una
+    corroboracion de aquel numero y la cabecera del modulo explica por que.
+
+    El dia que el detector se arregle, lo que hay que escribir aqui es ocho en las
+    nueve. Bajar la tabla a «mas de ocho» no seria lo mismo: lo que esta medido es
+    cuantos, y de los 9 a 12 hay de 1 a 4 que nadie toco.
+    """
+    perfil = replace(PERFECTO, nombre="solapado", sustain=1.0)
+    interpretacion = interpretar(escala_de_ocho_notas(), perfil, semilla=semilla)
+
+    firmados = _ataques_firmados(interpretacion)
+
+    assert len(interpretacion.eventos) == NOTAS
+    # EL DEFECTO, antes del recuento: el detector firma mas ataques que notas
+    # tocadas, y eso vale para las nueve semillas.
+    assert len(firmados) > NOTAS
+    assert len(firmados) == ataques
+    # `inventadas` viaja en la misma tabla y se usa en la prueba de abajo: aqui se
+    # afirma solo que el exceso de ataques no se queda sin consecuencia.
+    assert inventadas >= 1
+
+
+@pytest.mark.parametrize(
+    ("semilla", "ataques", "inventadas"), SOLAPE_MEDIDO, ids=[f"semilla {s}" for s, _, _ in SOLAPE_MEDIDO]
+)
+def test_las_notas_que_se_solapan_generan_ataques_fantasma(semilla, ataques, inventadas):
     """**DEFECTO MEDIDO Y AFIRMADO A PROPOSITO** (spec §10). No se arregla aqui.
 
     `PERFECTO` con `sustain=1.0` y nada mas: el interprete toca las ocho notas a
@@ -208,24 +294,18 @@ def test_las_notas_que_se_solapan_generan_ataques_fantasma():
     ms despues, asi que hay **180 ms de cola sonando encima** de cada nota nueva.
     Eso es lo que hace una guitarra de verdad cuando nadie apaga las cuerdas.
 
-    Lo que la cadena hace con ese audio, medido con la semilla por omision:
+    **Nueve semillas, de 1 a 5 invenciones.** Lo que vale para las nueve, y se
+    afirma aparte porque es el defecto:
 
-        inventadas          3
-        perdidas            las notas 2, 3 y 4 de la vuelta 1
-        mal adjudicadas     la nota 1 con un 55 (sono un 57)
-                            la nota 7 con un 43 (sono un 67)
-
-    Los tres reportes inventados son las pulsaciones que el detector firma en
-    medio de dos notas, donde no empezo ninguna; las tres perdidas son las notas
-    de verdad cuyo sitio en el emparejamiento se quedo ocupado por uno de esos
-    fantasmas. Son dos caras del mismo hecho, y por eso se afirman las dos: un
-    arreglo que solo quitara las invenciones y dejara las perdidas no seria un
-    arreglo.
-
-    **El 55 de la nota 1 y el 43 de la nota 7 son la firma del fantasma**, no
-    ruido: el 55 es la nota ANTERIOR (su cola sigue sonando cuando el detector
-    sella el ataque) y el 43 esta dos octavas por debajo del 67 escrito, que es
-    lo que sale de dos colas sumadas en el anillo de la cuerda.
+    * **hay al menos una invencion** (`inventadas >= 1`);
+    * y **cada invencion cuesta una nota de verdad**:
+      `len(perdidas) == inventadas` en las nueve. Es el mecanismo entero del
+      fantasma: el reporte inventado ocupa el puesto del emparejamiento y la nota
+      que de verdad sono se queda sin el. Por eso un arreglo que quitara las
+      invenciones y dejara las perdidas no seria un arreglo;
+    * los reportes publicados siguen siendo ocho en las nueve: pasado el
+      emparejamiento, el exceso de ataques no se ve como «mas reportes» sino como
+      reportes que hablan de la nota equivocada.
 
     **Nada de esto se arregla bajando los numeros.** La causa esta en
     `DetectorPulsaciones`, y tocarla es tocar el corazon de las etapas 2a y 3a.
@@ -233,10 +313,11 @@ def test_las_notas_que_se_solapan_generan_ataques_fantasma():
     y nada mal adjudicado- y se dice en su docstring quien lo decidio.
     """
     solapado = replace(PERFECTO, nombre="solapado", sustain=1.0)
-    interpretacion, _, veredicto, _ = _pasada(solapado)
+    interpretacion, registro, veredicto, _ = _pasada(solapado, semilla=semilla)
 
     # El solape que el perfil provoca, que es la causa de todo lo de abajo: cada
-    # nota sigue sonando 180 ms despues de que entre la siguiente.
+    # nota sigue sonando 180 ms despues de que entre la siguiente. No depende de
+    # la semilla, porque `PERFECTO` no tiembla.
     duraciones = {round(evento.duracion_s, 3) for evento in interpretacion.eventos}
     assert duraciones == {0.780}
     assert interpretacion.eventos[1].instante_s - interpretacion.eventos[0].instante_s == (
@@ -244,28 +325,64 @@ def test_las_notas_que_se_solapan_generan_ataques_fantasma():
     )
 
     # EL DEFECTO. La afirmacion de que hay fantasmas va antes y por separado del
-    # recuento exacto: si algun dia el numero cambia sin desaparecer, lo que tiene
-    # que quedar escrito es que seguia habiendo.
-    assert veredicto.inventadas > 0
-    assert veredicto.inventadas == 3
-    assert veredicto.perdidas == ((1, 2), (1, 3), (1, 4))
-    assert veredicto.mal_adjudicadas == ((1, 1, 55), (1, 7, 43))
+    # recuento: si algun dia los numeros cambian sin desaparecer, lo que tiene que
+    # quedar escrito es que seguia habiendo.
+    assert veredicto.inventadas >= 1
     assert veredicto.limpio is False
+    assert len(veredicto.perdidas) == veredicto.inventadas
 
-    # Y el gemelo toco las ocho notas que la pieza escribe, ni una mas: las que
+    # Y el numero medido de esta semilla.
+    assert veredicto.inventadas == inventadas
+
+    # El gemelo toco las ocho notas que la pieza escribe, ni una mas: las que
     # sobran las firma la cadena.
     assert veredicto.notas_tocadas == NOTAS
     assert veredicto.excluidas == ()
+    assert len(registro.reportes) == NOTAS
 
 
-def test_sin_solape_no_hay_fantasmas():
+def test_la_forma_del_fantasma_con_la_semilla_por_omision():
+    """El fantasma de cerca: QUE altura le pone la cadena a lo que no sono.
+
+    Es la unica prueba del archivo que fija una sola realizacion, y lo dice en el
+    nombre: los numeros son de la semilla por omision y no valen para las otras
+    ocho (el barrido esta en `SOLAPE_MEDIDO`). Existe porque el reparto exacto es
+    lo que ensena el MECANISMO, y un rango no lo ensena:
+
+        inventadas        3
+        perdidas          notas 2, 3 y 4 de la vuelta 1
+        mal adjudicadas   nota 1 con un 55 (sono un 57)
+                          nota 7 con un 43 (sono un 67)
+
+    **El 55 de la nota 1 y el 43 de la nota 7 son la firma del fantasma**, no
+    ruido: el 55 es la nota ANTERIOR -su cola sigue sonando cuando el detector
+    sella el ataque- y el 43 esta dos octavas por debajo del 67 escrito, que es lo
+    que sale de dos colas sumadas en el anillo de la cuerda.
+
+    Si esto se pone rojo y las nueve de `SOLAPE_MEDIDO` siguen verdes, lo que
+    cambio es el reparto y no el defecto.
+    """
+    solapado = replace(PERFECTO, nombre="solapado", sustain=1.0)
+    _, _, veredicto, _ = _pasada(solapado, semilla=0)
+
+    assert veredicto.inventadas == 3
+    assert veredicto.perdidas == ((1, 2), (1, 3), (1, 4))
+    assert veredicto.mal_adjudicadas == ((1, 1, 55), (1, 7, 43))
+
+
+@pytest.mark.parametrize("semilla", SEMILLAS, ids=[f"semilla {s}" for s in SEMILLAS])
+def test_sin_solape_no_hay_fantasmas(semilla):
     """La mitad que demuestra que la causa es el SOLAPE y no el gemelo.
 
     Mismo interprete, misma pieza, misma semilla y mismo recorrido; lo unico que
     cambia es `sustain=0.0`, que es lo que hace que el interprete corte cada nota
     antes de la siguiente (`FRACCION_DE_CORTE`: 510 ms de los 600 del hueco, con
-    90 ms de silencio garantizado entre dos notas). Medido: cero inventadas, cero
-    perdidas, cero mal adjudicadas.
+    90 ms de silencio garantizado entre dos notas).
+
+    **Y aqui si hay un numero para las nueve semillas: ocho ataques exactos y cero
+    invenciones en todas.** Esa es la mitad del barrido que mas dice: el detector
+    no se inventa nada mientras las notas no se pisen, asi que la dispersion de
+    9 a 12 de la prueba de arriba es del solape y no del ruido de pua.
 
     Sin esta prueba, la de arriba no probaria lo que dice: unos fantasmas que
     aparecieran tambien sin solape serian un defecto del gemelo -o del montaje- y
@@ -276,50 +393,16 @@ def test_sin_solape_no_hay_fantasmas():
     lea en la prueba es justo lo que la hace la mitad de la de arriba.
     """
     cortado = replace(PERFECTO, nombre="cortado", sustain=0.0)
-    interpretacion, _, veredicto, _ = _pasada(cortado)
+    interpretacion, _, veredicto, _ = _pasada(cortado, semilla=semilla)
 
     duraciones = {round(evento.duracion_s, 3) for evento in interpretacion.eventos}
     assert duraciones == {0.510}
 
+    assert len(_ataques_firmados(interpretacion)) == NOTAS
     assert veredicto.inventadas == 0
     assert veredicto.perdidas == ()
     assert veredicto.mal_adjudicadas == ()
     assert veredicto.limpio is True
-
-
-@pytest.mark.parametrize(
-    ("sustain", "ataques"),
-    ((1.0, ATAQUES_CON_SOLAPE), (0.0, NOTAS)),
-    ids=("con solape", "sin solape"),
-)
-def test_el_detector_firma_mas_ataques_que_notas_cuando_las_colas_se_solapan(
-    sustain, ataques
-):
-    """**EL DEFECTO DE LA SPEC §10, EN SU FORMA CRUDA.** Afirmado a proposito.
-
-    Es la misma cosa que `test_las_notas_que_se_solapan_generan_ataques_fantasma`
-    medida un paso antes: ahi los ataques llegan ya adjudicados a notas escritas y
-    el exceso se reparte entre invenciones, perdidas y malas adjudicaciones; aqui
-    se cuentan tal y como el detector los firma, y entonces el defecto se ve como
-    un solo numero. La spec midio **doce pulsaciones de ocho notas** con una
-    sonda propia; esta prueba la reproduce con el detector de produccion y el
-    salto de produccion y sale el mismo doce.
-
-    Con `sustain=0.0` salen ocho exactas, que es la mitad de control: el detector
-    no se inventa nada mientras las notas no se pisen.
-
-    El dia que el detector se arregle, lo que hay que escribir aqui es ocho en los
-    dos casos. Bajar el doce a «mas de ocho» no seria lo mismo: lo que esta
-    medido es cuantos, y de los doce hay cuatro que nadie toco.
-    """
-    perfil = replace(PERFECTO, nombre=f"sustain {sustain}", sustain=sustain)
-    pieza = escala_de_ocho_notas()
-    interpretacion = interpretar(pieza, perfil, semilla=0)
-
-    firmados = _ataques_firmados(interpretacion)
-
-    assert len(firmados) == ataques
-    assert len(interpretacion.eventos) == NOTAS
 
 
 def test_la_desafinacion_se_ve_en_el_informe():
