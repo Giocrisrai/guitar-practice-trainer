@@ -42,6 +42,31 @@ from nucleo.musica import (
 # menos con uno menor, así que quien mueva esto tiene que volver a mirar allí.
 INTERVALO_DE_ANALISIS_S = 0.021
 
+# Cuantas frecuencias entran en la mediana movil del suavizado.
+#
+# **ESTA ACOPLADO A `CUADROS_PARA_NOTA_ESTABLE` DEL DETECTOR DE PULSACIONES**, y
+# la desigualdad que tiene que seguir siendo cierta es
+#
+#     CUADROS_PARA_NOTA_ESTABLE > TAMANO_SUAVIZADO // 2
+#
+# De donde sale: una mediana de n no gira hasta que `n // 2 + 1` de sus entradas
+# son nuevas, asi que tras un cambio de altura publica la altura VIEJA durante
+# `n // 2` cuadros. Con n=5 son 2 cuadros. El camino A del detector
+# (`nucleo/ejercicios/pulsaciones.py`) solo sella cuando la nota lleva
+# `cuadros_para_nota_estable` cuadros creibles seguidos, asi que si la racha
+# vieja alcanzara esa cifra el detector volveria a sellar el ataque de una nota
+# con la altura de la anterior: es el defecto que la Task 6c arreglo, y perder
+# esta desigualdad lo devuelve entero.
+#
+# Se cuenta en CUADROS por los dos lados, asi que la desigualdad no depende de la
+# frecuencia de muestreo ni del tempo. Lo que SI depende del perfil es el otro
+# sumando de la racha vieja -los cuadros cuya ventana cruza la frontera entre dos
+# notas-, y con el perfil de bajo ese sumando ya se come el margen: ver la
+# medicion en el docstring de `nucleo/ejercicios/pulsaciones.py`. La desigualdad
+# esta afirmada en
+# `tests/test_pulsaciones.py::test_la_racha_estable_supera_al_suavizador`.
+TAMANO_SUAVIZADO = 5
+
 
 class Suavizador:
     """Mediana móvil sobre las últimas frecuencias detectadas.
@@ -55,7 +80,7 @@ class Suavizador:
     apoyada en menos muestras de las previstas.
     """
 
-    def __init__(self, tamano: int = 5) -> None:
+    def __init__(self, tamano: int = TAMANO_SUAVIZADO) -> None:
         if tamano < 1:
             raise ValueError("El tamaño del suavizado debe ser al menos 1")
         self._tamano = tamano
@@ -119,7 +144,7 @@ class Analizador:
         referencia_a4: float = 440.0,
         confianza_minima: float = 0.75,
         nombre_detector: str = "yin",
-        tamano_suavizado: int = 5,
+        tamano_suavizado: int = TAMANO_SUAVIZADO,
     ) -> None:
         self.perfil = perfil
         self.frecuencia_muestreo = frecuencia_muestreo

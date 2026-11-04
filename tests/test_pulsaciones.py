@@ -1,7 +1,11 @@
 import pytest
 
-from nucleo.analisis.pipeline import ResultadoAnalisis
-from nucleo.ejercicios.pulsaciones import DetectorPulsaciones
+from nucleo.analisis.pipeline import TAMANO_SUAVIZADO, ResultadoAnalisis
+from nucleo.ejercicios.pulsaciones import (
+    CUADROS_PARA_NOTA_ESTABLE,
+    VENTANA_ATAQUE_COMO_ONSET_S,
+    DetectorPulsaciones,
+)
 
 PASO = 0.021
 
@@ -327,6 +331,16 @@ def test_el_camino_a_no_sella_la_altura_vieja_que_el_suavizador_publica_tarde():
     22 firmado con el ataque de la nota nueva (0,399) y E4 en el 25 con el
     comienzo de la racha (0,483) en vez de con su ataque-. Las tres aserciones
     de abajo son una por cada cosa que estaba mal.
+
+    QUE MATA Y QUE NO, dicho para que nadie se confie. Mata el mutante que
+    importa: quitarle al camino A la condicion de racha estable, es decir
+    deshacer el arreglo, devuelve las tres pulsaciones y la prueba se pone roja.
+    NO mata el mutante que apaga el camino A entero, y eso no es un descuido
+    suyo: con el ataque reciente, `_onset_camino_b` devuelve el mismo instante
+    que el camino A habria firmado, asi que los dos caminos producen aqui
+    exactamente la misma pulsacion. El caso que los distingue existe, es rarisimo
+    y hubo que encontrarlo por fuerza bruta; esta en
+    `test_el_camino_a_reinicia_la_racha_y_eso_salva_el_onset_siguiente`.
     """
     detector = DetectorPulsaciones()
     cuadros = cuadros_con_la_altura_vieja_publicada_tarde()
@@ -347,3 +361,214 @@ def test_el_camino_a_no_sella_la_altura_vieja_que_el_suavizador_publica_tarde():
     # Y la nota nueva conserva el onset de SU ataque, no el comienzo de su racha:
     # el camino A sigue aportando el onset aunque ahora espere a la altura.
     assert salidas[1].instante == pytest.approx(instante_ataque)
+
+
+def test_la_racha_estable_supera_al_suavizador():
+    """El margen del arreglo del camino A, AFIRMADO donde se puede romper.
+
+    Lo que impide que el camino A vuelva a sellar el ataque de una nota con la
+    altura de la ANTERIOR es una desigualdad entre dos modulos:
+
+        CUADROS_PARA_NOTA_ESTABLE > TAMANO_SUAVIZADO // 2
+
+    Una mediana movil de n no gira hasta que `n // 2 + 1` de sus entradas son
+    nuevas, asi que tras un cambio de altura el pipeline publica la altura vieja
+    durante `n // 2` cuadros: 2 con el suavizador de cinco. Si la racha que el
+    camino A exige no superara esa cifra, esperar a la racha no serviria de nada
+    y el defecto de la Task 6b volveria entero.
+
+    Se cuenta en CUADROS por los dos lados, asi que la desigualdad no depende
+    de la frecuencia de muestreo, ni del tempo, ni del salto de analisis: es la
+    parte robusta del margen y por eso es la que se afirma.
+
+    **NO es todo el margen, y conviene no leerla como una garantia.** La racha
+    vieja real es `TAMANO_SUAVIZADO // 2` MAS los cuadros cuya ventana de
+    analisis cruza la frontera entre dos notas y aun publican la altura vieja de
+    forma creible, y ese segundo sumando depende del perfil de afinacion. Medido
+    sobre 30 semillas de sintesis x 7 fronteras de nota:
+
+        guitarra estandar  ventana  85,3 ms (4,1 cuadros)  racha vieja 2  margen 1
+        bajo de 4 cuerdas  ventana 170,7 ms (8,1 cuadros)  racha vieja 3  margen 0
+        bajo de 5 cuerdas  ventana 170,7 ms (8,1 cuadros)  racha vieja 3  margen 0
+
+    Con el bajo el margen es CERO. Esta prueba seguiria verde y el defecto
+    estaria de vuelta, asi que no cubre el bajo: lo dice para que nadie crea que
+    si. Ver el docstring de `nucleo/ejercicios/pulsaciones.py`.
+    """
+    assert CUADROS_PARA_NOTA_ESTABLE > TAMANO_SUAVIZADO // 2
+
+
+def test_una_altura_que_solo_cuaja_dos_cuadros_no_se_cuenta():
+    """El CASO DEGRADADO del arreglo del camino A, escrito y probado.
+
+    Desde que el camino A espera racha estable, una pulsacion cuya altura solo
+    se publica de forma creible durante menos de `cuadros_para_nota_estable`
+    cuadros no se cuenta: ni el camino A (no hay racha) ni el camino B (igual)
+    la resuelven. Antes el camino A la habria cobrado leyendo un solo cuadro.
+
+    Es el precio del arreglo y no un defecto nuevo, pero es un precio REAL: son
+    notas muy cortas o muy apagadas -un staccato seco, una nota cortada con la
+    palma, un armonico que se apaga enseguida-. Con guitarra estandar no se ha
+    observado en audio (las rachas creibles de una nota normal duran veinte
+    cuadros y mas), asi que el caso se deja escrito aqui, no corregido: el dia
+    que aparezca tocando, esta prueba es donde empieza la conversacion, y
+    cambiarla sera deliberado.
+    """
+    detector = DetectorPulsaciones()
+    salidas = correr(
+        detector,
+        [silencio()] * 6
+        + [suena("E4")] * (detector.cuadros_para_nota_estable - 1)
+        + [silencio()] * 6,
+    )
+    assert salidas == []
+
+    # Y la contraprueba, para que la de arriba no pase por un motivo tonto: con
+    # un cuadro creible mas, la misma pulsacion si se cuenta.
+    otro = DetectorPulsaciones()
+    con_uno_mas = correr(
+        otro,
+        [silencio()] * 6
+        + [suena("E4")] * otro.cuadros_para_nota_estable
+        + [silencio()] * 6,
+    )
+    assert [pulsacion.nota for pulsacion in con_uno_mas] == ["E4"]
+
+
+# El paso de las dos pruebas de la caducidad NO es el de produccion (21 ms), y
+# es a proposito: 0,25/16 = 0,015625 es exacto en binario, asi que
+# `ataque + 16 pasos - ataque` da EXACTAMENTE `VENTANA_ATAQUE_COMO_ONSET_S` y el
+# borde se puede probar en la igualdad en vez de cerca de ella. Con 21 ms la
+# resta no cae nunca justo en el filo y el borde quedaria sin clavar.
+PASO_FINO = VENTANA_ATAQUE_COMO_ONSET_S / 16
+INSTANTE_DEL_ATAQUE = 0.25
+
+
+def secuencia_que_envejece_el_ataque(cuadros_dudosos: int):
+    """Un ataque y una racha creible que llega `cuadros_dudosos + 1` pasos despues.
+
+    El ataque cae en un cuadro SIN confianza -el transitorio de la pua-, detras
+    van cuadros dudosos al mismo nivel (que no marcan ataque nuevo: el
+    refractario y la mediana de la referencia lo impiden, y la prueba lo
+    comprueba) y al final tres cuadros creibles de otra altura.
+    """
+    sec = [(0.0, silencio()), (0.1, silencio()), (INSTANTE_DEL_ATAQUE, dudoso("D4", nivel=-15.0))]
+    for k in range(1, cuadros_dudosos + 1):
+        sec.append((INSTANTE_DEL_ATAQUE + k * PASO_FINO, dudoso("D4", nivel=-15.0)))
+    for k in range(cuadros_dudosos + 1, cuadros_dudosos + 4):
+        sec.append((INSTANTE_DEL_ATAQUE + k * PASO_FINO, suena("E4", nivel=-15.0)))
+    return sec
+
+
+def correr_con_instantes(detector, instantes_y_cuadros):
+    """Como `correr`, pero con el instante de cada cuadro escrito a mano."""
+    salidas = []
+    for instante, resultado in instantes_y_cuadros:
+        pulsacion = detector.procesar(resultado, instante)
+        if pulsacion is not None:
+            salidas.append(pulsacion)
+    return salidas
+
+
+def test_un_ataque_justo_en_el_filo_todavia_firma_el_onset():
+    """El borde de la caducidad del camino A: la igualdad TODAVIA firma.
+
+    La lectura pendiente del camino A se abandona cuando el ataque envejece MAS
+    de `VENTANA_ATAQUE_COMO_ONSET_S`, no cuando llega a esa edad, y la
+    desigualdad estricta no es un detalle de estilo: tiene que coincidir con la
+    de `_onset_camino_b`, que usa `<=` y por tanto SI firma con un ataque de
+    exactamente esa edad. Si una usara `>` y la otra `<=` con otro valor, el
+    mismo ataque seria a la vez demasiado viejo para esperarlo y lo bastante
+    joven para firmarlo, que es incoherente.
+
+    Aqui la racha cuaja a los 16 pasos finos del ataque, o sea exactamente
+    `VENTANA_ATAQUE_COMO_ONSET_S` despues, y el onset tiene que ser el del
+    ataque. Cambiar el `>` por `>=` deja el onset en el comienzo de la racha.
+    """
+    detector = DetectorPulsaciones()
+    salidas = correr_con_instantes(detector, secuencia_que_envejece_el_ataque(13))
+
+    assert [pulsacion.nota for pulsacion in salidas] == ["E4"]
+    assert salidas[0].instante == pytest.approx(INSTANTE_DEL_ATAQUE)
+
+
+def test_un_ataque_pasado_el_filo_se_abandona_y_el_onset_es_la_racha():
+    """El otro lado del borde: un paso mas y el ataque ya no vale.
+
+    La racha cuaja a los 17 pasos finos, que es mas de
+    `VENTANA_ATAQUE_COMO_ONSET_S`: la lectura pendiente se abandona y resuelve
+    el camino B con el comienzo de la racha. Es lo que impide que un ataque
+    viejisimo firme una racha que no es suya, y lo que una caducidad con el
+    umbral subido -a un segundo, por ejemplo- rompe: con ella el onset volveria
+    a ser el del ataque.
+    """
+    detector = DetectorPulsaciones()
+    salidas = correr_con_instantes(detector, secuencia_que_envejece_el_ataque(14))
+
+    assert [pulsacion.nota for pulsacion in salidas] == ["E4"]
+    comienzo_de_la_racha = INSTANTE_DEL_ATAQUE + 15 * PASO_FINO
+    assert salidas[0].instante == pytest.approx(comienzo_de_la_racha)
+    # Y se dice tambien en negativo, que es lo que la caducidad existe para
+    # impedir: el onset NO es el del ataque, que ya era demasiado viejo.
+    assert salidas[0].instante != pytest.approx(INSTANTE_DEL_ATAQUE)
+
+
+def secuencia_donde_el_camino_a_salva_el_ataque_siguiente():
+    """Los ocho cuadros donde el camino A cambia el resultado, y no otros.
+
+    Salieron de una busqueda EXHAUSTIVA: de las 1.679.616 secuencias de ocho
+    cuadros sobre un alfabeto de seis lecturas, solo 9 distinguen al detector
+    con camino A del mismo detector con el camino A apagado, y las 9 tienen esta
+    forma. La diferencia esta siempre en el ONSET de la segunda pulsacion -nunca
+    en su altura ni en cuantas hay-, y es de un cuadro: 21 ms.
+
+        0  nivel pero sin nota (el ataque de la primera pulsacion)
+        1  E4 creible a -15 dB
+        2  E4 creible a -40 dB   el nivel baja: entra en la referencia
+        3  E4 creible a -40 dB   aqui resuelve la primera pulsacion
+        4  E4 creible a -15 dB   el nivel sube 12,5 dB sobre la mediana: ATAQUE
+        5  D4 creible a -15 dB   empieza la racha de la segunda nota
+        6  D4 creible a -15 dB
+        7  D4 creible a -15 dB   aqui resuelve la segunda pulsacion
+    """
+    return (
+        [dudoso("E4", nivel=-15.0)]
+        + [suena("E4", nivel=-15.0), suena("E4", nivel=-40.0), suena("E4", nivel=-40.0)]
+        + [suena("E4", nivel=-15.0)]
+        + [suena("D4", nivel=-15.0)] * 3
+    )
+
+
+def test_el_camino_a_reinicia_la_racha_y_eso_salva_el_onset_siguiente():
+    """Para que sirve el camino A ahora que los dos caminos leen la misma racha.
+
+    Sirve por su REINICIO, no por su lectura. Cuando el camino A sella, pone a
+    cero la cuenta de la racha; el camino B no la toca. Y esa diferencia decide
+    el onset de la pulsacion SIGUIENTE:
+
+    - Con camino A: la racha de E4 queda a cero en el cuadro 3, asi que en el 4
+      no hay `nota_estable`, nadie llama a `_sellar` y el ataque del cuadro 4
+      SOBREVIVE. En el cuadro 7 el camino A firma el D4 con el, 0,084.
+    - Sin camino A: la racha de E4 sigue viva en el cuadro 4, `_sellar` la
+      descarta por nombre y el descarte BORRA el ataque (es lo que evita que
+      firme la pulsacion siguiente cuando no le toca). En el cuadro 7 ya no hay
+      ataque y `_onset_camino_b` cae al comienzo de la racha, 0,105.
+
+    Son 21 ms de onset, y van en la direccion que importa: 0,084 es el ataque de
+    verdad y 0,105 es cuando el detector de tono acabo de cuajar.
+
+    **Es la unica prueba del archivo que muere si el camino A desaparece**, y por
+    eso existe. Las demas no pueden: con el ataque reciente, `_onset_camino_b`
+    devuelve el mismo instante que el camino A habria firmado -eso es la
+    unificacion del onset, y es deliberada-, asi que en el caso normal los dos
+    caminos dan exactamente el mismo resultado. Buscar el caso que los distingue
+    hubo que hacerlo por fuerza bruta.
+    """
+    detector = DetectorPulsaciones()
+    salidas = correr(detector, secuencia_donde_el_camino_a_salva_el_ataque_siguiente())
+
+    assert [pulsacion.nota for pulsacion in salidas] == ["E4", "D4"]
+    instante_del_ataque = 4 * PASO
+    comienzo_de_la_racha = 5 * PASO
+    assert salidas[1].instante == pytest.approx(instante_del_ataque)
+    assert salidas[1].instante != pytest.approx(comienzo_de_la_racha)

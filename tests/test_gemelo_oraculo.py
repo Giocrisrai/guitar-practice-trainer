@@ -12,6 +12,17 @@ sonda sobre `escala_de_ocho_notas()` con `PERFECTO`, la semilla por omision y el
 salto de produccion, y van redondeadas hacia arriba al milisegundo. Si alguna se
 queda corta, la respuesta no es subirla: es mirar por que la cadena cambio.
 
+**Y UNA DE ELLAS ESTA DESACTUALIZADA A PROPOSITO: `SUELO_DESFASE_MS`.** Sigue
+valiendo lo medido ANTES del arreglo del camino A de la Task 6c (+129,8 ms),
+cuando lo que hoy se mide son +152,3 ms. No es un descuido ni una medicion que se
+quedo corta: es un numero que se va a mover otra vez en la tarea siguiente -la
+que alinea el reloj de la pieza con el final del silencio de cabecera del
+gemelo-, y reinscribirlo dos veces seria tirar la primera medida. La unica
+asercion que lo usa esta aislada en
+`test_la_mediana_del_desfase_sigue_en_el_suelo_inscrito`, en `xfail(strict=True)`
+y con la razon escrita. Las demas constantes estan al dia, `SUELO_MAXIMO_MS`
+incluida: el maximo no se movio con el arreglo.
+
 **EL SIGNO ES PARTE DEL DATO.** Los desfases medidos son todos POSITIVOS: la
 cadena reporta las notas mas TARDE de lo que sonaron, porque tarda en publicar un
 ataque (~20 ms de deteccion mas ~165 de estabilizacion). Eso es latencia real y
@@ -24,12 +35,17 @@ nadie veria.
 relajada**, pero ya no son las mismas dos que al escribir el archivo. Van en
 `strict` para que el dia que dejen de fallar la suite se ponga ROJA y haya que
 venir aqui a quitar la marca: un `xfail` no estricto las dejaria desaparecer en
-silencio. Los numeros esperados son los correctos y no se tocan.
+silencio.
+
+Los numeros ESPERADOS de esas pruebas son los correctos y no se tocan -8 notas
+limpias de 8-. Lo que si esta desactualizado, y dicho arriba, es la constante
+`SUELO_DESFASE_MS` contra la que compara la segunda.
 
 - `..._las_cuenta_todas_como_limpias`: defecto medido que sigue abierto, la
   cabecera tecnica sin descontar en el eje del cabezal (128 ms) mas el temblor
   del onset. Su docstring lo descompone.
-- `..._el_suelo_conocido`: NO es un defecto, es una medicion **pendiente de
+- `..._la_mediana_del_desfase_sigue_en_el_suelo_inscrito`: NO es un defecto,
+  es una medicion **pendiente de
   remedir**. El arreglo del camino A de la Task 6c movio la mediana del suelo y
   la tarea siguiente la va a mover otra vez; el numero se reinscribe una sola
   vez, cuando el eje del cabezal este decidido. Su razon de `xfail` lo explica.
@@ -56,9 +72,17 @@ NOTAS = 8
 
 # La mediana del desfase que la cadena introduce, MEDIDA: +129,8 ms sobre la
 # escala entera al tempo escrito. Redondeada hacia arriba.
+#
+# **ES LA MEDIDA DE ANTES DEL ARREGLO DEL CAMINO A (Task 6c), y sigue aqui a
+# proposito: hoy la mediana es +152,3 ms.** Ver la cabecera del archivo y la
+# razon del `xfail` de `test_la_mediana_del_desfase_sigue_en_el_suelo_inscrito`,
+# que es la unica asercion que la usa. No subirla sin remedir: el numero se mueve
+# otra vez en cuanto se decida el eje del cabezal.
 SUELO_DESFASE_MS = 130.0
 
-# El peor desfase de esa misma pasada, MEDIDO: +188,3 ms. No es la mediana con
+# El peor desfase de esa misma pasada, MEDIDO: +188,3 ms, y sigue siendo +188,3
+# tras el arreglo del camino A: el maximo no se movio ni un milisegundo, asi que
+# esta constante esta AL DIA. No es la mediana con
 # otro nombre: es el que decide si la cadena se acerca al techo del detector, y
 # por eso tiene su propio suelo.
 SUELO_MAXIMO_MS = 189.0
@@ -222,6 +246,37 @@ def test_el_oraculo_sin_bucle_las_cuenta_todas_como_limpias():
     assert _suma(informe, "limpias") == NOTAS
 
 
+def test_el_desfase_que_introduce_la_cadena_habla_tarde_y_cabe_en_el_techo():
+    """El suelo, la parte que NO depende del numero inscrito. **Verde, y tiene
+    que seguir verde**: es la que delata un defecto de verdad.
+
+    Son las cuatro afirmaciones del suelo que el arreglo del camino A de la Task
+    6c dejo intactas, y estan aqui -separadas de la quinta, la de la mediana-
+    porque `xfail(strict=True)` solo exige que una prueba FALLE, no que falle por
+    el motivo declarado. Con las cinco juntas bajo un `xfail`, un desfase
+    NEGATIVO o un maximo que cruzara el techo del detector dejaban la prueba
+    igual de roja y la suite igual de verde: justo el defecto que nadie veria.
+
+    El signo se afirma aparte y antes del valor absoluto: positivo es «la cadena
+    habla tarde», que es la latencia real del detector. Negativo seria que la
+    cadena reporta ataques ANTES de que suenen, que es imposible y por tanto un
+    defecto; una asercion escrita solo en valor absoluto lo dejaria pasar. Era
+    exactamente el sintoma del defecto de la Task 6b, que firmaba desfases de
+    -460,7 ms.
+
+    Medido tras el arreglo: mediana +152,3 ms y maximo +188,3 ms. El maximo no se
+    movio ni un milisegundo respecto de antes, asi que su suelo inscrito sigue
+    valiendo y se afirma aqui; la mediana subio y su asercion se fue a la prueba
+    de abajo.
+    """
+    veredicto, _, _ = _pasada_del_oraculo()
+
+    assert veredicto.desfase_introducido_ms > 0.0
+    assert veredicto.desfase_maximo_ms > 0.0
+    assert abs(veredicto.desfase_maximo_ms) <= SUELO_MAXIMO_MS + MARGEN_MS
+    assert abs(veredicto.desfase_maximo_ms) < TECHO_DEL_DETECTOR_MS
+
+
 @pytest.mark.xfail(
     strict=True,
     reason=(
@@ -234,36 +289,26 @@ def test_el_oraculo_sin_bucle_las_cuenta_todas_como_limpias():
         "descuenta). Inscribir +152,3 ahora seria publicar un numero provisional "
         "con cara de definitivo y tirarlo en la pasada siguiente. Se remide y se "
         "reinscribe cuando el eje del cabezal este decidido; entonces esta marca "
-        "se cae sola y hay que venir a quitarla."
+        "se cae sola y hay que venir a quitarla. ESTA PRUEBA LLEVA UNA SOLA "
+        "ASERCION a proposito: las otras cuatro del suelo viven en "
+        "test_el_desfase_que_introduce_la_cadena_habla_tarde_y_cabe_en_el_techo "
+        "y siguen vigilando, porque un xfail no distingue por que se falla."
     ),
 )
-def test_el_desfase_que_introduce_la_cadena_es_el_suelo_conocido():
-    """El suelo: cuanto retrasa la cadena a quien toca exacto, y hacia donde.
+def test_la_mediana_del_desfase_sigue_en_el_suelo_inscrito():
+    """La quinta afirmacion del suelo, la unica que el arreglo movio.
 
-    Medido antes del arreglo del camino A: mediana +129,8 ms, maximo +188,3 ms.
-    **Medido despues (Task 6c): mediana +152,3 ms, maximo +188,3 ms** -el maximo
-    no se movio ni un milisegundo, porque el camino A ya no adelanta ningun
-    sellado; lo que subio es la mediana, porque ahora TODAS las notas esperan a
-    que la racha cuaje en vez de que algunas resolvieran antes de tiempo con la
-    altura equivocada-. Las dos siguen por debajo del techo del detector
-    (250 ms), con 62 ms de holgura, que es lo que deja a la cadena seguir
-    reconociendo la nota que ella misma retraso.
+    `SUELO_DESFASE_MS` sigue siendo +130 ms, que es lo medido ANTES del arreglo
+    del camino A. Hoy la mediana es +152,3 ms y la razon es buena: antes algunas
+    notas resolvian pronto CON LA ALTURA EQUIVOCADA y ahora todas esperan a que
+    la racha cuaje. La dispersion sobre 30 semillas se estrecha de 43,5 a
+    34,5 ms con el arreglo puesto, asi que la cadena es mas previsible, no menos.
 
-    Las constantes de este archivo son las de ANTES del arreglo, a proposito:
-    ver la razon del `xfail`.
-
-    El signo se afirma aparte y antes del valor absoluto: positivo es «la cadena
-    habla tarde», que es la latencia real del detector. Negativo seria que la
-    cadena reporta ataques ANTES de que suenen, que es imposible y por tanto un
-    defecto; una asercion escrita solo en valor absoluto lo dejaria pasar.
+    No se reinscribe el numero aqui: ver la razon del `xfail`.
     """
     veredicto, _, _ = _pasada_del_oraculo()
 
-    assert veredicto.desfase_introducido_ms > 0.0
-    assert veredicto.desfase_maximo_ms > 0.0
     assert abs(veredicto.desfase_introducido_ms) <= SUELO_DESFASE_MS + MARGEN_MS
-    assert abs(veredicto.desfase_maximo_ms) <= SUELO_MAXIMO_MS + MARGEN_MS
-    assert abs(veredicto.desfase_maximo_ms) < TECHO_DEL_DETECTOR_MS
 
 
 def test_el_oraculo_aguanta_el_tempo_minimo():
