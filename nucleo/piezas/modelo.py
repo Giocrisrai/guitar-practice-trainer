@@ -62,9 +62,21 @@ class Seccion:
     """Un trozo con nombre: "Intro", "Estribillo", "Solo".
 
     Viene de los marcadores del archivo -Guitar Pro los llama marcadores, MusicXML
-    marcas de ensayo, MIDI marcadores de texto-. No se usan todavia: la etapa 3c
-    practicara por secciones, y si se tiran al importar no hay forma de
-    reconstruirlas despues.
+    marcas de ensayo, MIDI marcadores de texto-, y si se tiran al importar no hay
+    forma de reconstruirlas despues.
+
+    **SE USAN, y desde la etapa 3c.** El camino entero es: `compases_de_la_seccion`
+    (`nucleo/piezas/compases.py`) convierte el indice de una seccion en el
+    `(primer_compas, ultimo_compas)` con que se arma un tramo;
+    `SesionCarril._secciones_en_compases` (`servidor/piezas.py`) hace esa
+    conversion para todas y las publica ya hechas, y el selector «Seccion» de
+    `interfaz/src/ControlesEstudio.tsx` las ofrece en una lista y pone el tramo de
+    la pasada en la que se elija. La conversion vive en el nucleo y viaja hecha a
+    proposito: la interfaz no repite la formula.
+
+    Se piden por INDICE y no por nombre porque los nombres se repiten -una cancion
+    con dos estribillos trae dos secciones llamadas "Estribillo"-; la razon larga
+    esta en `compases_de_la_seccion`.
     """
 
     nombre: str

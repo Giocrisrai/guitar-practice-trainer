@@ -89,7 +89,31 @@ SILENCIO = ResultadoAnalisis(
 )
 
 
-def publicar(sesion, reloj, resultado, cuadros=1, paso=0.021):
+# Lo que dura un cuadro de analisis en estas pruebas, que es el paso por omision
+# de `publicar` y la cadencia de produccion (21 ms). Como margen de una medicion
+# en segundos es lo mas fino que tiene sentido pedir: por debajo de un cuadro, lo
+# que se estaria midiendo es en que cuadro cayo la cuenta y no el comportamiento.
+PASO_DE_CUADRO_S = 0.021
+UN_CUADRO_S = PASO_DE_CUADRO_S
+
+
+def reloj_del_seguidor(sesion_carril) -> float:
+    """El reloj del SEGUIDOR, leido sin pasar por `estado()`.
+
+    Se mete por dentro a proposito, y es el unico sitio del archivo que lo hace.
+    `estado()` no sirve para esto: antes de publicar MIRA, y la mirada puede mover
+    el reloj, asi que lo que devuelve es el reloj ya arreglado y no el que la
+    pausa dejo. Y el espejo publico del servidor (`_instante`) tampoco, porque es
+    una copia que se adopta en cada aviso y no el reloj de verdad.
+
+    Lo que el seguidor tiene es la verdad del cabezal (`EstadoEstudio.carril` ES
+    `SeguidorPieza.estado`), asi que leerlo aqui es leer el reloj que el nucleo
+    lleva mientras entra audio.
+    """
+    return sesion_carril._estudio._seguidor.estado.instante_s
+
+
+def publicar(sesion, reloj, resultado, cuadros=1, paso=PASO_DE_CUADRO_S):
     """Publica cuadros de analisis como lo haria la sesion de audio de verdad.
 
     El instante que acompaña a cada cuadro es el del reloj del ANALISIS, que en
@@ -405,14 +429,46 @@ def test_mientras_no_hay_senal_los_cuadros_no_mueven_el_carril():
 
 
 def test_la_pausa_le_congela_el_reloj_tambien_al_seguidor():
-    """Sin mirar el estado en medio: la pausa tiene que bastarse sola.
+    """El reloj DEL SEGUIDOR durante la pausa, leido sin pasar por `estado()`.
 
-    Mientras entra audio, el reloj del carril lo lleva el SEGUIDOR (cuadro a
-    cuadro), asi que pausar sin congelarselo deja su origen viejo, y el primer
-    cuadro de la vuelta lo coloca tantos segundos dentro de la pieza como haya
-    durado la pausa. `estado()` lo tapa cuando alguien lo llama -mueve el reloj a
-    mano en cuanto los cuadros se quedan viejos-, y por eso esta prueba no lo
-    llama hasta el final: sin cliente de WebSocket conectado nadie lo llamaria.
+    **ESTA PRUEBA MEDIA OTRA COSA QUE SU NOMBRE, y esto es lo que se cambio.** Lo
+    que hacia era un apagon de 100 cuadros (2,1 s) y una sola lectura de
+    `estado()` al final. Dos problemas:
+
+    1. **El apagon pasaba de `ESPERA_SIN_CUADROS_S`** (0,25 s), asi que lo que
+       salvaba el cabezal no era la pausa sino el hueco de audio: al volver la
+       señal, `ConductorDeEstudio.observar` ve el hueco en el reloj del analisis y
+       recoloca por ese camino. Medido: quitando el `congelar_en` de
+       `mover_el_reloj` -o sea, dejando la pausa sin congelar nada- esta prueba
+       seguia PASANDO, y la que caia era
+       `test_una_pausa_corta_con_audio_entrando_tampoco_mueve_el_cabezal`, que es
+       la que si usa una pausa mas corta que esa espera.
+    2. **Leia el estado publicado y no el reloj del seguidor**, que es lo que el
+       nombre promete. El estado publicado sale de `estado()`, que antes de
+       publicarlo MIRA, y la mirada puede recolocar el reloj: lo que se afirmaba
+       era el resultado de ese arreglo, no el estado en que la pausa dejo al
+       seguidor.
+
+    Lo que mide ahora, con una pausa de 5 cuadros -mas corta que
+    `ESPERA_SIN_CUADROS_S`, para que el camino del hueco de audio NO pueda
+    taparlo- y sin una sola llamada a `estado()` en medio:
+
+    * el reloj del seguidor **no se mueve en ningun cuadro de la pausa**, y se
+      queda exactamente en el espejo del conductor: 0,168 s, un cuadro (21 ms)
+      por detras de los 0,189 s a los que lo dejo el ultimo cuadro con señal. Ese
+      cuadro de diferencia no es deriva: es la decision escrita en
+      `ConductorDeEstudio.observar` de que el espejo lo adopta la MIRADA y no el
+      cuadro, para que la pausa congele el cabezal en un punto fijo. Por eso se
+      afirma la igualdad con el espejo y no con el ultimo cuadro;
+    * y al volver la señal **retoma desde ahi**: 12 cuadros despues esta en
+      0,399 s, o sea el punto congelado mas once cuadros (el primero no cuenta,
+      porque es el que vuelve a fijar la correspondencia entre los dos relojes).
+      Sin congelar, ese primer cuadro le mete la pausa entera en el cabezal y se
+      iria a 0,504 s, cinco cuadros mas alla.
+
+    Que la lectura sea del seguidor y no de `estado()` es lo que hace que la
+    segunda afirmacion sea del nucleo: sin cliente de WebSocket conectado nadie
+    llama a `estado()`, asi que esto es lo que de verdad pasa.
     """
     reloj = RelojFalso()
     sesion_carril, sesion = carril(reloj)
@@ -422,11 +478,34 @@ def test_la_pausa_le_congela_el_reloj_tambien_al_seguidor():
     # mediria nada (ver `agotar_cuenta_atras`).
     agotar_cuenta_atras(sesion_carril, reloj)
     publicar(sesion, reloj, SILENCIO, cuadros=10)
+    con_senal = reloj_del_seguidor(sesion_carril)
+    assert con_senal == pytest.approx(0.189, abs=UN_CUADRO_S)
+
+    # La pausa tiene que ser MAS CORTA que la espera sin cuadros, o el camino del
+    # hueco de audio recoloca el reloj y esta prueba deja de medir la pausa. Se
+    # afirma aqui para que la premisa no se pudra si alguna de las dos cambia.
+    assert PASO_DE_CUADRO_S * 5 < ESPERA_SIN_CUADROS_S
     sesion.senal_ausente = True
-    publicar(sesion, reloj, SILENCIO, cuadros=100)
+    congelado = None
+    for _ in range(5):
+        publicar(sesion, reloj, SILENCIO, cuadros=1)
+        ahora = reloj_del_seguidor(sesion_carril)
+        if congelado is None:
+            congelado = ahora
+        # Quieto EXACTAMENTE, cuadro a cuadro: no es una tolerancia, es que
+        # `observar` no le da de comer al estudio mientras el reloj esta congelado.
+        assert ahora == congelado
+
+    # Congelado donde lo dejo la ultima MIRADA, que es el espejo del conductor, y
+    # no donde lo dejo el ultimo cuadro: un cuadro por detras, a proposito.
+    assert congelado == sesion_carril._instante
+    assert congelado == pytest.approx(con_senal - UN_CUADRO_S, abs=1e-9)
+
     sesion.senal_ausente = False
     publicar(sesion, reloj, SILENCIO, cuadros=12)
-    assert sesion_carril.estado()["instante_s"] == pytest.approx(0.21 + 0.25, abs=0.1)
+    assert reloj_del_seguidor(sesion_carril) == pytest.approx(
+        congelado + 11 * PASO_DE_CUADRO_S, abs=UN_CUADRO_S
+    ), "el primer cuadro tras la pausa le metio el apagon en el cabezal"
 
 
 def test_una_pausa_corta_con_audio_entrando_tampoco_mueve_el_cabezal():

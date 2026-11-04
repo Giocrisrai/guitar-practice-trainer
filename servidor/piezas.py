@@ -436,7 +436,16 @@ class SesionCarril:
         tras un hueco de audio, si el cuadro llega durante la pausa- es politica y
         esta en `ConductorDeEstudio.observar`, con los comentarios que explican
         cada linea. Aqui solo queda lo que es del servidor: el reloj de pared, la
-        falta de señal y el espejo que publica el WebSocket.
+        falta de señal y `_instante`, que es un espejo del reloj del conductor.
+
+        **Ese espejo NO es lo que publica el WebSocket**, y decirlo aqui era falso
+        desde que el reloj de esta clase paso a ser una copia del del estudio: lo
+        que se publica sale del `EstadoEstudio` que devuelve el conductor (ver
+        `_instantanea`, que recibe el estado como parametro y no lee este campo).
+        `_instante` no lo lee hoy ningun codigo de produccion; su unico lector
+        vivo es `tests/test_sesion_carril.py`, que lo usa para mirar el reloj desde
+        fuera. La razon de que se quede -y lo que habria que hacer el dia que
+        estorbe- esta en el docstring de la clase.
         """
         ahora = self._reloj()
         ausente = self._sin_senal()

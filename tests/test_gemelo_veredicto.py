@@ -691,10 +691,25 @@ def test_la_cuenta_atras_se_traduce_pasando_por_la_cadena_de_verdad():
     cada ataque cae 6 ms mas tarde dentro de su ventana de analisis, y la nota se
     resuelve en el cuadro de al lado o en el de dos mas alla segun donde caiga.
 
-    Asi que no hay sesgo: cuatro notas suben y cuatro bajan. La mediana baja
-    porque cuatro de las ocho se publican antes, y el maximo sube porque la nota 5
-    se publica DOS cuadros mas tarde (170,3 -> 206,3). Un eje desplazado habria
-    movido las ocho en el mismo sentido y por la misma cantidad.
+    **Asi que no hay sesgo, y el recuento es este** (este parrafo decia «cuatro
+    suben y cuatro bajan» y era falso: nadie habia contado la fila):
+
+    * en bruto suben TRES (las notas 1, 3 y 5) y bajan CINCO (0, 2, 4, 6 y 7);
+    * en cuadros enteros, TRES se publican mas tarde (1 con un cuadro, 3 y 5 con
+      dos), DOS antes (2 y 7, con dos cuadros cada una) y TRES en el MISMO cuadro
+      (0, 4 y 6, cuyos -6,0 ms son solo la fase y no un cuadro de movimiento).
+
+    La mediana baja porque las cinco que bajan se llevan el centro del reparto,
+    dos de ellas con los 48 ms enteros. Y el maximo sube porque **CAMBIA DE
+    NOTA**: sin cuenta atras el peor era la nota 0 con 188,3 ms, y con cuenta es
+    la nota 5, que se publica dos cuadros mas tarde y se va a 206,3. El salto de
+    170,3 a 206,3 es el de la nota 5 consigo misma -no el del maximo-, y
+    confundirlos era comparar notas distintas: 206,3 - 188,3 = 18,0 ms, que es la
+    subida del maximo.
+
+    **La conclusion es la misma y es lo que importa**: un eje desplazado habria
+    movido las ocho notas en el mismo sentido y por la misma cantidad, y aqui hay
+    notas en los dos sentidos y tres que no cambian de cuadro.
 
     Con el termino de la cuenta atras quitado del modulo salen 8 perdidas y 8
     inventadas de 8.

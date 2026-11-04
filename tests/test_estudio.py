@@ -632,6 +632,61 @@ def test_un_apagon_en_plena_cuenta_atras_no_la_gasta_ni_mueve_el_cabezal():
     assert sesion.estado.cuenta_atras_restante_s == pytest.approx(entera - 0.021)
 
 
+def test_congelar_en_mueve_el_reloj_y_no_le_toca_la_cuenta_atras():
+    """`congelar_en` NO es letra muerta y no es `colocar_en`. Las dos mitades.
+
+    Se escribio esta prueba porque el plan de la etapa sospechaba que
+    `congelar_en` ya no lo llamaba nadie. **Lo llaman dos sitios y los dos estan
+    vivos**: `ConductorDeEstudio.observar`, cuando un cuadro llega tras un hueco de
+    audio, y `ConductorDeEstudio.mover_el_reloj`, al congelar por falta de señal.
+    Quitar cualquiera de los dos pone roja una prueba (medido:
+    `tests/test_conductor.py::test_un_hueco_de_audio_no_entra_en_la_pieza` el
+    primero, y dos de `tests/test_sesion_carril.py` el segundo). Lo que no tenia
+    era una prueba de su CONTRATO, que es lo que esta es.
+
+    El contrato son dos cosas y las dos se afirman aqui, porque una sola no
+    distingue a `congelar_en` de su hermana:
+
+    1. **mueve el cabezal**, igual que `colocar_en`;
+    2. **y no le toca la cuenta atras**, al contrario que `colocar_en`, que la
+       CANCELA a proposito porque colocar el cabezal es una orden del usuario.
+
+    La segunda es la que existe por un defecto medido: los dos sitios del
+    conductor llamaban a `colocar_en`, y entonces la cuenta que `arrancar()`
+    acababa de abrir se moria con el primer cuadro de audio, unos 21 ms despues de
+    pulsar «empezar». Congelar el reloj no es una orden sobre donde esta el
+    cabezal: es decir «se queda donde esta», que es exactamente lo que la cuenta
+    atras quiere.
+
+    La mitad de `colocar_en` va en la misma prueba y sobre una sesion gemela a
+    proposito: lo que se afirma es la DIFERENCIA entre las dos puertas, y una
+    prueba que solo mirara `congelar_en` la pasaria igual una implementacion que
+    fuera `colocar_en` con otro nombre.
+    """
+    plan = PlanDePasada(primer_compas=1, ultimo_compas=2, compases_de_cuenta_atras=1)
+
+    congelada = SesionDeEstudio(pieza_de_doce_compases(), plan)
+    congelada.arrancar()
+    # Cuatro segundos: un compas de 4/4 a 60 ppm.
+    assert congelada.estado.cuenta_atras_restante_s == pytest.approx(4.0)
+
+    estado = congelada.congelar_en(3.0)
+    assert estado.carril.instante_s == pytest.approx(3.0)
+    assert estado.cuenta_atras_restante_s == pytest.approx(4.0), (
+        "congelar el reloj le tiro la cuenta atras: eso es lo que hace "
+        "`colocar_en`, y por eso el conductor dejo de usarla"
+    )
+
+    colocada = SesionDeEstudio(pieza_de_doce_compases(), plan)
+    colocada.arrancar()
+    estado = colocada.colocar_en(3.0)
+    assert estado.carril.instante_s == pytest.approx(3.0)
+    assert estado.cuenta_atras_restante_s == 0.0, (
+        "`colocar_en` tiene que seguir cancelando la cuenta: es su contrato, y es "
+        "lo que hace que `congelar_en` tenga que existir aparte"
+    )
+
+
 def test_tras_la_vuelta_del_bucle_las_notas_se_pueden_volver_a_cobrar():
     sesion = SesionDeEstudio(
         pieza_de_doce_compases(),
@@ -1488,6 +1543,81 @@ def test_procesar_y_cambiar_plan_no_se_cruzan_sobre_la_misma_sesion():
     http.join(2.0)
     assert cambiado.is_set()
     assert sesion.plan.primer_compas == 3
+
+
+def test_pausar_no_se_cuela_dentro_de_un_cuadro_y_el_reloj_se_queda_quieto():
+    """`pausar` BAJO CANDADO: cuando vuelve, el reloj ya no se mueve.
+
+    Es el mismo cruce de hilos que `test_procesar_y_cambiar_plan_no_se_cruzan...`
+    -el hilo HTTP contra el del analisis sobre la misma sesion- aplicado a la
+    pausa, que estaba FUERA del candado. Lo que el candado compra no es la
+    asignacion del interruptor, que es atomica: es que la pausa no pueda caer EN
+    MEDIO de un cuadro. `procesar` lee `_en_pausa` al entrar y mueve el reloj
+    despues, asi que una pausa colada entre esas dos cosas volvia con el cabezal
+    todavia por mover y el cuadro lo movia DESPUES: el reloj avanzaba despues de
+    que `pausar()` hubiera vuelto, y la interfaz ya estaba pintando el boton de
+    pausa.
+
+    Las dos aserciones son las dos mitades de eso y las dos caen sin el candado,
+    medido:
+
+    * `pausar()` **espera** a que el cuadro en vuelo termine (sin candado vuelve
+      en el acto, y el `wait(0.2)` lo ve);
+    * y el reloj que hay cuando `pausar()` vuelve es el ULTIMO, no uno que el
+      cuadro en vuelo vaya a mover todavia: sin candado el cuadro lo deja en 1,0 s
+      y la lectura de la pausa habia visto 0,0.
+
+    La espera corta solo le da tiempo a una implementacion sin candado a
+    equivocarse; con el candado es determinista. Y el candado es reentrante, asi
+    que `pausar` tomandolo no estorba a nadie que lo llame desde dentro.
+    """
+    sesion = SesionDeEstudio(pieza_de_doce_compases())
+    # El primer cuadro fija la correspondencia entre el reloj del analisis y el de
+    # la pieza; el siguiente es el que mueve el cabezal, y es el que se para a
+    # mitad.
+    sesion.procesar(SILENCIO, 0.0)
+    assert sesion.estado.carril.instante_s == pytest.approx(0.0)
+
+    dentro, soltar, pausado = threading.Event(), threading.Event(), threading.Event()
+    original = sesion._seguidor.procesar
+
+    def procesar_lento(resultado, instante):
+        dentro.set()
+        soltar.wait(2.0)
+        return original(resultado, instante)
+
+    sesion._seguidor.procesar = procesar_lento
+    analisis = threading.Thread(target=lambda: sesion.procesar(SILENCIO, 1.0))
+    analisis.start()
+    assert dentro.wait(2.0), "el cuadro no llego al seguidor"
+
+    al_pausar = []
+
+    def pausar():
+        sesion.pausar()
+        # El reloj EN EL MOMENTO en que `pausar()` vuelve. Es la lectura que la
+        # interfaz hace al pintar el boton, y la que tiene que ser la definitiva.
+        al_pausar.append(sesion.estado.carril.instante_s)
+        pausado.set()
+
+    http = threading.Thread(target=pausar)
+    http.start()
+    assert not pausado.wait(0.2), "pausar se colo dentro de un procesar"
+
+    soltar.set()
+    analisis.join(2.0)
+    http.join(2.0)
+    assert pausado.is_set()
+    assert sesion.estado.en_pausa is True
+
+    # El cuadro en vuelo movio el cabezal a 1,0 s, y `pausar()` espero a verlo:
+    # por eso lo que leyo es ese 1,0 y no el 0,0 de antes del cuadro.
+    assert al_pausar == [pytest.approx(1.0)]
+    # Y a partir de ahi el reloj esta quieto de verdad: ni los cuadros que siguen
+    # llegando ni el reloj de pared lo mueven mientras la pausa este puesta.
+    sesion.procesar(SILENCIO, 2.0)
+    sesion.avanzar(5.0)
+    assert sesion.estado.carril.instante_s == pytest.approx(1.0)
 
 
 def informe_de(filas, ritmo_aproximado=False):

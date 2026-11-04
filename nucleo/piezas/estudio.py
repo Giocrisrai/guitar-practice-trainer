@@ -1043,11 +1043,35 @@ class SesionDeEstudio:
             return self.estado
 
     def pausar(self) -> None:
-        """Pausa a voluntad del usuario. No es lo mismo que perder la senal."""
-        self._en_pausa = True
+        """Pausa a voluntad del usuario. No es lo mismo que perder la senal.
+
+        **BAJO CANDADO, y no por simetria.** El interruptor es una sola
+        asignacion y por tanto atomica, asi que lo que el candado compra no es la
+        asignacion: es que la pausa no pueda caer EN MEDIO de un cuadro. Esto lo
+        llama el hilo HTTP y `procesar` corre en el del analisis, que lee
+        `_en_pausa` al entrar y mueve el reloj despues; sin candado, una pausa que
+        se colara entre esas dos cosas volvia con el cabezal todavia por mover y
+        el cuadro lo movia DESPUES, o sea que el reloj avanzaba despues de que
+        `pausar()` hubiera vuelto. Con el candado, `pausar()` espera a que el
+        cuadro en vuelo termine y a partir de que vuelve el reloj esta quieto, que
+        es lo que la interfaz promete al pintar el boton.
+
+        El candado es reentrante (ver el docstring de la clase), asi que llamar a
+        esto desde dentro de otro metodo que ya lo tenga tomado no se bloquea.
+        """
+        with self._candado:
+            self._en_pausa = True
 
     def reanudar(self) -> None:
-        self._en_pausa = False
+        """Quita la pausa del usuario. BAJO CANDADO, por lo mismo que `pausar`.
+
+        Reanudar no mueve el cabezal ni un milimetro -el tiempo que no se conto no
+        se suma, ver `avanzar`-, asi que lo que el candado ordena aqui es la otra
+        mitad: que el primer cuadro que vuelva a contar sea entero y no uno que ya
+        estaba a medio camino de descartarse por la pausa.
+        """
+        with self._candado:
+            self._en_pausa = False
 
     # -- el informe --------------------------------------------------------
 
