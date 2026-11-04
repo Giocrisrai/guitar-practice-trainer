@@ -369,15 +369,26 @@ class RecolectorDeLaSesion:
     pieza aparte.
 
     Se compara por VALOR y por vuelta, igual que en la cadena directa: el seguidor
-    puede tirar lo que lleva anotado (`olvidar_tramo` al dar la vuelta,
-    `cerrar_repeticion` al cerrarla), asi que la lista no solo crece y contar
-    cuantas van no basta. Los indices se repiten vuelta a vuelta, de modo que la
-    nota 2 de la vuelta 3 es un reporte distinto de la nota 2 de la vuelta 1.
+    puede tirar lo que lleva anotado -`_tocadas` se poda en `olvidar_tramo`, al que
+    se llega por la vuelta de un bucle, por `saltar_al_compas` o por
+    `cambiar_plan`-, asi que la lista no solo crece y contar cuantas van no basta.
+    Los indices se repiten vuelta a vuelta, de modo que la nota 2 de la vuelta 3 es
+    un reporte distinto de la nota 2 de la vuelta 1.
 
-    Quien recoja tiene que hacerlo DEPRISA, mas a menudo que el ritmo al que la
-    cadena publica reportes: lo que se pierda entre dos lecturas, si ademas se
-    tira en medio, no se puede recuperar. A 30 Hz -el ritmo del WebSocket de
-    produccion- sobra.
+    **POR QUE HAY QUE RECOGER DEPRISA, Y NO ES POR PERDER NOTAS.** En una pasada
+    DERECHA -sin bucle y sin que el usuario salte, que es como corre el escaparate-
+    no se poda nada: una nota publicada sigue publicada hasta el final, y leer
+    despacio no pierde ninguna. Lo que se estropea es el INSTANTE: aqui se anota
+    `instante_pasada_s` de la PRIMERA lectura en que la nota se ve, asi que cada
+    lectura que se tarda en mirar se le suma al desfase que el veredicto publica.
+    Medido sobre la pieza de demostracion leyendo a 5 Hz: las 48 notas se recogen
+    igual, pero la mediana del desfase sube de +181,9 a +226,1 ms y aparecen 37
+    perdidas por emparejamiento, porque los reportes se salen de los 250 ms que el
+    detector admite. O sea: leer despacio no pierde reportes, los ENVEJECE, y el
+    veredicto se lo cobra a la cadena.
+
+    Perder notas de verdad solo pasa por los dos caminos que si podan -un bucle o
+    una accion del usuario- y leyendo mas despacio que ellos.
     """
 
     def __init__(self) -> None:

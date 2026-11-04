@@ -16,6 +16,7 @@ y su salida queda en el informe de la tarea, que es donde sirve de algo.
 
 import os
 import pathlib
+import statistics
 import subprocess
 import time
 import urllib.error
@@ -27,6 +28,7 @@ from herramientas.gemelo import (
     _analizador_de_argumentos,
     _esperar_al_servidor,
     _seguir_la_pasada,
+    al_borde_del_techo_del_detector,
     armar_la_pasada,
     codigo_de_salida,
     main,
@@ -338,6 +340,89 @@ def test_el_resumen_no_avisa_cuando_el_hallazgo_no_es_el_borde():
     assert "Aviso" not in resumen(limpio, escala_de_ocho_notas(), PERFECTO, True)
 
 
+@pytest.mark.parametrize("perfil", [CAOS, PRINCIPIANTE, INTERMEDIO])
+def test_el_aviso_del_borde_no_sale_con_un_perfil_que_falla_notas(perfil):
+    """**Una REGRESION medida, y la peor clase: el aviso excusaba fallos de verdad.**
+
+    La primera version del aviso solo miraba el veredicto. Medido por el revisor con
+    `--perfil caos` sobre 35 notas de 48 y un peor desfase de +226,3 ms -a 4 ms del
+    umbral, asi que no es hipotetico-: el escaparate imprimia «con el gemelo PERFECTO
+    esos hallazgos NO son del producto» y daba por el borde del detector trece notas
+    que el perfil habia dejado de tocar A PROPOSITO.
+
+    Con un perfil que falla notas los hallazgos SI son del interprete, que es
+    justamente lo que esos perfiles existen para provocar. Excusarlos convierte la
+    demostracion en un juez complaciente en el unico texto que el usuario lee.
+    """
+    sucio_en_el_borde = _veredicto(
+        perdidas=((1, 5),), inventadas=1, maximo=248.0, tocadas=5
+    )
+
+    texto = resumen(sucio_en_el_borde, escala_de_ocho_notas(), perfil, completada=True)
+
+    assert "CON HALLAZGOS" in texto
+    assert "Aviso" not in texto, (
+        f"el aviso del borde no puede salir con el perfil '{perfil.nombre}': "
+        "excusaria notas que el interprete dejo de tocar"
+    )
+    assert "NO son del producto" not in texto
+
+
+def test_el_aviso_del_borde_no_afirma_que_llego_todo_si_no_llego():
+    """La ultima linea del aviso COMPARA contra el total escrito, no lo supone.
+
+    Decia «las 35 notas llegaron» leyendo `notas_tocadas` como si fuera el total de
+    la pieza: con trece notas falladas afirmaba que habia llegado todo. Ahora el
+    aviso solo sale cuando lo tocado coincide con lo escrito, y la linea nombra los
+    dos numeros para que la afirmacion no pueda salir sin ser verdad.
+    """
+    incompleto = _veredicto(perdidas=((1, 5),), inventadas=1, maximo=248.0, tocadas=5)
+    entero = _veredicto(perdidas=((1, 5),), inventadas=1, maximo=248.0, tocadas=8)
+
+    sin_aviso = resumen(incompleto, escala_de_ocho_notas(), PERFECTO, True)
+    con_aviso = resumen(entero, escala_de_ocho_notas(), PERFECTO, True)
+
+    assert "Aviso" not in sin_aviso, (
+        "con menos notas tocadas que escritas el aviso no puede afirmar que llego todo"
+    )
+    assert "Aviso" in con_aviso
+    assert "las 8 notas de las 8 escritas" in con_aviso, (
+        "la linea tiene que nombrar lo tocado Y lo escrito; decia solo lo tocado"
+    )
+
+
+def test_el_aviso_del_borde_no_sale_sobre_una_pasada_sin_completar():
+    """Una pasada cortada por la mitad tiene hallazgos que pueden venir del corte.
+
+    El borde del detector no los explica, asi que el aviso no se los atribuye. Y la
+    linea del aviso dice «la pasada se completo»: sin esta condicion lo diria de una
+    pasada que no se completo, con «SIN COMPLETAR» tres lineas mas arriba.
+    """
+    sucio = _veredicto(perdidas=((1, 5),), inventadas=1, maximo=248.0)
+
+    texto = resumen(sucio, escala_de_ocho_notas(), PERFECTO, completada=False)
+
+    assert "SIN COMPLETAR" in texto
+    assert "Aviso" not in texto
+
+
+def test_el_aviso_del_borde_no_se_cuela_por_una_variante_del_perfil_perfecto():
+    """Se compara el perfil ENTERO, no su nombre.
+
+    `replace(PERFECTO, probabilidad_de_fallo=0.5)` conserva `nombre="perfecto"` y
+    falla la mitad de las notas. Desde la linea de ordenes solo llegan los cuatro
+    perfiles de fabrica, pero `al_borde_del_techo_del_detector` es publica y la
+    condicion tiene que ser la de verdad: lo que justifica la frase es que el
+    interprete no pueda fallar, no como se llame.
+    """
+    disfrazado = replace(PERFECTO, probabilidad_de_fallo=0.5)
+    sucio = _veredicto(perdidas=((1, 5),), inventadas=1, maximo=248.0)
+
+    assert disfrazado.nombre == "perfecto"
+    assert al_borde_del_techo_del_detector(sucio, PERFECTO, True) is True
+    assert al_borde_del_techo_del_detector(sucio, disfrazado, True) is False
+
+
 @pytest.mark.parametrize("compas, pulsos", [((4, 4), 4), ((3, 4), 3), ((7, 8), 3.5)])
 def test_la_cuenta_atras_es_la_misma_que_la_del_estudio(compas, pulsos):
     """La cuenta atras del gemelo y la del plan tienen que ser EL MISMO numero.
@@ -570,6 +655,22 @@ def test_el_analizador_no_tiene_argumentos_posicionales():
 # por cuadro y un cuarto de la lectura del mutante.
 PASO_DEL_GUION_S = 0.05
 
+# Lo mas que el muestreo del escaparate puede añadirle de mediana al desfase que el
+# veredicto publica.
+#
+# MEDIDO sobre este mismo guion, tres pasadas por ritmo:
+#
+#     120 Hz (el del escaparate)   2,8  3,4  4,1  ms
+#      30 Hz (el del WebSocket)   12,9 15,2 16,6  ms
+#       5 Hz (el mutante)         77,8 81,0 82,6  ms
+#
+# Quince milisegundos: cuatro veces la mediana medida -sitio para el temblor de los
+# hilos en una suite cargada- y cinco veces por debajo del regimen del mutante, que
+# muere siempre. Cae ademas en el borde inferior del regimen de 30 Hz, asi que una
+# vuelta al ritmo del WebSocket se detecta la mitad de las veces; no se afirma que
+# lo mate, porque 30 Hz no es el mutante que se quiere matar.
+RETRASO_DEL_MUESTREO_MS = 15.0
+
 
 def _nota_publicada(indice: int, midi: int = 55) -> dict:
     """Una `NotaTocada` tal y como el servidor la publica en `/api/piezas/estado`."""
@@ -588,16 +689,33 @@ def _nota_publicada(indice: int, midi: int = 55) -> dict:
 class ServidorDeGuion:
     """Un `/api/piezas/estado` de mentira cuyo contenido depende del RELOJ.
 
-    Cada nota aparece en UN SOLO cuadro del guion y desaparece despues, que es lo
-    que de verdad hace el servidor: `SesionCarril` publica lo que el seguidor lleva
-    anotado y el seguidor lo TIRA al cerrar una vuelta o al dar la vuelta al tramo.
-    De ahi que el ritmo de lectura importe: lo que no se lea mientras esta
-    publicado no se recupera.
+    **ACUMULA, como el carril de verdad**, y la version anterior no: publicaba cada
+    nota un cuadro y la tiraba, diciendo que era «lo que hace `SesionCarril`». No lo
+    es, y lo comprobo el re-revisor. Rastreado: `SesionCarril._instantanea` publica
+    `estado.a_dict()`, que trae `tocadas=tuple(self._tocadas)`
+    (`nucleo/piezas/seguimiento.py:420`), y `_tocadas` **solo se poda en
+    `olvidar_tramo`** (`:404`), al que se llega por `_dar_la_vuelta` del bucle, por
+    `saltar_al_compas` o por `cambiar_plan` -o sea, la vuelta de un bucle o una
+    accion del usuario-. La demostracion corre con `en_bucle=False`, asi que **en
+    una pasada derecha no se tira nada** y una nota publicada en el cuadro N sigue
+    publicada hasta el final.
 
-    El guion se indexa por tiempo transcurrido y no por numero de llamada, para
-    que un lector que lea la mitad de veces vea la mitad de los cuadros y no los
-    mismos cuadros mas tarde. Es lo que convierte «leer despacio» en «perder
-    notas», que es la propiedad que se quiere afirmar.
+    Asi que el ritmo de lectura NO importa por perder notas. Importa por el
+    INSTANTE: `RecolectorDeLaSesion` anota `instante_pasada_s` **de la primera
+    lectura en que ve la nota**, de modo que leer despacio empuja ese instante mas
+    tarde, sube la mediana del desfase y acerca el veredicto al techo de 250 ms del
+    detector. Medido en la ejecucion real a 5 Hz: **no se pierde ni una** de las 48
+    notas, pero la mediana sube de +181,9 a +226,1 ms y aparecen 37 perdidas por
+    emparejamiento. Ese es el mecanismo, y es el que estas pruebas afirman ahora.
+
+    El guion se indexa por tiempo transcurrido y no por numero de llamada, para que
+    un lector que lea la mitad de veces vea los cuadros mas tarde y no los mismos
+    cuadros al mismo ritmo.
+
+    `instante_s` NO se cuantiza al cuadro: es el tiempo transcurrido tal cual, que
+    es lo que hace el cabezal de verdad. De esa forma el retraso que el muestreo
+    introduce se puede medir -es `instante_s` de la lectura menos el instante en que
+    la nota aparecio- en vez de quedar escondido en el redondeo del cuadro.
     """
 
     def __init__(
@@ -612,44 +730,52 @@ class ServidorDeGuion:
         self.arranque = time.monotonic()
         self.peticiones: list[str] = []
 
-    def _cuadro(self) -> int:
-        return int((time.monotonic() - self.arranque) / PASO_DEL_GUION_S)
+    def instante_de_la_nota(self, indice: int) -> float:
+        """Cuando aparece la nota `indice`, en el reloj de la pasada del guion.
+
+        Las de antes de completarse, una por cuadro desde el cero; las de despues,
+        una por cuadro desde el cuadro en que la pasada se completa.
+        """
+        if indice < self.notas_antes:
+            return indice * PASO_DEL_GUION_S
+        puesto = indice - self.notas_antes
+        return (self.cuadros_hasta_completar + puesto) * PASO_DEL_GUION_S
 
     def __call__(self, url: str, limite_s: float = 5.0) -> dict:
         self.peticiones.append(url)
-        cuadro = self._cuadro()
+        transcurrido = time.monotonic() - self.arranque
+        cuadro = int(transcurrido / PASO_DEL_GUION_S)
         completado = cuadro >= self.cuadros_hasta_completar
-        if cuadro < self.notas_antes:
-            # Antes de completarse: la nota `cuadro` y solo ella.
-            tocadas = [_nota_publicada(cuadro)]
-        elif completado:
-            # Despues de completarse la cadena sigue publicando los ultimos
-            # ataques, uno por cuadro: es lo que la cola existe para recoger.
-            puesto = cuadro - self.cuadros_hasta_completar
-            tocadas = (
-                [_nota_publicada(self.notas_antes + puesto)]
-                if puesto < self.notas_tras_completar
-                else []
-            )
-        else:
-            tocadas = []
+        # ACUMULADAS: todas las que ya aparecieron siguen publicadas.
+        publicadas = self.notas_antes + self.notas_tras_completar
+        tocadas = [
+            _nota_publicada(indice)
+            for indice in range(publicadas)
+            if transcurrido >= self.instante_de_la_nota(indice)
+        ]
         return {
             "repeticion": 1,
-            "instante_s": round(cuadro * PASO_DEL_GUION_S, 3),
+            "instante_s": round(transcurrido, 4),
             "tocadas": tocadas,
             "completado": completado,
         }
 
 
-def test_seguir_la_pasada_recoge_todo_lo_que_se_publico_mientras_corria(monkeypatch):
-    """Lee lo bastante deprisa para no perder ni una nota publicada.
+def test_seguir_la_pasada_lee_mas_fino_de_lo_que_mide(monkeypatch):
+    """**Mata el mutante `LECTURAS_POR_SEGUNDO = 5`, y por el mecanismo de verdad.**
 
-    **Mata el mutante `LECTURAS_POR_SEGUNDO = 5`.** Cada nota del guion esta
-    publicada durante un solo cuadro de 50 ms, asi que un lector a 5 Hz -una
-    lectura cada 200 ms- se salta tres de cada cuatro. No es una prueba del servidor
-    de mentira: es la propiedad de la que cuelga el veredicto del escaparate, y el
-    informe de la tarea ya media que a 30 Hz «casi todos los hallazgos eran del
-    muestreo y no de la cadena».
+    Lo que el ritmo de lectura decide no es cuantas notas se recogen -el carril
+    acumula, asi que no se pierde ninguna- sino **con que instante se anotan**:
+    `RecolectorDeLaSesion` apunta el reloj del cabezal de la primera lectura en que
+    ve la nota, de modo que cada lectura que se tarda en mirar se suma al desfase
+    que el veredicto publica. Medido en la pasada real a 5 Hz: 48 de 48 notas
+    recogidas y la mediana del desfase subiendo de +181,9 a +226,1 ms, a 24 ms del
+    techo de 250 ms del detector.
+
+    Asi que lo que se afirma es LA MEDIANA del retraso que el muestreo introduce.
+    El techo inscrito esta medido y su tabla esta junto a `RETRASO_DEL_MUESTREO_MS`:
+    a 120 Hz la mediana sale en 2,8-4,1 ms y a 5 Hz en 77,8-82,6. No es una
+    tolerancia de calidad: es la cota que distingue los dos regimenes.
     """
     guion = ServidorDeGuion(notas_antes=8, notas_tras_completar=0)
     monkeypatch.setattr("herramientas.gemelo._leer_json", guion)
@@ -657,10 +783,30 @@ def test_seguir_la_pasada_recoge_todo_lo_que_se_publico_mientras_corria(monkeypa
     recolector, completada = _seguir_la_pasada("http://127.0.0.1:0", duracion_s=0.5)
 
     assert completada is True
-    recogidos = sorted(reporte.tocada.indice for reporte in recolector.registro.reportes)
+    reportes = recolector.registro.reportes
+    recogidos = sorted(reporte.tocada.indice for reporte in reportes)
     assert recogidos == list(range(8)), (
-        f"se perdieron notas publicadas: se recogieron {recogidos}"
+        f"el carril acumula, asi que no se puede perder ninguna: {recogidos}"
     )
+
+    retrasos_ms = [
+        1000.0
+        * (
+            reporte.instante_pasada_s
+            - guion.instante_de_la_nota(reporte.tocada.indice)
+        )
+        for reporte in reportes
+    ]
+    assert min(retrasos_ms) >= 0.0, (
+        "el instante anotado no puede ser anterior a que la nota apareciera"
+    )
+    mediana_ms = statistics.median(retrasos_ms)
+    assert mediana_ms <= RETRASO_DEL_MUESTREO_MS, (
+        f"el muestreo añade {mediana_ms:.1f} ms de mediana al desfase que el "
+        f"veredicto publica, y lo medido a 120 Hz es menos de "
+        f"{RETRASO_DEL_MUESTREO_MS:.0f}: se esta leyendo demasiado despacio"
+    )
+
     assert guion.peticiones, "no se llamo al endpoint"
     assert all(url.endswith("/api/piezas/estado") for url in guion.peticiones), (
         "la pasada se sigue por el mismo endpoint que lee el navegador"
@@ -674,6 +820,10 @@ def test_seguir_la_pasada_sigue_leyendo_despues_de_completarse(monkeypatch):
     publicar un ataque, asi que la ultima nota del tramo aparece cuando la pasada ya
     esta completada. Sin cola se perderia SIEMPRE, y el escaparate acusaria a la
     cadena de algo que hizo bien.
+
+    Esta SI es una perdida de notas, y no se contradice con que el carril acumule
+    (ver `ServidorDeGuion`): lo que acumula se publica mientras alguien lea, y sin
+    cola nadie lee despues del final. La nota no se tira; es que nadie la mira.
     """
     guion = ServidorDeGuion(
         notas_antes=4, notas_tras_completar=2, cuadros_hasta_completar=5
@@ -751,18 +901,41 @@ class DemostracionDeMentira:
     Es el seam que permite probar las decisiones de `main` -el codigo de salida y
     el quedarse vivo- sin levantar `uvicorn`, sin abrir un puerto y sin pagar los
     31 s de la pieza de demostracion.
+
+    **GUARDA LO QUE RECIBE, y la version anterior no.** Contaba las veces y tiraba
+    los cuatro argumentos, asi que nadie comprobaba que llegaran: tres mutantes del
+    re-revisor sobrevivian la suite entera por esto -el puerto cambiado por el de
+    fabrica (o sea, `--puerto` ignorado), el plan cambiado por `None` (y con el
+    `--tempo`, `--bucle`, `--repeticiones` y `--cuenta-atras` tirados de golpe) y
+    `completada` cambiado por `True` al imprimir-. Un doble que no mira lo que le
+    dan solo prueba que lo llaman.
     """
 
     def __init__(self, veredicto, completada: bool = True) -> None:
         self.veredicto = veredicto
         self.completada = completada
         self.veces = 0
+        self.recibido: list[dict] = []
 
     def __call__(self, pieza, interpretacion, plan, puerto):
         self.veces += 1
+        self.recibido.append(
+            {
+                "pieza": pieza,
+                "interpretacion": interpretacion,
+                "plan": plan,
+                "puerto": puerto,
+            }
+        )
         if self.veredicto is None:
             return None
         return self.veredicto, self.completada
+
+    @property
+    def ultimo(self) -> dict:
+        """Lo que se le paso en la ultima llamada."""
+        assert self.recibido, "no se la llamo ni una vez"
+        return self.recibido[-1]
 
 
 def _main_con_doble(monkeypatch, argv, veredicto, completada=True):
@@ -861,3 +1034,69 @@ def test_una_linea_de_ordenes_imposible_no_llega_a_levantar_nada(monkeypatch, ca
     assert codigo == 2
     assert demostracion.veces == 0, "no se monta nada con una linea de ordenes mala"
     assert "9-2" in capsys.readouterr().out
+
+
+def test_main_le_pasa_a_la_demostracion_el_puerto_y_el_plan_que_se_pidieron():
+    """Lo que `main` monta tiene que LLEGAR a la demostracion, y nadie lo miraba.
+
+    Tres mutantes del re-revisor vivian aqui: cambiar `argumentos.puerto` por el
+    puerto de fabrica -o sea, ignorar `--puerto` por completo-, y cambiar el `plan`
+    por `None`, que tira de golpe `--tempo`, `--bucle`, `--repeticiones` y
+    `--cuenta-atras`. Los dos pasaban las 55 pruebas porque el doble contaba las
+    llamadas y tiraba los argumentos.
+
+    El plan se compara contra el que `armar_la_pasada` construye con la misma linea
+    de ordenes, que es la fuente de verdad: comparar campo a campo contra numeros
+    escritos aqui seria una segunda copia de la regla.
+    """
+    linea = [
+        "--puerto", "9321",
+        "--tempo", "0.6",
+        "--bucle", "2-3",
+        "--repeticiones", "2",
+        "--cuenta-atras", "1",
+        "--salir-al-acabar",
+    ]
+    demostracion = DemostracionDeMentira(_veredicto())
+    with pytest.MonkeyPatch.context() as parche:
+        parche.setattr("herramientas.gemelo._correr_la_demostracion", demostracion)
+        main(linea)
+
+    esperados = armar_la_pasada(_analizador_de_argumentos().parse_args(linea))
+    pieza_esperada, _, _, plan_esperado = esperados
+
+    assert demostracion.ultimo["puerto"] == 9321, "se ignoro --puerto"
+    assert demostracion.ultimo["plan"] == plan_esperado, (
+        "el plan que llega a la demostracion no es el que se pidio"
+    )
+    assert demostracion.ultimo["pieza"] == pieza_esperada
+    # La interpretacion no se compara por igualdad -lleva un array de muestras
+    # dentro-, asi que se comprueba que es la del tramo y el tempo pedidos.
+    recibida = demostracion.ultimo["interpretacion"]
+    assert (recibida.primer_compas, recibida.ultimo_compas) == (2, 3)
+    assert recibida.factor_tempo == 0.6
+    assert recibida.repeticiones == 2
+
+
+def test_el_resumen_que_main_imprime_dice_si_la_pasada_se_completo(monkeypatch, capsys):
+    """`completada` tiene que LLEGAR al resumen, y tampoco lo miraba nadie.
+
+    Mata el mutante que pasa `True` fijo a `resumen`: el escaparate podia imprimir
+    «pasada : completada» sobre una pasada que no se completo mientras devolvia 1,
+    que es la contradiccion mas desconcertante que puede tener este informe -el
+    numero dice que algo fue mal y el texto dice que todo acabo bien-.
+    """
+    codigo, _, _ = _main_con_doble(
+        monkeypatch, ["--salir-al-acabar"], _veredicto(), completada=False
+    )
+    salida_cortada = capsys.readouterr().out
+
+    codigo_entero, _, _ = _main_con_doble(
+        monkeypatch, ["--salir-al-acabar"], _veredicto(), completada=True
+    )
+    salida_entera = capsys.readouterr().out
+
+    assert codigo == 1 and "SIN COMPLETAR" in salida_cortada
+    assert "pasada  : completada" not in salida_cortada
+    assert codigo_entero == 0 and "pasada  : completada" in salida_entera
+    assert "SIN COMPLETAR" not in salida_entera

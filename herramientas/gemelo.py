@@ -32,9 +32,11 @@ RESUMEN LO DICE.** La sesion completa publica su peor ataque a 236-250 ms de que
 sonara, contra los 250 ms que el detector admite para seguir hablando del mismo
 ataque: no le queda margen, y de ahi salen una o dos notas sin emparejar en algunas
 pasadas. La medida y su causa estan en la Task 11; lo que importa aqui es que el
-aviso se imprime junto al veredicto (ver `al_borde_del_techo_del_detector`) y que
-la tolerancia NO se afloja para que el codigo de salida sea cero: la demostracion
-dice lo que mide.
+aviso se imprime junto al veredicto -SOLO con el perfil PERFECTO y solo si el
+gemelo toco todo lo escrito, ver `al_borde_del_techo_del_detector`- y que la
+tolerancia NO se afloja para que el codigo de salida sea cero: la demostracion dice
+lo que mide. Con cualquier otro perfil los hallazgos SI son del interprete, y
+excusarlos seria mentir.
 
 LA PIEZA SE PONE EN MARCHA POR `SesionCarril.iniciar` Y NO POR
 `/api/piezas/iniciar`, y no es por comodidad: ese endpoint admite dos formas de
@@ -65,7 +67,11 @@ from nucleo.gemelo.dispositivo import (
     esperar_la_cabecera,
 )
 from nucleo.gemelo.interprete import Interpretacion, interpretar
-from nucleo.gemelo.perfiles import PERFILES_DE_DESTREZA, PerfilDeDestreza
+from nucleo.gemelo.perfiles import (
+    PERFECTO,
+    PERFILES_DE_DESTREZA,
+    PerfilDeDestreza,
+)
 from nucleo.gemelo.piezas_de_prueba import pieza_de_demostracion
 from nucleo.gemelo.veredicto import (
     TOLERANCIA_DE_EMPAREJAMIENTO_MS,
@@ -209,7 +215,9 @@ def codigo_de_salida(veredicto: Veredicto) -> int:
     return 0 if veredicto.limpio else 1
 
 
-def al_borde_del_techo_del_detector(veredicto: Veredicto) -> bool:
+def al_borde_del_techo_del_detector(
+    veredicto: Veredicto, perfil: PerfilDeDestreza, completada: bool
+) -> bool:
     """Si los hallazgos de este veredicto caben en el margen que ya no hay.
 
     La sesion completa publica su peor ataque entre 236 y 250 ms despues de que
@@ -224,13 +232,38 @@ def al_borde_del_techo_del_detector(veredicto: Veredicto) -> bool:
     falta decirlo donde el usuario lo lee, porque lo que ve si no es «el programa se
     equivoco de nota».
 
+    **LAS CUATRO CONDICIONES SON NECESARIAS, y tres de ellas se añadieron porque la
+    primera version MENTIA.** Solo miraba el veredicto, asi que el aviso salia con
+    cualquier perfil: medido con `--perfil caos` sobre 35 notas de 48, imprimia «con
+    el gemelo PERFECTO esos hallazgos NO son del producto» y excusaba como «el
+    borde» trece notas que el perfil habia dejado de tocar a proposito. Un aviso
+    que excusa un fallo de verdad es peor que no tener aviso: es el escaparate
+    mintiendo justo donde existe para decir la verdad.
+
+    * `perfil == PERFECTO` -- es lo UNICO que justifica la frase. Se compara contra
+      el perfil entero y no contra `perfil.nombre`, porque una variante hecha con
+      `replace(PERFECTO, probabilidad_de_fallo=0.5)` conserva el nombre y falla
+      notas; desde la linea de ordenes solo llegan los cuatro de fabrica, pero la
+      funcion es publica y la condicion tiene que ser la de verdad.
+    * `completada` -- una pasada que se corto por la mitad tiene hallazgos que
+      pueden venir del corte, y el borde no los explica.
+    * `notas_tocadas == notas_de_la_pieza` -- el aviso afirma que lo que importa de
+      la pasada es que el gemelo toco todo lo escrito, asi que lo COMPARA en vez de
+      creerselo. Con `PERFECTO` siempre coincide (no falla notas), de modo que esta
+      condicion no quita ningun caso real: esta para que la afirmacion no pueda
+      salir sin ser verdad.
+    * los dos de siempre: hay hallazgos y el peor desfase llega a `AVISO_DESDE_MS`.
+
     NO se afloja la tolerancia para que el veredicto salga limpio: ese borde es un
     hecho medido de la cadena, y taparlo convertiria la demostracion en un juez
     complaciente justo donde el usuario lo va a sentir. Lo que se hace es
-    explicarlo.
+    explicarlo, y solo cuando la explicacion es cierta.
     """
     return (
-        not veredicto.limpio
+        perfil == PERFECTO
+        and completada
+        and veredicto.notas_tocadas == veredicto.notas_de_la_pieza
+        and not veredicto.limpio
         and abs(veredicto.desfase_maximo_ms) >= AVISO_DESDE_MS
     )
 
@@ -271,7 +304,7 @@ def resumen(
             f"    mal adjudicada: vuelta {vuelta}, nota {indice}, "
             f"la cadena dijo midi {midi}"
         )
-    if al_borde_del_techo_del_detector(veredicto):
+    if al_borde_del_techo_del_detector(veredicto, perfil, completada):
         lineas.extend(
             [
                 "",
@@ -284,10 +317,10 @@ def resumen(
                 " que la cadena directa porque el hilo de analisis corre a ~30 ms y"
                 " no a los 21 nominales (medido en la Task 11), y con eso se queda"
                 " sin margen.",
-                "  Lo que importa de esta pasada es que las"
-                f" {veredicto.notas_tocadas} notas llegaron y la pasada se"
-                " completo. No se ha aflojado ninguna tolerancia para que saliera"
-                " limpia.",
+                "  Lo que importa de esta pasada es que el gemelo toco las"
+                f" {veredicto.notas_tocadas} notas de las"
+                f" {veredicto.notas_de_la_pieza} escritas y la pasada se completo."
+                " No se ha aflojado ninguna tolerancia para que saliera limpia.",
             ]
         )
     return "\n".join(lineas)
