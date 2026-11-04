@@ -22,7 +22,7 @@ en vez de pasar en silencio.
 """
 
 import ast
-from dataclasses import replace
+from dataclasses import fields, replace
 from pathlib import Path
 
 import pytest
@@ -46,10 +46,12 @@ from nucleo.gemelo.veredicto import (
     Veredicto,
     juzgar,
 )
-from nucleo.piezas.compases import pulsos_del_compas
+from nucleo.afinaciones import PERFILES
+from nucleo.piezas.compases import pulsos_del_compas, pulsos_por_compas
 from nucleo.piezas.conductor import ConductorDeEstudio
 from nucleo.piezas.estudio import PlanDePasada, SesionDeEstudio
-from nucleo.piezas.modelo import pulsos_a_segundos
+from nucleo.piezas.digitacion import digitar
+from nucleo.piezas.modelo import NotaEnPieza, Pieza, pulsos_a_segundos
 from nucleo.piezas.seguimiento import NotaTocada
 
 FUENTE_DEL_VEREDICTO = (
@@ -64,17 +66,17 @@ FUENTE_DEL_VEREDICTO = (
 # produccion. Es el numero que decide si una holgura de emparejamiento sirve.
 RETRASOS_MEDIDOS_MS = (188.3, 71.3, 164.3, 131.3, 98.3, 128.3, 74.3, 167.3)
 
-DECISIONES_DE_LA_CADENA = frozenset(
-    {
-        "acertada",
-        "afinada",
-        "clasificacion",
-        "_clasificar",
-        "ventana_de_acierto",
-        "esta_afinada",
-        "desfase_s",
-    }
-)
+# Las REGLAS del seguidor: funciones que deciden si una nota valio. No son campos
+# de `NotaTocada`, asi que no se pueden derivar, y van a mano.
+REGLAS_DE_LA_CADENA = frozenset({"_clasificar", "ventana_de_acierto", "esta_afinada"})
+
+# Los campos de `NotaTocada` que son una DECISION de la cadena: todos menos los
+# dos hechos. Se DERIVAN del dataclass y no se escriben a mano, para que un campo
+# de decision nuevo quede vigilado el dia que alguien lo añada.
+HECHOS_DE_LA_TOCADA = frozenset({"indice", "midi"})
+DECISIONES_DE_LA_TOCADA = frozenset(
+    campo.name for campo in fields(NotaTocada)
+) - HECHOS_DE_LA_TOCADA
 
 
 # -- los instrumentos ---------------------------------------------------------
@@ -254,7 +256,7 @@ def test_el_reporte_de_otra_altura_sale_como_mal_adjudicado():
 
 
 def test_el_desfase_lleva_signo():
-    """Un valor absoluto escondería la direccion, que es justo lo que diagnostica.
+    """Un valor absoluto esconderia la direccion, que es justo lo que diagnostica.
 
     Una cadena que reporta tarde y una que reporta pronto se arreglan por caminos
     distintos, y con el valor absoluto las dos salen iguales.
@@ -469,12 +471,17 @@ def test_el_veredicto_no_importa_reglas_del_seguidor():
     """El anti-objetivo de la spec §2, convertido en prueba.
 
     Se lee el modulo con `ast` y no con `in`, para que los docstrings puedan
-    EXPLICAR por que no se consultan `acertada` ni la clasificacion sin que la
-    prueba se caiga por nombrarlas. Lo que se vigila son los nombres que el codigo
-    usa de verdad: de `nucleo.piezas.seguimiento` solo puede entrar el tipo
-    `NotaTocada`, y de una `NotaTocada` solo se pueden leer `indice` y `midi`.
-    Cualquier otro campo es una decision de la cadena, y un veredicto que
-    consultara las decisiones de la cadena se estaria dando la razon.
+    EXPLICAR por que no se consultan los veredictos de la cadena sin que la prueba
+    se caiga por nombrarlos.
+
+    Y se afirma por LISTA BLANCA, que es la correccion de la primera version: con
+    una lista negra de siete nombres, `cents` no estaba en ella, asi que el
+    veredicto podia leer `reporte.tocada.cents` y la prueba seguia verde; y un
+    campo de decision nuevo en `NotaTocada` habria entrado sin que nadie se
+    enterase. Ahora se afirma lo que el docstring del modulo promete -de una
+    `NotaTocada` solo se leen `indice` y `midi`- y la lista de lo prohibido se
+    DERIVA del dataclass. La prueba se rompe cuando alguien añade una lectura, no
+    cuando alguien añade un campo a una lista que hay que mantener a mano.
     """
     arbol = ast.parse(FUENTE_DEL_VEREDICTO.read_text(encoding="utf-8"))
 
@@ -486,10 +493,29 @@ def test_el_veredicto_no_importa_reglas_del_seguidor():
     }
     assert importados <= {"NotaTocada"}
 
+    # Lo que el modulo le lee a una `NotaTocada`: todo lo que cuelga de un
+    # `.tocada`, se llegue a ella por `reporte.tocada` o por un `tocada` suelto.
+    leido_de_la_tocada = {
+        nodo.attr
+        for nodo in ast.walk(arbol)
+        if isinstance(nodo, ast.Attribute) and _es_una_tocada(nodo.value)
+    }
+    assert leido_de_la_tocada <= HECHOS_DE_LA_TOCADA
+    # Y es una lista blanca de verdad solo si de verdad lee algo: si un dia nadie
+    # lee nada de la tocada, el emparejamiento por altura se ha ido con ello.
+    assert leido_de_la_tocada == HECHOS_DE_LA_TOCADA
+
     usados = {
         nodo.attr for nodo in ast.walk(arbol) if isinstance(nodo, ast.Attribute)
     } | {nodo.id for nodo in ast.walk(arbol) if isinstance(nodo, ast.Name)}
-    assert usados & DECISIONES_DE_LA_CADENA == set()
+    assert usados & (DECISIONES_DE_LA_TOCADA | REGLAS_DE_LA_CADENA) == set()
+
+
+def _es_una_tocada(nodo: ast.expr) -> bool:
+    """Si ese trozo de arbol es una `NotaTocada`: un `.tocada` o un `tocada`."""
+    if isinstance(nodo, ast.Attribute):
+        return nodo.attr == "tocada"
+    return isinstance(nodo, ast.Name) and nodo.id == "tocada"
 
 
 def test_un_veredicto_limpio_se_distingue_de_uno_sucio():
@@ -579,3 +605,179 @@ def test_una_seccion_entera_se_juzga_limpia_pasando_por_la_cadena_de_verdad():
     assert veredicto.mal_adjudicadas == ()
     assert veredicto.limpio is True
     assert veredicto.desfase_introducido_ms < TOLERANCIA_DE_EMPAREJAMIENTO_MS
+
+
+def test_la_cuenta_atras_se_traduce_pasando_por_la_cadena_de_verdad():
+    """El unico ancla EXTERNA del termino de la cuenta atras, y por eso existe.
+
+    Las otras dos partes de la traduccion tienen ancla: el inicio del tramo la
+    tiene en la asercion literal de `2,4 + 0,128 + 0,030` y en la prueba de la
+    seccion, y la vuelta la tiene en que el reporte de la tercera vuelta llega con
+    el cabezal por debajo del segundo. El termino de la cuenta atras no tenia
+    NINGUNA: `_adelanto_s`, el ayudante de las pruebas, replica la formula, asi que
+    un mutante que quitara la cuenta atras del modulo Y del ayudante dejaba las 17
+    pruebas verdes. Esta prueba lo mata, porque aqui los instantes los pone la
+    cadena y no una copia de la formula.
+
+    El compas de aviso del plan y la cuenta atras del gemelo tienen que ser la
+    misma -es la condicion de uso que el modulo declara-, asi que los segundos se
+    calculan con los mismos ayudantes de produccion con los que
+    `SesionDeEstudio._segundos_de_cuenta_atras` los calcula.
+
+    Medido: veredicto limpio, mediana +67,0 ms y maximo +169,0 ms. Con el termino
+    quitado del modulo salen 8 perdidas y 8 inventadas de 8.
+    """
+    pieza = escala_de_ocho_notas()
+    compases_de_aviso = 1
+    cuenta_atras_s = pulsos_a_segundos(
+        pulsos_por_compas(pieza) * compases_de_aviso, pieza.tempo
+    )
+    interpretacion = interpretar(
+        pieza, PERFECTO, segundos_de_cuenta_atras=cuenta_atras_s
+    )
+    # El audio lleva la cuenta atras DENTRO, delante de la cabecera tecnica.
+    assert cuenta_atras_s == pytest.approx(2.4)
+    assert interpretacion.silencio_de_cabecera_s == pytest.approx(2.4 + 0.128)
+
+    estudio = SesionDeEstudio(
+        pieza, PlanDePasada(compases_de_cuenta_atras=compases_de_aviso)
+    )
+    estudio.arrancar()
+    conductor = ConductorDeEstudio(estudio, al_cambiar_repeticion=None)
+
+    veredicto = juzgar(interpretacion, pasar_por_la_cadena(interpretacion, conductor))
+
+    assert veredicto.notas_tocadas == 8
+    assert veredicto.perdidas == ()
+    assert veredicto.inventadas == 0
+    assert veredicto.limpio is True
+    assert veredicto.desfase_maximo_ms < TOLERANCIA_DE_EMPAREJAMIENTO_MS
+
+
+def test_la_primera_nota_del_tramo_no_se_excluye_por_la_nota_de_antes():
+    """Una exclusion de mas tapa una perdida de verdad, que es lo peor que este
+    modulo puede hacer.
+
+    La pieza tiene la misma altura a los dos lados de la barra del compas 2. Si la
+    regla de la nota repetida se leyera sobre la pieza ENTERA, al estudiar solo el
+    compas 2 su primera nota saldria excluida -y por tanto imperdible- aunque en
+    esa pasada nadie toque la nota de antes y el detector no tenga con que
+    confundirla. El acotado por `tocados` no lo evita, porque el testigo de una
+    repetida es ella misma.
+
+    Las dos mitades de la prueba son la frontera: estudiando el compas 2, la nota 4
+    se juzga y se puede perder; estudiando la pieza entera, se excluye de verdad.
+    """
+    pieza = _pieza_con_la_repeticion_en_la_barra()
+
+    solo_el_segundo = _interpretacion(pieza, primer_compas=2, ultimo_compas=2)
+    assert [evento.indice_pretendido for evento in solo_el_segundo.eventos] == [
+        4,
+        5,
+        6,
+        7,
+    ]
+    veredicto = juzgar(solo_el_segundo, _todo_reportado(solo_el_segundo, saltar={(1, 4)}))
+    assert veredicto.excluidas == ()
+    assert veredicto.perdidas == ((1, 4),)
+
+    entera = _interpretacion(pieza)
+    completo = juzgar(entera, _todo_reportado(entera, saltar={(1, 4)}))
+    assert completo.excluidas == ((1, 4),)
+    assert completo.perdidas == ()
+
+
+def _pieza_con_la_repeticion_en_la_barra() -> Pieza:
+    """Dos compases de 4/4 con la misma altura a los dos lados de la barra.
+
+    La nota 3 cierra el primer compas y la 4 abre el segundo, las dos en 62. No
+    esta en `piezas_de_prueba` porque es el caso de UNA prueba de este archivo: la
+    frontera del tramo, no un caso que otras pruebas vayan a compartir.
+    """
+    midis = (55, 57, 59, 62, 62, 64, 65, 67)
+    posiciones = digitar(list(midis), PERFILES["guitarra_estandar"])
+    return Pieza(
+        nombre="Pieza con la repeticion en la barra",
+        perfil="guitarra_estandar",
+        tempo=100,
+        compas=(4, 4),
+        notas=tuple(
+            NotaEnPieza(
+                midi=midi,
+                cuerda=posicion.cuerda,
+                traste=posicion.traste,
+                inicio_pulsos=float(indice),
+                duracion_pulsos=1.0,
+            )
+            for indice, (midi, posicion) in enumerate(zip(midis, posiciones, strict=True))
+        ),
+    )
+
+
+def test_el_segundo_reporte_de_un_puesto_sale_como_inventado():
+    """La cadena no publica dos veces la misma nota de la misma vuelta -la T4 lo
+    tiene probado-, asi que el veredicto no busca el mas cercano entre varios: se
+    queda con el primero del puesto.
+
+    Esta prueba fija lo que pasa con el segundo, que es la unica forma de que esa
+    decision este sujeta: se queda sin emparejar y cuenta como inventada. Dos
+    reportes del mismo puesto significan que uno de los dos sobra.
+    """
+    interpretacion = _interpretacion()
+    vueltas = _vueltas_de(interpretacion)
+    primero = _reporte(interpretacion, interpretacion.eventos[0], vueltas[0], 0.030)
+    repetido = _reporte(interpretacion, interpretacion.eventos[0], vueltas[0], 0.040)
+    registro = _registro(*_todo_reportado(interpretacion, 0.030).reportes, repetido)
+
+    veredicto = juzgar(interpretacion, registro)
+
+    assert registro.reportes[0] == primero
+    assert veredicto.perdidas == ()
+    assert veredicto.inventadas == 1
+
+
+def test_un_reporte_justo_en_el_techo_todavia_habla_del_ataque():
+    """La igualdad exacta con la tolerancia empareja, y los dos lados se afirman.
+
+    La tolerancia es el techo del detector: el ultimo instante en que la cadena
+    todavia puede estar hablando de ese ataque, no el primero en que ya no. Las
+    otras pruebas usan techo ± 20 ms y no tocaban este borde.
+
+    Los instantes se eligen exactos en binario -ataque en 1,0 s, techo de 0,25 s-
+    para que la resta del modulo no caiga en el lado equivocado por un bit de
+    redondeo, que es lo que pasaria con los 0,128 s de la cabecera.
+    """
+    base = _interpretacion()
+    evento = replace(base.eventos[0], instante_s=1.0)
+    interpretacion = replace(base, eventos=(evento,))
+    techo_s = TOLERANCIA_DE_EMPAREJAMIENTO_MS / 1000.0
+    assert techo_s == 0.25
+
+    def veredicto_con(instante_pasada_s: float) -> Veredicto:
+        return juzgar(
+            interpretacion,
+            _registro(
+                ReporteDeLaCadena(
+                    repeticion=1,
+                    tocada=NotaTocada(
+                        indice=evento.indice_pretendido,
+                        midi=evento.midi,
+                        cents=0.0,
+                        desfase_s=None,
+                        clasificacion=None,
+                        acertada=True,
+                        afinada=True,
+                    ),
+                    instante_pasada_s=instante_pasada_s,
+                )
+            ),
+        )
+
+    justo = veredicto_con(1.0 + techo_s)
+    assert justo.perdidas == ()
+    assert justo.inventadas == 0
+    assert justo.desfase_introducido_ms == pytest.approx(250.0)
+
+    pasado = veredicto_con(1.0 + techo_s + 1e-6)
+    assert pasado.perdidas == ((1, 0),)
+    assert pasado.inventadas == 1

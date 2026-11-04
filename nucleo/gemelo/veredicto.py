@@ -170,10 +170,10 @@ def juzgar(
             atribuye a un ataque. Ver el docstring del modulo.
 
     El emparejamiento es por `(repeticion, indice_pretendido)`: de cada evento se
-    busca el reporte de esa vuelta y ese puesto, y entre los que caen dentro de la
-    tolerancia se coge el mas cercano en el tiempo. Sin reporte, la nota se
-    perdio; con reporte de otra altura, se adjudico mal. Lo que queda sin
-    emparejar se invento la cadena.
+    busca el reporte de esa vuelta y ese puesto, y vale si cae dentro de la
+    tolerancia. Sin reporte, o con uno que queda fuera, la nota se perdio; con
+    reporte de otra altura, se adjudico mal. Lo que queda sin emparejar se invento
+    la cadena.
 
     Lanza `ValueError` si la tolerancia es negativa: una tolerancia negativa no
     empareja nada y convertiria la pasada entera en perdidas e invenciones sin que
@@ -193,15 +193,14 @@ def juzgar(
             tocados.setdefault(vuelta, set()).add(evento.indice_pretendido)
     adelantos_s = _adelantos_por_vuelta(interpretacion, vueltas)
 
-    excluidas = _excluidas(interpretacion.pieza, tocados)
+    excluidas = _excluidas(interpretacion, tocados)
     por_puesto = _reportes_por_puesto(registro)
 
     perdidas: list[tuple[int, int]] = []
     mal_adjudicadas: list[tuple[int, int, int]] = []
     desfases_s: list[float] = []
-    # Los reportes ya emparejados, por su POSICION en `registro.reportes`: dos
-    # reportes distintos pueden ser iguales campo a campo -la cadena publica por
-    # valor- y entonces un conjunto de reportes se comeria uno de los dos.
+    # Las POSICIONES de los reportes ya emparejados, que es lo que queda para
+    # contar las inventadas: lo que nadie reclamo.
     emparejados: set[int] = set()
 
     for evento, vuelta in zip(interpretacion.eventos, vueltas, strict=True):
@@ -213,18 +212,15 @@ def juzgar(
             continue
         puesto = (vuelta, evento.indice_pretendido)
         instante_real_s = evento.instante_s - adelantos_s[vuelta]
-        posicion_del_reporte = _mas_cercano(
-            por_puesto.get(puesto, ()),
-            instante_real_s=instante_real_s,
-            tolerancia_s=tolerancia_s,
-            ya_emparejados=emparejados,
-        )
-        if posicion_del_reporte is None:
+        posicion = por_puesto.get(puesto)
+        reporte = None if posicion is None else registro.reportes[posicion]
+        if reporte is None or not _habla_del_ataque(
+            reporte, instante_real_s, tolerancia_s
+        ):
             if puesto not in excluidas:
                 perdidas.append(puesto)
             continue
-        emparejados.add(posicion_del_reporte)
-        reporte = registro.reportes[posicion_del_reporte]
+        emparejados.add(posicion)
         # El desfase se anota tambien de lo excluido y de lo mal adjudicado: es
         # una MEDICION del retraso de la cadena sobre un ataque que de verdad
         # sono, no un juicio sobre esa nota.
@@ -253,6 +249,27 @@ def juzgar(
         desfase_introducido_ms=_mediana_ms(desfases_s),
         desfase_maximo_ms=_maximo_con_signo_ms(desfases_s),
     )
+
+
+def _tramo_en_pulsos(interpretacion: Interpretacion) -> tuple[float, float]:
+    """El `[inicio, fin)` en pulsos del tramo que se interpreto.
+
+    Sale de los compases que `Interpretacion` registra, con la misma convencion
+    que `interpretar`: una pieza sin compases se interpreta como un compas de
+    silencio, y `ultimo_compas` ya llega resuelto (pero se vuelve a resolver aqui
+    por si alguien armo la interpretacion a mano con un `None`).
+
+    Lo usan las dos mitades del modulo -la traduccion de los ejes y las
+    exclusiones- y esa es la razon de que sea una funcion: las dos tienen que
+    estar hablando del MISMO tramo.
+    """
+    pieza = interpretacion.pieza
+    ancho = pulsos_por_compas(pieza)
+    tope = max(1, total_de_compases(pieza))
+    ultimo = (
+        tope if interpretacion.ultimo_compas is None else interpretacion.ultimo_compas
+    )
+    return ((interpretacion.primer_compas - 1) * ancho, ultimo * ancho)
 
 
 def _adelantos_por_vuelta(
@@ -304,15 +321,10 @@ def _adelantos_por_vuelta(
       segundos, divididos por el factor de tempo.
     """
     pieza = interpretacion.pieza
-    ancho = pulsos_por_compas(pieza)
-    # Una pieza sin compases se interpreta como un compas de silencio, con la
-    # misma convencion que `interpretar`.
-    tope = max(1, total_de_compases(pieza))
-    ultimo = tope if interpretacion.ultimo_compas is None else interpretacion.ultimo_compas
-    inicio_pulsos = (interpretacion.primer_compas - 1) * ancho
+    inicio_pulsos, fin_pulsos = _tramo_en_pulsos(interpretacion)
     factor = interpretacion.factor_tempo
     inicio_tramo_s = pulsos_a_segundos(inicio_pulsos, pieza.tempo) / factor
-    tramo_s = pulsos_a_segundos(ultimo * ancho - inicio_pulsos, pieza.tempo) / factor
+    tramo_s = pulsos_a_segundos(fin_pulsos - inicio_pulsos, pieza.tempo) / factor
     cuenta_atras_s = interpretacion.segundos_de_cuenta_atras
 
     total = max(interpretacion.repeticiones, max(vueltas, default=1))
@@ -350,7 +362,9 @@ def _vueltas_de_los_eventos(interpretacion: Interpretacion) -> tuple[int, ...]:
     return tuple(vueltas)
 
 
-def _excluidas(pieza: Pieza, tocados: dict[int, set[int]]) -> set[tuple[int, int]]:
+def _excluidas(
+    interpretacion: Interpretacion, tocados: dict[int, set[int]]
+) -> set[tuple[int, int]]:
     """Los `(vuelta, indice)` que no se juzgan, deducidos DE LA PIEZA.
 
     Dos familias, las dos por un limite declarado del programa y no por un fallo:
@@ -363,13 +377,22 @@ def _excluidas(pieza: Pieza, tocados: dict[int, set[int]]) -> set[tuple[int, int
       cuadros sin nota creible. Se excluye la SEGUNDA, que es la que el detector
       se come.
 
-    `tocados` -los indices que tienen evento en cada vuelta- solo decide el
-    ALCANCE: una exclusion se anota en las vueltas en las que su grupo se toco, y
-    asi una pieza interpretada por tramos no arrastra exclusiones de notas que
-    nadie iba a tocar. No decide QUE se excluye, que es cosa de la pieza: con el
-    registro vacio las exclusiones son exactamente las mismas.
+    **Las dos reglas se leen DENTRO DEL TRAMO INTERPRETADO**, no sobre la pieza
+    entera, y no es un detalle: si la primera nota del tramo repite la altura de
+    la nota anterior de la pieza -que en esta pasada nadie toca- no hay dos
+    pulsaciones seguidas que el detector pueda confundir, y excluirla seria tapar
+    una perdida de verdad, que es lo peor que este modulo puede hacer. El acotado
+    por `tocados` no lo evitaba porque el testigo de una repetida es ella misma.
+
+    `tocados` -los indices que tienen evento en cada vuelta- decide solo en QUE
+    VUELTAS se anota cada exclusion, para que una vuelta que no se llego a tocar
+    no arrastre exclusiones. No decide QUE se excluye, que es cosa de la pieza y
+    del tramo: con el registro vacio las exclusiones son exactamente las mismas.
     """
-    testigos = _testigos_de_las_exclusiones(pieza)
+    inicio_tramo, fin_tramo = _tramo_en_pulsos(interpretacion)
+    testigos = _testigos_de_las_exclusiones(
+        interpretacion.pieza, inicio_tramo, fin_tramo
+    )
     return {
         (vuelta, excluida)
         for excluida, testigo in testigos.items()
@@ -378,14 +401,20 @@ def _excluidas(pieza: Pieza, tocados: dict[int, set[int]]) -> set[tuple[int, int
     }
 
 
-def _testigos_de_las_exclusiones(pieza: Pieza) -> dict[int, int]:
+def _testigos_de_las_exclusiones(
+    pieza: Pieza, inicio_tramo: float, fin_tramo: float
+) -> dict[int, int]:
     """Cada indice excluido con el indice cuyo evento prueba que se llego a tocar.
 
     El testigo de una nota de acorde es la nota del acorde que SI suena (la mas
     grave); el de una repetida es ella misma, porque se toca y lo que se come el
     detector es el reporte.
+
+    La nota anterior arranca en `None` en el borde del tramo, y ahi esta el
+    arreglo de la sobre-exclusion: la primera nota del tramo no tiene con quien
+    repetirse.
     """
-    sonadas = _reduccion_de_los_acordes(pieza)
+    sonadas = _reduccion_de_los_acordes(pieza, inicio_tramo, fin_tramo)
     testigos: dict[int, int] = {}
 
     for indices, elegida in sonadas:
@@ -394,7 +423,7 @@ def _testigos_de_las_exclusiones(pieza: Pieza) -> dict[int, int]:
                 testigos[indice] = elegida
 
     anterior = None
-    for indices, elegida in sonadas:
+    for _, elegida in sonadas:
         actual = pieza.notas[elegida]
         if anterior is not None and actual.midi == anterior.midi:
             testigos[elegida] = elegida
@@ -402,18 +431,26 @@ def _testigos_de_las_exclusiones(pieza: Pieza) -> dict[int, int]:
     return testigos
 
 
-def _reduccion_de_los_acordes(pieza: Pieza) -> tuple[tuple[tuple[int, ...], int], ...]:
-    """La pieza reducida a lo que una guitarra monofonica puede tocar.
+def _reduccion_de_los_acordes(
+    pieza: Pieza, inicio_tramo: float, fin_tramo: float
+) -> tuple[tuple[tuple[int, ...], int], ...]:
+    """El tramo reducido a lo que una guitarra monofonica puede tocar.
 
     Devuelve un grupo por `inicio_pulsos`, con los indices del grupo y el del que
     suena. La regla es la del interprete -la mas grave, y de dos iguales la
-    primera-, replicada aqui y no importada porque la del interprete trabaja
-    sobre un TRAMO y lo que el veredicto necesita es la pieza entera. Si una de
-    las dos cambiara sin la otra, las pruebas de exclusiones de este modulo se
-    pondrian rojas.
+    primera-, sobre las notas del tramo y en su orden, que es exactamente lo que
+    `_pulsaciones_escritas` recorre.
+
+    Se replica y no se importa: la del interprete devuelve ademas el hueco hasta
+    la nota siguiente y se usa para sintetizar: compartirla engancharia el
+    veredicto a una firma pensada para generar audio. Si una de las dos cambia sin
+    la otra, las pruebas de exclusiones de este modulo se ponen rojas, y esta
+    medido.
     """
     grupos: list[tuple[list[int], int]] = []
     for indice, nota in enumerate(pieza.notas):
+        if not inicio_tramo <= nota.inicio_pulsos < fin_tramo:
+            continue
         if grupos and pieza.notas[grupos[-1][0][0]].inicio_pulsos == nota.inicio_pulsos:
             indices, elegida = grupos[-1]
             indices.append(indice)
@@ -426,45 +463,42 @@ def _reduccion_de_los_acordes(pieza: Pieza) -> tuple[tuple[tuple[int, ...], int]
 
 def _reportes_por_puesto(
     registro: RegistroDeLaCadena,
-) -> dict[tuple[int, int], list[tuple[int, ReporteDeLaCadena]]]:
-    """Los reportes agrupados por `(repeticion, indice)`, que es el puesto.
+) -> dict[tuple[int, int], int]:
+    """La POSICION de cada reporte en `registro.reportes`, por su puesto.
 
-    Cada uno va con su POSICION en `registro.reportes`, que es lo que lo
-    identifica: puede haber mas de un reporte en el mismo puesto -la cadena
-    publica por valor, asi que dos lecturas distintas de la misma nota son dos
-    reportes- y dos de ellos pueden ser iguales campo a campo.
+    El puesto es `(repeticion, indice)`, y hay UNO por puesto, no una lista: la
+    cadena no publica dos veces la misma nota de la misma vuelta, y la T4 lo tiene
+    probado (`test_no_se_reporta_la_misma_nota_dos_veces`, que afirma que las
+    claves del registro no se repiten).
+
+    Si un registro armado a mano trae dos reportes del mismo puesto, se queda el
+    PRIMERO y el otro sale como inventada, que es lo que dos reportes del mismo
+    puesto significan: uno de los dos sobra. Se identifica por posicion y no por
+    valor porque dos reportes pueden ser iguales campo a campo, y un conjunto de
+    reportes se comeria uno de los dos.
     """
-    por_puesto: dict[tuple[int, int], list[tuple[int, ReporteDeLaCadena]]] = {}
+    por_puesto: dict[tuple[int, int], int] = {}
     for posicion, reporte in enumerate(registro.reportes):
-        clave = (reporte.repeticion, reporte.tocada.indice)
-        por_puesto.setdefault(clave, []).append((posicion, reporte))
+        por_puesto.setdefault((reporte.repeticion, reporte.tocada.indice), posicion)
     return por_puesto
 
 
-def _mas_cercano(
-    candidatos: list[tuple[int, ReporteDeLaCadena]],
-    instante_real_s: float,
-    tolerancia_s: float,
-    ya_emparejados: set[int],
-) -> int | None:
-    """La posicion del reporte libre mas cercano al ataque, o `None` si ninguno
-    llega a tiempo.
+def _habla_del_ataque(
+    reporte: ReporteDeLaCadena, instante_real_s: float, tolerancia_s: float
+) -> bool:
+    """Si ese reporte se puede atribuir a ese ataque.
 
     Se mide en valor absoluto porque el emparejamiento no tiene direccion: un
     reporte 20 ms antes del ataque habla de ese ataque igual que uno 20 ms
-    despues. El SIGNO se conserva despues, en el desfase, que es lo que
-    diagnostica.
+    despues. El SIGNO se conserva luego, en el desfase, que es lo que diagnostica.
+
+    La igualdad exacta con la tolerancia **empareja** (`<=`), y es deliberado: la
+    tolerancia es el techo del detector, o sea el ultimo instante en que la cadena
+    todavia puede estar hablando de ese ataque, y no el primero en que ya no.
+    Un reporte justo en el techo es el caso que el techo describe. Hay prueba de
+    los dos lados de esa igualdad.
     """
-    mejor: int | None = None
-    mejor_distancia = tolerancia_s
-    for posicion, reporte in candidatos:
-        if posicion in ya_emparejados:
-            continue
-        distancia = abs(reporte.instante_pasada_s - instante_real_s)
-        if distancia <= mejor_distancia:
-            mejor = posicion
-            mejor_distancia = distancia
-    return mejor
+    return abs(reporte.instante_pasada_s - instante_real_s) <= tolerancia_s
 
 
 def _mediana_ms(desfases_s: list[float]) -> float:
