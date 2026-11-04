@@ -183,6 +183,14 @@ def pasar_por_la_cadena(
     # `mover_el_reloj`, que es el defecto que la T4 arreglaba con un relleno de
     # miradas. Ese relleno se ha ido: sin reloj corriendo durante el llenado, no
     # hay nada que rellenar.
+    #
+    # EL MINIMO DE UNA VENTANA NO ES LA ALINEACION: la ventana esta dentro del
+    # `max` solo como suelo para las interpretaciones sin cabecera. Alinear al
+    # final de la PRIMERA VENTANA (85,3 ms) en vez del final de la cabecera
+    # (128 ms) es otra cosa, se considero y se descarto con la medida: dejaba
+    # 42,7 ms de deuda en todas las notas, el suelo subia a +195,0 ms de mediana y
+    # +231,0 de maximo -a 19 ms del techo del detector- y el oraculo sacaba 5
+    # notas limpias de 8 en vez de 7.
     cabecera_tecnica_s = max(
         0.0,
         interpretacion.silencio_de_cabecera_s - interpretacion.segundos_de_cuenta_atras,

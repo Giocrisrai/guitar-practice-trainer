@@ -493,18 +493,13 @@ def test_la_ventana_sale_del_perfil_de_la_pieza():
         un_segundo_de_audio(silencio_de_cabecera_s=cabecera_s), con_guitarra
     )
 
-    assert con_bajo.instantes_observados[0] == pytest.approx(
-        max(0.0, VENTANA_DEL_BAJO / FS - cabecera_s)
-    )
-    assert con_guitarra.instantes_observados[0] == pytest.approx(
-        max(0.0, VENTANA / FS - cabecera_s)
-    )
-    # Los dos primeros instantes son cero en los dos casos -la cabecera se come
-    # varios cuadros-, asi que lo que distingue de verdad es EN QUE CUADRO cada
-    # ventana se sale de la cabecera: la del bajo, que es el doble de larga, se
-    # sale cuatro cuadros antes. La aritmetica: 8192 muestras se salen de los
-    # 0,5 s en el cuadro 16 (16 x 1008 + 8192 = 24320, o sea 0,5067 s) y 4096 en
-    # el 20 (0,5053 s).
+    # El primer instante es CERO en los dos casos -la cabecera de 0,5 s se come
+    # varios cuadros enteros-, asi que afirmarlo no distinguiria una ventana de
+    # la otra: seria `0,0 == 0,0`. Lo que distingue es EN QUE CUADRO cada ventana
+    # se sale de la cabecera: la del bajo, que es el doble de larga, se sale
+    # cuatro cuadros antes. La aritmetica: 8192 muestras se salen de los 0,5 s en
+    # el cuadro 16 (16 x 1008 + 8192 = 24320, o sea 0,5067 s) y 4096 en el 20
+    # (0,5053 s).
     assert _primer_cuadro_con_cabezal(con_bajo) == 16
     assert _primer_cuadro_con_cabezal(con_guitarra) == 20
     assert VENTANA_DEL_BAJO == 2 * VENTANA, "si esto cambia, la prueba ya no distingue"

@@ -18,9 +18,12 @@ del cabezal estaba por decidir, para no inscribir dos veces un numero
 provisional. La Task 6d lo decidio: la cadena alinea el cabezal con el final del
 silencio de cabecera del gemelo. Remedido con esa cadena, el suelo es **+152,3 ms
 de mediana y +188,3 de maximo**, y aqui estan inscritos los dos. El retraso de
-publicacion NO cambio con la alineacion -los dos ejes se movieron juntos, asi que
-la distancia entre ellos es la misma-: lo que lo movio fue el arreglo del
-detector.
+publicacion NO cambio con la alineacion, porque los dos ejes se movieron juntos y
+la distancia entre ellos es lo que este suelo mide: lo que lo movio fue el arreglo
+del detector. **Eso vale para cinco de las seis configuraciones medidas, no para
+las seis**: la que lleva cuenta atras se movio 2,0 ms (+94,0/+169,0 pasaron a
++96,0/+171,0), porque el cabezal solo se suelta de la cuenta atras en un cuadro y
+el instante exacto en que deberia soltarse cae dentro de uno.
 
 **EL SIGNO ES PARTE DEL DATO.** Los desfases medidos son todos POSITIVOS: la
 cadena reporta las notas mas TARDE de lo que sonaron, porque tarda en publicar un
@@ -94,6 +97,20 @@ SUELO_MAXIMO_MS = 189.0
 SUELO_DESFASE_AL_TEMPO_MINIMO_MS = 165.0
 SUELO_MAXIMO_AL_TEMPO_MINIMO_MS = 207.0
 
+# Los dos tramos MEDIDOS en la Task 6d, con su mediana y su maximo en ms:
+# `(primer_compas, ultimo_compas, factor_tempo, mediana, maximo)`.
+#
+# Existen porque eran las dos configuraciones de la etapa que no tenian prueba de
+# ningun tipo: sus numeros vivian en un informe. Un numero medido que no esta
+# afirmado en ninguna parte no es un suelo, es una anecdota, y estos dos son los
+# que dicen que la traduccion del eje tambien vale cuando el cabezal NO arranca en
+# cero -el tramo 2-2 empieza en 2,4 s de pieza-, que es el caso normal en cuanto
+# se practica por secciones.
+TRAMOS_MEDIDOS = (
+    (2, 2, 1.0, 138.8, 167.3),
+    (2, 2, 0.5, 164.3, 185.3),
+)
+
 # Lo que se le concede a una medicion antes de llamarla otra cosa. 15 ms es
 # menos de un cuadro de analisis (21 ms), o sea que ni un cuadro de deriva pasa
 # desapercibido.
@@ -107,7 +124,10 @@ TECHO_DEL_DETECTOR_MS = VENTANA_ATAQUE_COMO_ONSET_S * 1000.0
 
 
 def _pasada_del_oraculo(
-    factor_tempo: float = 1.0, semilla: int = 0
+    factor_tempo: float = 1.0,
+    semilla: int = 0,
+    primer_compas: int = 1,
+    ultimo_compas: int | None = None,
 ) -> tuple[Veredicto, RegistroDeLaCadena, InformeDePasada]:
     """La pasada entera del oraculo SIN BUCLE, y las tres cosas que deja.
 
@@ -119,7 +139,13 @@ def _pasada_del_oraculo(
     `en_bucle` se queda en False (el defecto del bucle es de la T7) y
     `compases_de_cuenta_atras` en 0: la cuenta atras del plan y la del gemelo
     tienen que ser la misma -es la condicion de uso que el veredicto declara- y la
-    forma mas corta de que lo sean es que no haya ninguna.
+    forma mas corta de que lo sean es que no haya ninguna. La configuracion CON
+    cuenta atras tiene su propia prueba, que pasa por la cadena igual que esta, en
+    `tests/test_gemelo_veredicto.py`.
+
+    El tramo va al PLAN y a la interpretacion a la vez, con los mismos compases:
+    si se separaran, los dos relojes se separarian con ellos y el veredicto no
+    tiene como saberlo.
 
     `al_cambiar_repeticion=None` NO es un detalle: ese aviso existe para que el
     servidor rearranque el metronomo, y el metronomo abre audio. Una suite que lo
@@ -127,12 +153,21 @@ def _pasada_del_oraculo(
     """
     pieza = escala_de_ocho_notas()
     interpretacion = interpretar(
-        pieza, PERFECTO, factor_tempo=factor_tempo, semilla=semilla
+        pieza,
+        PERFECTO,
+        factor_tempo=factor_tempo,
+        semilla=semilla,
+        primer_compas=primer_compas,
+        ultimo_compas=ultimo_compas,
     )
     estudio = SesionDeEstudio(
         pieza,
         PlanDePasada(
-            factor_tempo=factor_tempo, en_bucle=False, compases_de_cuenta_atras=0
+            factor_tempo=factor_tempo,
+            en_bucle=False,
+            compases_de_cuenta_atras=0,
+            primer_compas=primer_compas,
+            ultimo_compas=ultimo_compas,
         ),
     )
     estudio.arrancar()
@@ -278,6 +313,16 @@ def test_el_desfase_que_introduce_la_cadena_habla_tarde_y_cabe_en_el_techo():
     assert veredicto.desfase_maximo_ms > 0.0
     assert abs(veredicto.desfase_maximo_ms) <= SUELO_MAXIMO_MS + MARGEN_MS
     assert abs(veredicto.desfase_maximo_ms) < TECHO_DEL_DETECTOR_MS
+    # LA COTA POR ABAJO, que es la mitad que faltaba. Un suelo afirmado solo como
+    # techo no es un suelo: con `> 0.0` como unico limite inferior, una cadena que
+    # dejara de retrasar -o un error de eje que se comiera el retraso- pasaba esta
+    # prueba sin tocarla. Medido: el mutante que multiplica la mediana por 0,01
+    # (1,5 ms) pasaba el archivo entero.
+    assert abs(veredicto.desfase_maximo_ms) >= SUELO_MAXIMO_MS - MARGEN_MS
+    # Y EL MAXIMO NO ES LA MEDIANA CON OTRO NOMBRE: son dos cantidades distintas y
+    # el maximo esta 36 ms por encima (188,3 contra 152,3). El otro mutante que
+    # sobrevivia era precisamente devolver la mediana como maximo.
+    assert veredicto.desfase_maximo_ms > veredicto.desfase_introducido_ms
 
 
 def test_la_mediana_del_desfase_sigue_en_el_suelo_inscrito():
@@ -305,6 +350,7 @@ def test_la_mediana_del_desfase_sigue_en_el_suelo_inscrito():
     veredicto, _, _ = _pasada_del_oraculo()
 
     assert abs(veredicto.desfase_introducido_ms) <= SUELO_DESFASE_MS + MARGEN_MS
+    assert abs(veredicto.desfase_introducido_ms) >= SUELO_DESFASE_MS - MARGEN_MS
 
 
 def test_el_oraculo_aguanta_el_tempo_minimo():
@@ -332,17 +378,65 @@ def test_el_oraculo_aguanta_el_tempo_minimo():
     assert veredicto.limpio is True
 
     assert veredicto.desfase_introducido_ms > 0.0
-    assert (
-        abs(veredicto.desfase_introducido_ms)
-        <= SUELO_DESFASE_AL_TEMPO_MINIMO_MS + MARGEN_MS
+    assert abs(veredicto.desfase_introducido_ms) == pytest.approx(
+        SUELO_DESFASE_AL_TEMPO_MINIMO_MS, abs=MARGEN_MS
     )
-    assert (
-        abs(veredicto.desfase_maximo_ms) <= SUELO_MAXIMO_AL_TEMPO_MINIMO_MS + MARGEN_MS
+    assert abs(veredicto.desfase_maximo_ms) == pytest.approx(
+        SUELO_MAXIMO_AL_TEMPO_MINIMO_MS, abs=MARGEN_MS
     )
     assert abs(veredicto.desfase_maximo_ms) < TECHO_DEL_DETECTOR_MS
+    assert veredicto.desfase_maximo_ms > veredicto.desfase_introducido_ms
 
     assert _suma(informe, "acertadas") == NOTAS
     assert _suma(informe, "limpias") == NOTAS
+
+
+@pytest.mark.parametrize(
+    ("primer_compas", "ultimo_compas", "factor_tempo", "mediana_ms", "maximo_ms"),
+    TRAMOS_MEDIDOS,
+    ids=("tramo 2-2", "tramo 2-2 al 50%"),
+)
+def test_el_oraculo_de_un_tramo_que_no_empieza_en_el_compas_uno(
+    primer_compas, ultimo_compas, factor_tempo, mediana_ms, maximo_ms
+):
+    """El oraculo de un tramo suelto, con su suelo MEDIDO e inscrito.
+
+    Es el caso normal en cuanto se practica por secciones, y no un borde: el
+    cabezal de una pasada que estudia el compas 2 no arranca en cero sino en el
+    instante escrito de ese compas (2,4 s), asi que aqui se ejercita la traduccion
+    del eje en el unico sitio donde puede salir mal por una cantidad que no se
+    parece a nada.
+
+    Los dos numeros se afirman con su margen por los dos lados, no contra el techo
+    del detector: contra el techo quedaban 80 ms de holgura, que es suficiente para
+    tragarse un error de eje de 128 ms sin que nada se queje. Y se afirma que el
+    maximo esta por encima de la mediana, porque son dos cantidades distintas.
+
+    Las CUATRO notas salen limpias, no siete de ocho como la pieza entera, y es
+    por una razon que conviene saber: la nota con el temblor gordo del onset
+    -89,3 ms, la nota 3- esta en el primer compas y este tramo no la toca.
+    """
+    veredicto, _, informe = _pasada_del_oraculo(
+        factor_tempo=factor_tempo,
+        primer_compas=primer_compas,
+        ultimo_compas=ultimo_compas,
+    )
+
+    assert veredicto.notas_tocadas == 4
+    assert veredicto.perdidas == ()
+    assert veredicto.inventadas == 0
+    assert veredicto.mal_adjudicadas == ()
+    assert veredicto.excluidas == ()
+    assert veredicto.limpio is True
+
+    assert veredicto.desfase_introducido_ms == pytest.approx(mediana_ms, abs=MARGEN_MS)
+    assert veredicto.desfase_maximo_ms == pytest.approx(maximo_ms, abs=MARGEN_MS)
+    assert veredicto.desfase_maximo_ms > veredicto.desfase_introducido_ms
+    assert veredicto.desfase_maximo_ms < TECHO_DEL_DETECTOR_MS
+
+    assert _suma(informe, "notas_medibles") == 4
+    assert _suma(informe, "acertadas") == 4
+    assert _suma(informe, "limpias") == 4
 
 
 @pytest.mark.parametrize("semilla", (3, 9))

@@ -307,7 +307,12 @@ def _adelantos_por_vuelta(
     `desfase_s` de la nota 0 es +20,3 ms -la deteccion sola- y el retraso de
     publicacion que este modulo firma tiene mediana +152,3 ms y maximo +188,3.
     Ese retraso NO cambio con la alineacion, y tenia que no cambiar: los dos ejes
-    se movieron juntos, asi que la distancia entre ellos es la misma.
+    se movieron juntos y lo que este modulo mide es la distancia entre ellos. Con
+    una excepcion medida, que se escribe porque la frase sin ella seria falsa: en
+    la configuracion con cuenta atras el retraso subio 2,0 ms (+94,0 a +96,0 de
+    mediana, +169,0 a +171,0 de maximo), porque el cabezal solo se suelta de la
+    cuenta atras en un cuadro de analisis y el instante exacto en que deberia
+    soltarse cae dentro de uno.
 
     Las dos mediciones son correctas y no se contradicen: cada una midio la cadena
     que habia. Lo que cambio fue la cadena.

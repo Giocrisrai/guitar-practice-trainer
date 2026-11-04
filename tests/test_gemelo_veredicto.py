@@ -69,6 +69,11 @@ FUENTE_DEL_VEREDICTO = (
 # alineado: la mediana es +152,3 ms y el maximo +188,3. El retraso de publicacion
 # NO cambio con la alineacion -los dos ejes se movieron juntos- sino con el
 # arreglo del detector, que hace esperar a que la racha cuaje.
+#
+# «Los dos ejes se movieron juntos» vale para esta configuracion y para cuatro
+# mas, pero NO es una identidad: medido en las seis, la que lleva cuenta atras se
+# movio 2,0 ms (+94,0/+169,0 pasaron a +96,0/+171,0), porque el cabezal solo se
+# suelta de la cuenta atras en un cuadro y el instante exacto cae dentro de uno.
 RETRASOS_MEDIDOS_MS = (188.3, 113.3, 164.3, 131.3, 140.3, 170.3, 116.3, 167.3)
 
 # Las REGLAS del seguidor: funciones que deciden si una nota valio. No son campos
@@ -602,10 +607,11 @@ def test_una_seccion_entera_se_juzga_limpia_pasando_por_la_cadena_de_verdad():
     misma, no que coincida con lo que la cadena hace de verdad.
 
     Se estudia la seccion «Puente» de la pieza de demostracion -compases 7 a 9,
-    doce notas, que no empieza en el compas 1- con el interprete perfecto. Medido:
-    veredicto limpio, mediana +164,4 ms y maximo +204,6 ms, los dos por debajo del
-    techo del detector. Con el tramo sin registrar, esto daba doce perdidas y doce
-    inventadas.
+    doce notas, que no empieza en el compas 1- con el interprete perfecto. Medido
+    con el cabezal alineado (T6d): veredicto limpio, **mediana +164,4 ms y maximo
+    +204,6 ms**, y los dos se afirman con su margen y no solo contra el techo del
+    detector, que dejaba 85 ms de holgura -bastante para no notar un error de eje-.
+    Con el tramo sin registrar, esto daba doce perdidas y doce inventadas.
 
     No hay bucle a proposito: el defecto del bucle es de la T7 y esta prueba no es
     el sitio donde medirlo.
@@ -629,27 +635,36 @@ def test_una_seccion_entera_se_juzga_limpia_pasando_por_la_cadena_de_verdad():
     assert veredicto.mal_adjudicadas == ()
     assert veredicto.limpio is True
     assert veredicto.desfase_introducido_ms < TOLERANCIA_DE_EMPAREJAMIENTO_MS
+    assert veredicto.desfase_introducido_ms == pytest.approx(164.4, abs=15.0)
+    assert veredicto.desfase_maximo_ms == pytest.approx(204.6, abs=15.0)
 
 
 def test_la_cuenta_atras_se_traduce_pasando_por_la_cadena_de_verdad():
     """El unico ancla EXTERNA del termino de la cuenta atras, y por eso existe.
 
     Las otras dos partes de la traduccion tienen ancla: el inicio del tramo la
-    tiene en la asercion literal de `2,4 + 0,128 + 0,030` y en la prueba de la
-    seccion, y la vuelta la tiene en que el reporte de la tercera vuelta llega con
-    el cabezal por debajo del segundo. El termino de la cuenta atras no tenia
-    NINGUNA: `_adelanto_s`, el ayudante de las pruebas, replica la formula, asi que
-    un mutante que quitara la cuenta atras del modulo Y del ayudante dejaba las 17
-    pruebas verdes. Esta prueba lo mata, porque aqui los instantes los pone la
-    cadena y no una copia de la formula.
+    tiene en la asercion literal de `2,4 + 0,030` de la prueba del tramo y en la
+    prueba de la seccion, y la vuelta la tiene en que el reporte de la tercera
+    vuelta llega con el cabezal por debajo del segundo. El termino de la cuenta
+    atras no tenia NINGUNA: `_adelanto_s`, el ayudante de las pruebas, replica la
+    formula, asi que un mutante que quitara la cuenta atras del modulo Y del
+    ayudante dejaba las pruebas verdes. Esta prueba lo mata, porque aqui los
+    instantes los pone la cadena y no una copia de la formula.
 
     El compas de aviso del plan y la cuenta atras del gemelo tienen que ser la
     misma -es la condicion de uso que el modulo declara-, asi que los segundos se
     calculan con los mismos ayudantes de produccion con los que
     `SesionDeEstudio._segundos_de_cuenta_atras` los calcula.
 
-    Medido: veredicto limpio, mediana +67,0 ms y maximo +169,0 ms. Con el termino
-    quitado del modulo salen 8 perdidas y 8 inventadas de 8.
+    **Medido con el cabezal alineado (T6d): veredicto limpio, mediana +96,0 ms y
+    maximo +171,0 ms**, y los dos se AFIRMAN con su margen, no solo contra el
+    techo del detector. Afirmar solo que caben en los 250 ms dejaba 79 ms de
+    holgura, suficiente para tragarse un error de eje de 128 ms sin pestañear: es
+    lo que dejo pasar que este docstring siguiera diciendo los numeros del eje
+    viejo (+67,0 y +169,0) despues de alinear.
+
+    Con el termino de la cuenta atras quitado del modulo salen 8 perdidas y 8
+    inventadas de 8.
     """
     pieza = escala_de_ocho_notas()
     compases_de_aviso = 1
@@ -676,6 +691,11 @@ def test_la_cuenta_atras_se_traduce_pasando_por_la_cadena_de_verdad():
     assert veredicto.inventadas == 0
     assert veredicto.limpio is True
     assert veredicto.desfase_maximo_ms < TOLERANCIA_DE_EMPAREJAMIENTO_MS
+    # Los dos numeros medidos, cada uno con su margen por los dos lados. El
+    # margen es menos de un cuadro de analisis (21 ms), asi que ni un cuadro de
+    # deriva pasa desapercibido, y mucho menos los 128 ms de la cabecera.
+    assert veredicto.desfase_introducido_ms == pytest.approx(96.0, abs=15.0)
+    assert veredicto.desfase_maximo_ms == pytest.approx(171.0, abs=15.0)
 
 
 def test_la_primera_nota_del_tramo_no_se_excluye_por_la_nota_de_antes():
