@@ -12,16 +12,15 @@ sonda sobre `escala_de_ocho_notas()` con `PERFECTO`, la semilla por omision y el
 salto de produccion, y van redondeadas hacia arriba al milisegundo. Si alguna se
 queda corta, la respuesta no es subirla: es mirar por que la cadena cambio.
 
-**Y UNA DE ELLAS ESTA DESACTUALIZADA A PROPOSITO: `SUELO_DESFASE_MS`.** Sigue
-valiendo lo medido ANTES del arreglo del camino A de la Task 6c (+129,8 ms),
-cuando lo que hoy se mide son +152,3 ms. No es un descuido ni una medicion que se
-quedo corta: es un numero que se va a mover otra vez en la tarea siguiente -la
-que alinea el reloj de la pieza con el final del silencio de cabecera del
-gemelo-, y reinscribirlo dos veces seria tirar la primera medida. La unica
-asercion que lo usa esta aislada en
-`test_la_mediana_del_desfase_sigue_en_el_suelo_inscrito`, en `xfail(strict=True)`
-y con la razon escrita. Las demas constantes estan al dia, `SUELO_MAXIMO_MS`
-incluida: el maximo no se movio con el arreglo.
+**Y YA NO HAY NINGUNA DESACTUALIZADA.** `SUELO_DESFASE_MS` estuvo valiendo
++130 ms -lo medido antes del arreglo del camino A de la Task 6c- mientras el eje
+del cabezal estaba por decidir, para no inscribir dos veces un numero
+provisional. La Task 6d lo decidio: la cadena alinea el cabezal con el final del
+silencio de cabecera del gemelo. Remedido con esa cadena, el suelo es **+152,3 ms
+de mediana y +188,3 de maximo**, y aqui estan inscritos los dos. El retraso de
+publicacion NO cambio con la alineacion -los dos ejes se movieron juntos, asi que
+la distancia entre ellos es la misma-: lo que lo movio fue el arreglo del
+detector.
 
 **EL SIGNO ES PARTE DEL DATO.** Los desfases medidos son todos POSITIVOS: la
 cadena reporta las notas mas TARDE de lo que sonaron, porque tarda en publicar un
@@ -31,28 +30,26 @@ pruebas comprueban ademas que el desfase es positivo. El dia que salga negativo,
 una asercion en valor absoluto lo dejaria pasar y seria exactamente el defecto que
 nadie veria.
 
-**DOS PRUEBAS DE ESTE ARCHIVO ESTAN EN `xfail(strict=True)` y no es una tolerancia
-relajada**, pero ya no son las mismas dos que al escribir el archivo. Van en
-`strict` para que el dia que dejen de fallar la suite se ponga ROJA y haya que
-venir aqui a quitar la marca: un `xfail` no estricto las dejaria desaparecer en
-silencio.
+**UNA PRUEBA DE ESTE ARCHIVO ESTA EN `xfail(strict=True)`, y no es una tolerancia
+relajada.** Va en `strict` para que el dia que deje de fallar la suite se ponga
+ROJA y haya que venir aqui a quitar la marca: un `xfail` no estricto la dejaria
+desaparecer en silencio. Su numero esperado es el correcto y no se toca -8 notas
+limpias de 8-.
 
-Los numeros ESPERADOS de esas pruebas son los correctos y no se tocan -8 notas
-limpias de 8-. Lo que si esta desactualizado, y dicho arriba, es la constante
-`SUELO_DESFASE_MS` contra la que compara la segunda.
+- `..._las_cuenta_todas_como_limpias`: defecto medido que sigue abierto, pero ya
+  no es el mismo. Era «la cabecera tecnica (128 ms) mas el temblor del onset» y
+  sacaba 0 limpias de 8; la Task 6d se llevo la cabecera y ahora salen **7 de 8**.
+  Lo que queda es solo el temblor del detector de ataques: la nota 3 se firma
+  89,3 ms despues de su ataque exacto y la ventana de acierto son 80 ms. Su
+  docstring lo descompone.
 
-- `..._las_cuenta_todas_como_limpias`: defecto medido que sigue abierto, la
-  cabecera tecnica sin descontar en el eje del cabezal (128 ms) mas el temblor
-  del onset. Su docstring lo descompone.
-- `..._la_mediana_del_desfase_sigue_en_el_suelo_inscrito`: NO es un defecto,
-  es una medicion **pendiente de
-  remedir**. El arreglo del camino A de la Task 6c movio la mediana del suelo y
-  la tarea siguiente la va a mover otra vez; el numero se reinscribe una sola
-  vez, cuando el eje del cabezal este decidido. Su razon de `xfail` lo explica.
+Las dos que SI se arreglaron y ya no llevan marca:
 
-La que SI se arreglo y ya no lleva marca es
-`..._sigue_limpio_con_otra_semilla`: era el hallazgo gordo de la Task 6b y la
-Task 6c lo cerro en `nucleo/ejercicios/pulsaciones.py`.
+- `..._sigue_limpio_con_otra_semilla`: era el hallazgo gordo de la Task 6b y la
+  Task 6c lo cerro en `nucleo/ejercicios/pulsaciones.py`.
+- `..._la_mediana_del_desfase_sigue_en_el_suelo_inscrito`: estaba esperando a que
+  el eje del cabezal se decidiera. Decidido en la Task 6d, el numero se remidio y
+  se inscribio una sola vez.
 """
 
 import pytest
@@ -70,19 +67,21 @@ from nucleo.piezas.estudio import InformeDePasada, PlanDePasada, SesionDeEstudio
 # ningun acorde, asi que las ocho son medibles y ninguna se excluye.
 NOTAS = 8
 
-# La mediana del desfase que la cadena introduce, MEDIDA: +129,8 ms sobre la
-# escala entera al tempo escrito. Redondeada hacia arriba.
+# La mediana del desfase que la cadena introduce, MEDIDA sobre la escala entera al
+# tempo escrito con el cabezal ya alineado (Task 6d): +152,3 ms. Redondeada hacia
+# arriba.
 #
-# **ES LA MEDIDA DE ANTES DEL ARREGLO DEL CAMINO A (Task 6c), y sigue aqui a
-# proposito: hoy la mediana es +152,3 ms.** Ver la cabecera del archivo y la
-# razon del `xfail` de `test_la_mediana_del_desfase_sigue_en_el_suelo_inscrito`,
-# que es la unica asercion que la usa. No subirla sin remedir: el numero se mueve
-# otra vez en cuanto se decida el eje del cabezal.
-SUELO_DESFASE_MS = 130.0
+# Es el numero DEFINITIVO de la etapa, y por eso se inscribio aqui y no antes: el
+# suelo se movio dos veces -el arreglo del camino A del detector (Task 6c) lo
+# subio de +129,8 a +152,3, y la alineacion del cabezal (Task 6d) no lo movio-, y
+# reinscribirlo en cada pasada habria sido publicar numeros provisionales con cara
+# de definitivos. Si se queda corto, la respuesta no es subirlo: es mirar por que
+# la cadena cambio.
+SUELO_DESFASE_MS = 153.0
 
 # El peor desfase de esa misma pasada, MEDIDO: +188,3 ms, y sigue siendo +188,3
-# tras el arreglo del camino A: el maximo no se movio ni un milisegundo, asi que
-# esta constante esta AL DIA. No es la mediana con
+# tras el arreglo del camino A y tras la alineacion del cabezal: el maximo no se
+# ha movido ni un milisegundo en toda la etapa. No es la mediana con
 # otro nombre: es el que decide si la cadena se acerca al techo del detector, y
 # por eso tiene su propio suelo.
 SUELO_MAXIMO_MS = 189.0
@@ -199,43 +198,47 @@ def test_el_oraculo_sin_bucle_acierta_todas_las_notas_del_informe():
 @pytest.mark.xfail(
     strict=True,
     reason=(
-        "DEFECTO MEDIDO, no una tolerancia: la cadena clasifica las OCHO notas de "
-        "una interpretacion perfecta como 'tarde' al tempo escrito, asi que salen "
-        "0 limpias de 8. Ver el docstring de la prueba para la descomposicion."
+        "DEFECTO MEDIDO, no una tolerancia: al tempo escrito salen 7 notas limpias "
+        "de 8, no 8. La que falta es la nota 3, que el detector de ataques firma "
+        "89,3 ms despues de su ataque exacto contra una ventana de acierto de "
+        "80 ms. Eran 0 de 8 hasta la Task 6d, que alineo el cabezal con el final "
+        "de la cabecera tecnica del gemelo y se llevo los 128 ms sistematicos; lo "
+        "que queda es SOLO el temblor del onset. Arreglarlo no es de esta tarea y "
+        "no se arregla bajando el 8 ni subiendo la ventana de acierto: la pregunta "
+        "que plantea -si la clasificacion debe cobrarle al alumno la latencia que "
+        "el detector sabe que añade- es de diseño."
     ),
 )
 def test_el_oraculo_sin_bucle_las_cuenta_todas_como_limpias():
-    """Las ocho notas acertadas Y a tiempo. **ROJA, y es un hallazgo.**
+    """Las ocho notas acertadas Y a tiempo. **ROJA por UNA nota, y es un hallazgo.**
 
     El numero esperado es 8 y se queda en 8: si la cadena le dice a un interprete
     PERFECTO que no toca a tiempo, el defecto es de la cadena y bajar el 8 solo
     serviria para dejar de verlo.
 
-    Medido al tempo escrito: `limpias=0`, `a_tiempo=0`, `pronto=0`, `tarde=8`. Los
-    desfases que la cadena firma nota a nota, en ms:
+    **Eran 0 limpias de 8 y ahora son 7.** Lo que habia eran DOS cosas sumadas, y
+    la Task 6d se llevo la primera:
 
-        +148,3  +136,3  +166,3  +217,3  +163,3  +193,3  +139,3  +148,3
+    1. *La cabecera tecnica, 128 ms, sistematica.* El gemelo mete un silencio
+       delante de la primera nota para que la primera ventana de analisis llegue
+       completa, y el cabezal corria durante el: el guitarrista perfecto tocaba
+       128 ms tarde POR CONSTRUCCION y el seguidor tenia razon en quejarse. Los
+       desfases firmados eran
+       `+148,3 +136,3 +166,3 +217,3 +163,3 +193,3 +139,3 +148,3` ms contra una
+       ventana de 80, o sea las ocho «tarde». Hoy la cadena alinea el cabezal con
+       el final de esa cabecera y los desfases son
+       `+20,3 +8,3 +38,3 +89,3 +35,3 +65,3 +11,3 +20,3`: los mismos menos 128.
+    2. *El temblor del onset, hasta 89,3 ms, por nota.* Es lo que queda, y es lo
+       que deja esta prueba roja: la **nota 3** se firma 89,3 ms despues de su
+       ataque exacto y se pasa de los 80 ms de `VENTANA_A_TIEMPO_S` por 9,3 ms.
+       Las otras siete entran.
 
-    y `VENTANA_A_TIEMPO_S` son 80 ms al tempo escrito, asi que las ocho se pasan.
-    La descomposicion de la primera, que es la que explica el resto:
-
-        +148,3 ms = 128,0 de CABECERA TECNICA + 20,3 de deteccion
-
-    Los 128 ms son `VENTANAS_DE_CABECERA` (1,5 ventanas de analisis), el silencio
-    que el gemelo mete delante de la primera nota y que es OBLIGATORIO: sin el, el
-    primer cuadro que llega a la cadena ya trae el ataque, el reloj de la pieza se
-    ancla ahi y todo lo que sigue se lee adelantado. Pero nadie lo descuenta en el
-    eje del CABEZAL: la cadena hace `fijar_la_mirada(0.0)` en la muestra cero, asi
-    que el cabezal ya marca 128 ms cuando suena una nota que la pieza escribe en
-    0,0. Visto desde el seguidor, el gemelo toca 128 ms tarde **por
-    construccion**, y el seguidor tiene razon en decirlo.
-
-    Que esto no se arregla aqui esta medido tambien: descontando los 128 ms a
-    mano, los desfases quedan en +20,3 +8,3 +38,3 +89,3 +35,3 +65,3 +11,3 +20,3,
-    y **la nota 3 sigue fuera de la ventana de 80 ms**. O sea que son DOS cosas y
-    no una: la cabecera sin descontar (128 ms, sistematica) y el temblor del onset
-    del detector (hasta 89 ms sobre un ataque exacto), que es del orden de la
-    propia ventana de acierto. Arreglar solo la primera dejaria 7 de 8.
+    Ese residuo es la latencia propia del detector de ataques sobre un ataque
+    perfecto, y **no se arregla aqui ni tocando la ventana de acierto**. Plantea
+    una pregunta de diseño que no es de esta tarea: si la clasificacion debe
+    cobrarle al alumno la latencia que el detector sabe que añade. Mientras no se
+    responda, esta prueba se queda roja con el 8 escrito, que es la unica forma de
+    que la pregunta no se pierda.
 
     Lo que SI pasa, y esta probado abajo, es el tempo minimo: la ventana de
     acierto se estira con el factor (80 ms / 0,40 = 200 ms) y ahi las ocho notas
@@ -277,34 +280,27 @@ def test_el_desfase_que_introduce_la_cadena_habla_tarde_y_cabe_en_el_techo():
     assert abs(veredicto.desfase_maximo_ms) < TECHO_DEL_DETECTOR_MS
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "PENDIENTE DE REMEDIR, no una tolerancia relajada ni un defecto: el "
-        "arreglo del camino A (Task 6c) subio la mediana del suelo de +129,8 a "
-        "+152,3 ms, por encima de SUELO_DESFASE_MS + MARGEN_MS (145). El numero "
-        "NO se reinscribe aqui porque la tarea siguiente alinea el reloj de la "
-        "pieza con el final del silencio de cabecera del gemelo, lo que mueve el "
-        "suelo OTRA VEZ y por mas (los 128 ms de cabecera que hoy nadie "
-        "descuenta). Inscribir +152,3 ahora seria publicar un numero provisional "
-        "con cara de definitivo y tirarlo en la pasada siguiente. Se remide y se "
-        "reinscribe cuando el eje del cabezal este decidido; entonces esta marca "
-        "se cae sola y hay que venir a quitarla. ESTA PRUEBA LLEVA UNA SOLA "
-        "ASERCION a proposito: las otras cuatro del suelo viven en "
-        "test_el_desfase_que_introduce_la_cadena_habla_tarde_y_cabe_en_el_techo "
-        "y siguen vigilando, porque un xfail no distingue por que se falla."
-    ),
-)
 def test_la_mediana_del_desfase_sigue_en_el_suelo_inscrito():
-    """La quinta afirmacion del suelo, la unica que el arreglo movio.
+    """La quinta afirmacion del suelo: el numero, ya inscrito. **Verde desde la
+    Task 6d.**
 
-    `SUELO_DESFASE_MS` sigue siendo +130 ms, que es lo medido ANTES del arreglo
-    del camino A. Hoy la mediana es +152,3 ms y la razon es buena: antes algunas
-    notas resolvian pronto CON LA ALTURA EQUIVOCADA y ahora todas esperan a que
-    la racha cuaje. La dispersion sobre 30 semillas se estrecha de 43,5 a
-    34,5 ms con el arreglo puesto, asi que la cadena es mas previsible, no menos.
+    Estuvo en `xfail(strict=True)` esperando a que el eje del cabezal se
+    decidiera, con +130 ms inscritos -lo medido antes del arreglo del camino A- y
+    con la razon escrita: el suelo iba a moverse otra vez y reinscribirlo dos
+    veces habria sido tirar la primera medida.
 
-    No se reinscribe el numero aqui: ver la razon del `xfail`.
+    El eje se decidio en la Task 6d y el numero se remidio con esa cadena:
+    **+152,3 ms**, que es lo que `SUELO_DESFASE_MS` dice ahora. La subida respecto
+    de los +129,8 originales es toda del arreglo del camino A y la razon es buena:
+    antes algunas notas resolvian pronto CON LA ALTURA EQUIVOCADA y ahora todas
+    esperan a que la racha cuaje, con lo que la dispersion sobre 30 semillas se
+    estrecha de 43,5 a 34,5 ms. La alineacion del cabezal no lo movio: mueve los
+    dos ejes a la vez, asi que la distancia entre ellos -que es lo que esto mide-
+    no cambia.
+
+    Sigue aislada en su propia prueba, con UNA sola asercion, porque asi fue como
+    se pudo dejar en `xfail` sin que las otras cuatro afirmaciones del suelo
+    dejaran de vigilar.
     """
     veredicto, _, _ = _pasada_del_oraculo()
 
@@ -317,14 +313,15 @@ def test_el_oraculo_aguanta_el_tempo_minimo():
     Es el caso peor y no una repeticion del anterior: al 40 % el tramo dura dos
     veces y media mas, el cabezal recorre mas segundos por cada ataque y el
     desfase que la cadena introduce SUBE. Medido: mediana +164,3 ms y maximo
-    +206,3 ms, contra +129,8 y +188,3 al tempo escrito. Sigue por debajo del techo
+    +206,3 ms, contra +152,3 y +188,3 al tempo escrito. Sigue por debajo del techo
     del detector, con 44 ms de holgura, que es la menor de todas las
     configuraciones medidas.
 
     Y aqui las ocho notas si salen limpias, porque la ventana de acierto se estira
-    con el factor (80 ms / 0,40 = 200 ms) y se come los 128 de cabecera. Es la
-    contraprueba de que el defecto de arriba es la cabecera y el temblor del
-    onset, y no que el seguidor cuente mal.
+    con el factor (80 ms / 0,40 = 200 ms) y se come de sobra el temblor del onset
+    -que al 40 % llega a 65,3 ms-. Es la contraprueba de que lo que deja la prueba
+    de arriba en 7 de 8 es ese temblor contra una ventana de 80 ms, y no que el
+    seguidor cuente mal.
     """
     veredicto, _, informe = _pasada_del_oraculo(factor_tempo=0.40)
 
