@@ -656,12 +656,30 @@ def test_la_cuenta_atras_se_traduce_pasando_por_la_cadena_de_verdad():
     calculan con los mismos ayudantes de produccion con los que
     `SesionDeEstudio._segundos_de_cuenta_atras` los calcula.
 
-    **Medido con el cabezal alineado (T6d): veredicto limpio, mediana +96,0 ms y
-    maximo +171,0 ms**, y los dos se AFIRMAN con su margen, no solo contra el
-    techo del detector. Afirmar solo que caben en los 250 ms dejaba 79 ms de
-    holgura, suficiente para tragarse un error de eje de 128 ms sin pestañear: es
-    lo que dejo pasar que este docstring siguiera diciendo los numeros del eje
-    viejo (+67,0 y +169,0) despues de alinear.
+    **Medido con el reloj de la cuenta atras ya exacto (T8): veredicto limpio,
+    mediana +131,3 ms y maximo +206,3 ms**, y los dos se AFIRMAN con su margen, no
+    solo contra el techo del detector. Afirmar solo que caben en los 250 ms dejaba
+    79 ms de holgura, suficiente para tragarse un error de eje de 128 ms sin
+    pestañear: es lo que dejo pasar que este docstring siguiera diciendo los
+    numeros del eje viejo (+67,0 y +169,0) despues de alinear.
+
+    **LOS NUMEROS SE MOVIERON EN LA T8 Y LO QUE MEDIAN ERA UN DEFECTO.** Eran
+    +96,0 y +171,0, y traian dentro 35,3 ms de cabezal atrasado: el cuadro que
+    agotaba la cuenta atras volvia con el reloj clavado en el inicio y la
+    correspondencia sin fijar, asi que el reloj no arrancaba hasta el cuadro
+    siguiente y ademas tiraba lo que sobraba del cuadro. Este archivo lo tenia
+    escrito como una rareza aceptada -«el cabezal solo se suelta de la cuenta atras
+    en un cuadro»- y era el defecto que el bucle con cuenta atras amplificaba a
+    37 ms por vuelta. Arreglado en `SesionDeEstudio.procesar` y
+    `_dar_la_vuelta`, el cabezal vale ahora `t - cuenta` AL MICROSEGUNDO
+    (`tests/test_gemelo_cuenta_atras.py`), y lo que este suelo mide -la distancia
+    entre el ataque y la publicacion- sube a +131,3 / +206,3.
+
+    Sigue 21 ms por debajo de la mediana sin cuenta atras (+152,3) y eso NO es eje:
+    con 2,4 s de silencio delante, el detector tiene nivel de referencia limpio y
+    firma algunas notas un cuadro antes. El maximo, en cambio, sube por encima del
+    de sin cuenta (+188,3), asi que no es un desplazamiento del eje -un eje movido
+    movería los dos en el mismo sentido-.
 
     Con el termino de la cuenta atras quitado del modulo salen 8 perdidas y 8
     inventadas de 8.
@@ -694,8 +712,8 @@ def test_la_cuenta_atras_se_traduce_pasando_por_la_cadena_de_verdad():
     # Los dos numeros medidos, cada uno con su margen por los dos lados. El
     # margen es menos de un cuadro de analisis (21 ms), asi que ni un cuadro de
     # deriva pasa desapercibido, y mucho menos los 128 ms de la cabecera.
-    assert veredicto.desfase_introducido_ms == pytest.approx(96.0, abs=15.0)
-    assert veredicto.desfase_maximo_ms == pytest.approx(171.0, abs=15.0)
+    assert veredicto.desfase_introducido_ms == pytest.approx(131.3, abs=15.0)
+    assert veredicto.desfase_maximo_ms == pytest.approx(206.3, abs=15.0)
 
 
 def test_la_primera_nota_del_tramo_no_se_excluye_por_la_nota_de_antes():

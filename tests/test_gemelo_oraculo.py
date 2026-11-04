@@ -20,10 +20,16 @@ silencio de cabecera del gemelo. Remedido con esa cadena, el suelo es **+152,3 m
 de mediana y +188,3 de maximo**, y aqui estan inscritos los dos. El retraso de
 publicacion NO cambio con la alineacion, porque los dos ejes se movieron juntos y
 la distancia entre ellos es lo que este suelo mide: lo que lo movio fue el arreglo
-del detector. **Eso vale para cinco de las seis configuraciones medidas, no para
+del detector. **Eso valia para cinco de las seis configuraciones medidas, no para
 las seis**: la que lleva cuenta atras se movio 2,0 ms (+94,0/+169,0 pasaron a
-+96,0/+171,0), porque el cabezal solo se suelta de la cuenta atras en un cuadro y
-el instante exacto en que deberia soltarse cae dentro de uno.
++96,0/+171,0), porque el cabezal solo se soltaba de la cuenta atras en un cuadro y
+el instante exacto en que deberia soltarse caia dentro de uno. **Eso ya no es
+asi**: la T8 midio que ese cuadro era un defecto -el bucle con cuenta atras lo
+amplificaba a 37 ms de arrastre por vuelta- y lo arreglo, asi que el cabezal se
+suelta en el instante exacto y el suelo de esa configuracion se remidio en
++131,3/+206,3 (ver `tests/test_gemelo_cuenta_atras.py` y
+`tests/test_gemelo_veredicto.py`). Las cinco configuraciones de este archivo no
+llevan cuenta atras y no se movieron.
 
 **EL SIGNO ES PARTE DEL DATO.** Los desfases medidos son todos POSITIVOS: la
 cadena reporta las notas mas TARDE de lo que sonaron, porque tarda en publicar un

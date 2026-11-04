@@ -562,7 +562,26 @@ class SesionDeEstudio:
         vuelta no congela nada.
         """
         inicio, fin = self._inicio_s(), self._fin_s()
-        exceso = self._exceso_de_la_vuelta(inicio, fin)
+        exceso_del_cruce = self._exceso_de_la_vuelta(inicio, fin)
+        cuenta = self._segundos_de_cuenta_atras()
+        # **CON CUENTA ATRAS, EL EXCESO SE LE DEBITA A LA CUENTA Y NO AL RELOJ**, y
+        # es la primera mitad del arrastre que el bucle CON cuenta tenia (la
+        # segunda esta en `procesar`). El exceso es tiempo que ya paso desde que el
+        # reloj cruzo el final del tramo, y con una cuenta atras abierta ese tiempo
+        # lo gasta la CUENTA: la cuenta empieza en la frontera, no en el cuadro que
+        # se entero. Dandoselo al reloj -que es lo que se hacia- la cuenta duraba
+        # `exceso` de mas y el reloj no se lo quedaba, porque mientras la cuenta
+        # corre esta clavado en el inicio: se perdia en cada vuelta.
+        #
+        # Si el exceso es MAYOR que la cuenta, lo que sobra sigue yendo al reloj:
+        # un exceso enorme es un salto de reloj y no una vuelta, y tragarselo
+        # entero en una cuenta de dos compases seria inventarse una cuenta corta.
+        #
+        # Sin cuenta atras (`cuenta == 0`) esto no hace nada y el exceso va al
+        # reloj, que es lo que la T7 dejo medido.
+        gastado_en_la_cuenta = min(exceso_del_cruce, cuenta)
+        cuenta -= gastado_en_la_cuenta
+        exceso = exceso_del_cruce - gastado_en_la_cuenta
         frontera = None
         ahora = None
         if con_audio and self._ultimo_analisis is not None:
@@ -575,8 +594,14 @@ class SesionDeEstudio:
             #
             # Y la correspondencia va con ella, por el mismo motivo por el que la
             # resta vale: el reloj de la pieza marca `inicio + exceso` AHORA.
+            #
+            # La frontera se resta con el exceso DEL CRUCE y no con el que le queda
+            # al reloj: la frontera es el instante en que el reloj paso por el final
+            # del tramo, y eso no cambia porque parte de ese tiempo se le debite a
+            # la cuenta atras. Restar el debitado la pondria en este cuadro y le
+            # regalaria a la vuelta nueva lo que se ataco antes de ella.
             ahora = self._ultimo_analisis
-            frontera = ahora - exceso
+            frontera = ahora - exceso_del_cruce
         self._tocadas_de_la_vuelta = tuple(self._seguidor.estado.tocadas)
         self._ultima_vuelta = self.cerrar_repeticion()
         self._seguidor.olvidar_tramo(inicio, fin)
@@ -586,7 +611,7 @@ class SesionDeEstudio:
             instante_analisis_s=ahora,
         )
         self._repeticion += 1
-        self._cuenta_atras_restante_s = self._segundos_de_cuenta_atras()
+        self._cuenta_atras_restante_s = cuenta
 
     def _cobrar_la_cola(self) -> None:
         """Vuelca al informe de la vuelta que CERRO lo que se ataco antes de ella.
@@ -827,13 +852,38 @@ class SesionDeEstudio:
             if self._en_pausa:
                 self._seguidor.avanzar_a(self._seguidor.estado.instante_s)
                 return self.estado
-            if self._cuenta_atras_restante_s > 0:
-                self._cuenta_atras_restante_s = max(
-                    0.0, self._cuenta_atras_restante_s - delta
-                )
-                # Igual que en `avanzar`: reloj quieto en el inicio, nada se cobra.
+            if delta < self._cuenta_atras_restante_s:
+                # La cuenta se come el cuadro ENTERO y sigue viva. Igual que en
+                # `avanzar`: reloj quieto en el inicio, nada se cobra.
+                self._cuenta_atras_restante_s -= delta
                 self._seguidor.avanzar_a(self._inicio_s())
                 return self.estado
+            if self._cuenta_atras_restante_s > 0:
+                # **LA CUENTA SE ACABA DENTRO DE ESTE CUADRO, Y LO QUE SOBRA DEL
+                # CUADRO YA ES TIEMPO DEL TRAMO: se le entrega al reloj AQUI.** Es
+                # la segunda mitad del arrastre que el bucle CON cuenta atras tenia
+                # (la primera esta en `_dar_la_vuelta`), y era un cuadro de analisis
+                # entero por vuelta -21 ms a la cadencia de produccion-: el cuadro
+                # que agotaba la cuenta volvia con el reloj clavado en el inicio y
+                # la correspondencia sin fijar, asi que el reloj no empezaba a
+                # correr hasta el cuadro SIGUIENTE y se perdia lo que `sobra` mide.
+                # Es el mismo cuadro congelado que la T7 le quito a la vuelta del
+                # bucle, aqui por el camino de la cuenta.
+                #
+                # **Y NO HACE FALTA NI UNA PUERTA NUEVA NI TOCAR NINGUN CONTRATO**,
+                # que es lo que hace a esta la version barata: el `avanzar_a` es
+                # ORDINARIO -sin frontera ni correspondencia- y la correspondencia
+                # la escribe el `procesar` de abajo, en este mismo cuadro, desde el
+                # reloj que acabamos de dejar (`SeguidorPieza.procesar`: «si
+                # `_origen_analisis` es None, se fija con el instante de este
+                # cuadro»). El salto ordinario sigue DESCARTANDO lo que estuviera en
+                # vuelo y sigue poniendo `_analisis_desde` en este cuadro, que es
+                # literalmente «durante la cuenta atras no se cobra nada»: lo
+                # atacado antes de que la cuenta se agotara no se anota ni va a la
+                # cola.
+                sobra = delta - self._cuenta_atras_restante_s
+                self._cuenta_atras_restante_s = 0.0
+                self._seguidor.avanzar_a(self._inicio_s() + sobra)
             self._seguidor.procesar(resultado, instante_analisis)
             # Cobrar ANTES de `_al_dia`, porque lo que el seguidor acaba de
             # retener es de la vuelta que cerro la vez ANTERIOR: si este mismo

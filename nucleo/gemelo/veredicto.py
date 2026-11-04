@@ -310,9 +310,17 @@ def _adelantos_por_vuelta(
     se movieron juntos y lo que este modulo mide es la distancia entre ellos. Con
     una excepcion medida, que se escribe porque la frase sin ella seria falsa: en
     la configuracion con cuenta atras el retraso subio 2,0 ms (+94,0 a +96,0 de
-    mediana, +169,0 a +171,0 de maximo), porque el cabezal solo se suelta de la
+    mediana, +169,0 a +171,0 de maximo), porque el cabezal solo se soltaba de la
     cuenta atras en un cuadro de analisis y el instante exacto en que deberia
-    soltarse cae dentro de uno.
+    soltarse caia dentro de uno.
+
+    *Y la cuenta atras dejo de cuantizar (T8).* Ese cuadro era un defecto -con
+    bucle se convertia en 37 ms de arrastre por vuelta- y se arreglo en
+    `SesionDeEstudio`: el cuadro que agota la cuenta le entrega al reloj lo que
+    sobra de el. El cabezal con cuenta atras vale ahora `t - cuenta` al
+    microsegundo, y el retraso que este modulo firma en esa configuracion se
+    remidio en **+131,3 de mediana y +206,3 de maximo**. La traduccion de este
+    modulo no cambio ni una linea por eso: lo que cambio fue el cabezal que mide.
 
     Las dos mediciones son correctas y no se contradicen: cada una midio la cadena
     que habia. Lo que cambio fue la cadena.

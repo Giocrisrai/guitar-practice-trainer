@@ -19,27 +19,68 @@ que la cadena cambio. El margen de las aserciones de tiempo es `MARGEN_MS`, meno
 de un cuadro de analisis, igual que en `test_gemelo_oraculo.py` y
 `test_gemelo_bucle.py`: ni un cuadro de deriva puede pasar desapercibido.
 
+**EL ARRASTRE DEL BUCLE CON CUENTA ATRAS: ENCONTRADO AQUI Y ARREGLADO AQUI.** La
+primera version de este archivo lo dejo en `xfail(strict=True)`; hoy las pruebas
+son verdes y el `xfail` se ha ido. Lo que habia, medido con ocho vueltas de un
+interprete PERFECTO:
+
+    desfase medio por vuelta   antes  -7,9 / -44,6 / -89,3 / -123,4 / -162,7 /
+                                      -199,5 / -231,0 ms   (37 ms por vuelta)
+                              ahora  +24,8 / +27,8 / +23,0 / +28,6 / -26,2 /
+                                      +29,3 / +37,6 / +32,7
+    limpias por vuelta         antes  8 / 8 / 1 / 1 / 1 / 1 / 1
+                              ahora  8 / 8 / 8 / 8 / 7 / 8 / 7 / 7
+    vueltas cerradas de ocho   antes  7        ahora  8
+
+Eran **las dos causas que la T7 le quito a la vuelta del bucle, volviendo por el
+camino de la cuenta atras**, y las dos se arreglan donde estaban:
+
+1. *El exceso del cruce se tiraba.* `_dar_la_vuelta` conserva el exceso con que el
+   reloj cruzo el final del tramo, pero el primer cuadro de la cuenta clavaba el
+   reloj en el inicio y se lo llevaba por delante (~15 ms). Ahora el exceso se le
+   DEBITA A LA CUENTA, que es quien gasta ese tiempo: la cuenta empieza en la
+   frontera y no en el cuadro que se entero.
+2. *El cuadro que agotaba la cuenta se congelaba.* Ese cuadro volvia con el reloj
+   en el inicio y la correspondencia sin fijar, asi que el reloj no arrancaba
+   hasta el cuadro siguiente: 21 ms por vuelta. Ahora lo que sobra del cuadro
+   -`delta` menos lo que le quedaba a la cuenta- se le entrega al reloj en ese
+   mismo cuadro, y la correspondencia la escribe el `procesar` de abajo desde ahi.
+
+**NO SE TOCO NINGUN CONTRATO**: el salto del final de la cuenta es ORDINARIO -sin
+frontera ni correspondencia-, asi que sigue descartando lo que estuviera en vuelo
+y sigue poniendo el origen del analisis en ese cuadro, que es literalmente
+«durante la cuenta atras no se cobra nada». La maquinaria del salto continuo de la
+T7 no hacia falta aqui, y por eso no se uso.
+
+La prueba que lo sujeta por arriba es
+`test_el_cabezal_de_cada_vuelta_es_el_reloj_del_analisis_menos_la_cuenta`: con la
+cuenta agotada, el cabezal de la vuelta `v` es `t - (v * cuenta + (v-1) * tramo)`
+**al microsegundo, en los 1828 cuadros de ocho vueltas**. Un arrastre no se puede
+esconder de eso.
+
 **LO QUE SE MIDIO DEL DEFECTO CONOCIDO DE LA FRONTERA.**
 `tests/test_gemelo_bucle.py` dejo anotado, como anterior a la T7 y abierto, que
 «con cuenta atras la nota de la frontera se pierde igual, porque mientras la
-cuenta dura los cuadros no llegan al seguidor». Medido aqui con audio:
-**no se pierde ni una nota en 64** (ocho vueltas de ocho notas, siete cerradas).
-El tamaño del defecto sobre el instrumento de la etapa es CERO, y la razon es
-geometrica: la ultima nota del tramo se ataca 600 ms antes del final -una nota por
-pulso a 100 ppm- y la cadena publica su ataque unos 152 ms despues, asi que se
-cobra con la vuelta todavia abierta. Para que el defecto muerda haria falta una
-nota atacada a menos de ~150 ms del final del tramo, y las piezas que se armaron
-para provocarlo chocaron con otro limite del detector antes de llegar a este -dos
-ataques a 150 ms uno del otro en la barra de compas, o una figura tan corta que no
-se resuelve-, asi que **no es afirmable con esta cadena y no se inscribe un
-`xfail` que no podria fallar por su motivo**. Queda medido aqui y en el informe.
+cuenta dura los cuadros no llegan al seguidor». Eso sigue siendo verdad del
+mecanismo -la cuenta no le da los cuadros al seguidor, y eso no lo cambia el
+arreglo del arrastre- pero **no muerde sobre el instrumento de la etapa**: la
+ultima nota del tramo se ataca 600 ms antes del final -una nota por pulso a 100
+ppm- y la cadena publica su ataque unos 152 ms despues, con la vuelta todavia
+abierta. Para que muerda haria falta una nota atacada a menos de ~150 ms del final
+del tramo, y las piezas que se armaron para provocarlo chocaron con otro limite
+del detector antes de llegar a este -dos ataques a 150 ms uno del otro en la barra
+de compas, o una figura tan corta que no se resuelve-, asi que **no es afirmable
+con esta cadena y no se inscribe un `xfail` que no podria fallar por su motivo**.
 
-**LO QUE SI APARECIO, Y ES NUEVO: EL BUCLE CON CUENTA ATRAS ARRASTRA EL RELOJ.**
-Esta en `test_el_bucle_con_cuenta_atras_no_arrastra_el_reloj`, en
-`xfail(strict=True)` y con su numero medido. Es el mismo arrastre que la T7 quito
-del camino SIN cuenta atras, volviendo por el camino de la cuenta: 37 ms por
-vuelta, con las limpias cayendo de 8 de 8 a 1 de 8 en la tercera vuelta. El
-diagnostico esta en el docstring de esa prueba.
+Lo que SI se pierde en ocho vueltas es UNA nota de 64, la `(5, 7)`, y no es la
+frontera: es el error de OCTAVA del detector de tono que
+`test_gemelo_bucle.py::test_las_ocho_vueltas_siguen_sin_arrastre` ya tiene
+inscrito **con el mismo numero, la misma vuelta y el mismo indice** en la
+configuracion SIN cuenta atras. Que las dos configuraciones pierdan exactamente la
+misma nota es el dato: el defecto es del detector y es independiente de la cuenta.
+Antes del arreglo del arrastre esa nota NO se perdia con cuenta atras, y tampoco
+era merito de nadie: el arrastre mantenia el cabezal por detras del audio y le
+ensanchaba el margen. Estaba avisado en el informe de esta tarea.
 """
 
 import dataclasses
@@ -81,22 +122,39 @@ TOLERANCIA_DE_LA_DURACION_S = 0.001
 
 # Cuanto tarda la cadena en publicar el ataque de la primera nota de cada vuelta
 # contado DESDE que la cuenta atras de esa vuelta se acaba, en ms, MEDIDO sobre
-# cuatro vueltas: +182,3 / +185,3 / +188,3 / +212,3.
+# cuatro vueltas: +182,3 / +185,3 / +188,3 / +191,3.
 #
 # Son el ancla de que la cuenta de CADA vuelta se agoto entera: si una se hubiera
 # muerto, su primer ataque se habria cobrado antes de que la cuenta terminara y
 # estos numeros saldrian negativos. Y van afirmados con su valor y no solo con el
 # signo, porque un retraso de publicacion que se fuera a 500 ms seria otro defecto
 # y con un `> 0` pelado no se veria.
-RETRASOS_TRAS_LA_CUENTA_MS = (182.3, 185.3, 188.3, 212.3)
+RETRASOS_TRAS_LA_CUENTA_MS = (182.3, 185.3, 188.3, 191.3)
 
-# El desfase medio de cada vuelta del bucle CON cuenta atras, en ms, MEDIDO con
-# cuatro vueltas: -7,9 / -44,6 / -89,3. **Es el arrastre**, no el suelo de la
-# cadena: cada vuelta se va 37 ms mas que la anterior, y el signo negativo dice
-# que el cabezal se queda cada vez mas atras del audio. Sin cuenta atras los
-# mismos cuatro numeros son +36,1 / +32,0 / +22,6 / +31,6 (ver
-# `tests/test_gemelo_bucle.py`), o sea un recorrido de 13,5 ms.
-DESFASES_CON_CUENTA_POR_VUELTA_MS = (-7.9, -44.6, -89.3)
+# El desfase medio de cada vuelta del bucle CON cuenta atras, en ms, MEDIDO.
+# Antes de arreglar el arrastre eran -7,9 / -44,6 / -89,3 con cuatro vueltas (37 ms
+# por vuelta, y la cuarta no llegaba a cerrarse) y bajaban hasta -231,0 en la
+# octava. Sin cuenta atras los cuatro son +36,1 / +32,0 / +22,6 / +31,6 (ver
+# `tests/test_gemelo_bucle.py`), y siguen siendo esos: el arreglo no toco ese
+# camino.
+#
+# El -26,2 de la vuelta 5 de las ocho NO es arrastre: es el error de octava del
+# detector de tono que pierde la nota (5, 7), el mismo que la configuracion sin
+# cuenta atras tiene inscrito en esa misma vuelta (alli firma -11,9).
+DESFASES_CON_CUENTA_POR_VUELTA_MS = (24.8, 27.8, 23.0, 28.6)
+DESFASES_CON_CUENTA_EN_OCHO_VUELTAS_MS = (
+    24.8, 27.8, 23.0, 28.6, -26.2, 29.3, 37.6, 32.7,
+)
+
+# Las limpias de cada vuelta con cuenta atras, ocho vueltas, MEDIDAS. Antes del
+# arreglo del arrastre: 8 / 8 / 1 / 1 / 1 / 1 / 1 -y solo siete vueltas cerradas-.
+# El 7 de la vuelta 5 es el error de octava; los de la 7 y la 8, el temblor del
+# onset que el oraculo tiene en `xfail`.
+LIMPIAS_CON_CUENTA_EN_OCHO_VUELTAS = (8, 8, 8, 8, 7, 8, 7, 7)
+
+# La nota que el detector pierde por un error de OCTAVA en la vuelta 5, con y sin
+# cuenta atras. Ver `test_gemelo_bucle.py::test_las_ocho_vueltas_siguen_sin_arrastre`.
+PERDIDA_POR_EL_ERROR_DE_OCTAVA = (5, 7)
 
 # Lo mas que pueden separarse dos vueltas cualesquiera SIN que haya arrastre: un
 # cuadro de analisis, el mismo numero que `test_gemelo_bucle.py` inscribe.
@@ -444,19 +502,21 @@ def test_la_cuenta_atras_de_cada_vuelta_tambien_sobrevive():
     corriendo durante los 2,4 s de silencio, y la nota se habria cobrado con el
     cabezal cerca del final del tramo (o fuera de el, con la vuelta ya dada).
 
-    Tres vueltas cerradas de cuatro NO es un defecto: el audio se acaba antes de
-    que el bucle de la cuarta vuelta, asi que esa vuelta sigue abierta y nadie la
-    ha cerrado. Es lo que `RegistroDeLaCadena` documenta.
+    **LAS CUATRO VUELTAS SE CIERRAN, y antes del arreglo del arrastre solo tres.**
+    No era una vuelta «que se queda abierta porque el audio se acaba»: era que el
+    reloj iba 37 ms por vuelta por detras del audio y la cuarta vuelta no llegaba a
+    cruzar el final del tramo antes de que las muestras se terminaran. Cuatro
+    vueltas de audio son cuatro vueltas.
     """
     _, registro, conductor, cuenta_s, _ = _pasada_con_cuenta_atras(
         repeticiones=4, en_bucle=True
     )
 
-    assert len(registro.vueltas) == 3, (
-        "cuatro vueltas de audio cierran tres informes -la cuarta se queda "
-        f"abierta-; estas cerraron {len(registro.vueltas)}"
+    assert len(registro.vueltas) == 4, (
+        "cuatro vueltas de audio cierran cuatro informes con el reloj sin "
+        f"arrastre; estas cerraron {len(registro.vueltas)}"
     )
-    assert [_suma(informe, "acertadas") for informe in registro.vueltas] == [NOTAS] * 3
+    assert [_suma(informe, "acertadas") for informe in registro.vueltas] == [NOTAS] * 4
 
     primeros = _primer_cuadro_con_cobro(conductor)
     assert sorted(primeros) == [1, 2, 3, 4], (
@@ -492,8 +552,8 @@ def test_la_nota_de_la_frontera_no_se_pierde_con_cuenta_atras():
     `tests/test_gemelo_bucle.py` lo dejo anotado como anterior a la T7 y abierto:
     «mientras la cuenta dura, el estudio no le da los cuadros al seguidor, asi que
     un ataque de la frontera que se resuelva ya dentro de la cuenta se pierde
-    igual». Esto es su medida con audio: **ocho vueltas, siete cerradas, 64 notas,
-    y no se pierde ni una**.
+    igual». Esto es su medida con audio: **ocho vueltas, ocho cerradas, 64 notas,
+    y la unica que se pierde no es la de la frontera.**
 
     El mecanismo existe -durante la cuenta `procesar` vuelve antes de llamar al
     seguidor, asi que un onset sin resolver no se resuelve nunca- pero sobre el
@@ -504,77 +564,126 @@ def test_la_nota_de_la_frontera_no_se_pierde_con_cuenta_atras():
     es construible con esta cadena sin chocar antes con otro limite del detector.
 
     Por eso esto es una prueba VERDE con el numero medido y no un `xfail`: un
-    `xfail(strict=True)` exige que la prueba falle, y esta no falla. El dia que
-    alguien arregle el arrastre de abajo -que es lo que hoy mantiene el cabezal
-    por detras del audio- conviene volver a medir esto: los dos defectos se tocan.
+    `xfail(strict=True)` exige que la prueba falle, y esta no falla.
 
-    `limpias` NO se afirma aqui a proposito: se cae a 1 de 8 desde la tercera
-    vuelta, y eso es el arrastre de la prueba de abajo, no la frontera.
+    **LA NOTA QUE SI SE PIERDE ES LA `(5, 7)`, Y ES OTRA COSA:** el error de
+    OCTAVA del detector de tono -firma midi 77 donde sono un 65- que
+    `test_gemelo_bucle.py::test_las_ocho_vueltas_siguen_sin_arrastre` tiene
+    inscrito con **el mismo numero, la misma vuelta y el mismo indice** en la
+    configuracion SIN cuenta atras. Que las dos pierdan exactamente la misma nota
+    es el dato: el defecto es del detector y no de la cuenta ni del bucle.
+
+    Y aparecio con el arreglo del arrastre, no antes: mientras el reloj iba por
+    detras del audio, esa nota se salvaba por el margen que el propio arrastre le
+    regalaba. El informe de esta tarea lo dejo avisado.
+
+    Se afirma UNA perdida y la suya, no «pocas»: si aparece otra, no es este
+    defecto conocido. `limpias` no se afirma aqui -lo hace la prueba del
+    arrastre-, pero `acertadas` si, vuelta a vuelta, porque es donde se veria que
+    la frontera se cae.
     """
     veredicto, registro, _, _, _ = _pasada_con_cuenta_atras(
         repeticiones=8, en_bucle=True
     )
 
-    assert len(registro.vueltas) == 7
-    assert [_suma(informe, "acertadas") for informe in registro.vueltas] == [NOTAS] * 7
+    assert len(registro.vueltas) == 8
+    assert [_suma(informe, "acertadas") for informe in registro.vueltas] == [
+        NOTAS, NOTAS, NOTAS, NOTAS, NOTAS - 1, NOTAS, NOTAS, NOTAS
+    ]
     assert veredicto.notas_tocadas == NOTAS * 8
-    assert veredicto.perdidas == (), (
+    assert len(veredicto.perdidas) == 1, (
         f"se perdieron {len(veredicto.perdidas)} notas de 64: {veredicto.perdidas}"
     )
-    assert veredicto.inventadas == 0
+    assert veredicto.perdidas == (PERDIDA_POR_EL_ERROR_DE_OCTAVA,)
     assert veredicto.mal_adjudicadas == ()
     assert veredicto.excluidas == ()
-    assert veredicto.limpio is True
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "DEFECTO MEDIDO Y ABIERTO, no una tolerancia: el bucle CON cuenta atras "
-        "arrastra el reloj 37 ms por vuelta. Los desfases medios por vuelta son "
-        "-7,9 / -44,6 / -89,3 ms con cuatro vueltas (recorrido 81,4 ms, cuatro "
-        "cuadros de analisis) y -7,9 / -44,6 / -89,3 / -123,4 / -162,7 / -199,5 / "
-        "-231,0 con ocho, y las limpias caen de 8 de 8 a 1 de 8 en la tercera "
-        "vuelta. SIN cuenta atras los mismos numeros son +36,1 / +32,0 / +22,6 / "
-        "+31,6 (recorrido 13,5 ms, dentro de un cuadro), asi que lo que arrastra "
-        "es la cuenta y no el bucle. Es el arrastre que la T7 quito, volviendo por "
-        "el camino de la cuenta, y por las MISMAS DOS causas sumadas: "
-        "`_dar_la_vuelta` conserva el exceso con que el reloj cruzo el final del "
-        "tramo y abre la cuenta despues, pero el primer cuadro de la cuenta llama "
-        "a `avanzar_a(_inicio_s())` -un salto ORDINARIO- que tira ese exceso (~15 "
-        "ms) y deja la correspondencia entre los dos relojes sin fijar, asi que al "
-        "acabar la cuenta el reloj se queda quieto un cuadro entero (21 ms). "
-        "Arreglarlo no es pequeño ni evidente: la mitad del exceso se arregla "
-        "debitandoselo a la cuenta al abrirla, pero la del cuadro congelado pide "
-        "que el fin de la cuenta escriba su correspondencia como hace el salto "
-        "continuo del bucle, y eso toca el contrato de `avanzar_a` y el de «durante "
-        "la cuenta atras no se cobra nada». No se baja el numero ni se ensancha el "
-        "margen: el margen es un cuadro, igual que en el bucle sin cuenta."
-    ),
-)
+def test_el_cabezal_de_cada_vuelta_es_el_reloj_del_analisis_menos_la_cuenta():
+    """**LA PRUEBA DEL ARRASTRE POR ARRIBA.** El cabezal, al microsegundo.
+
+    Es la afirmacion mas fuerte del archivo y la mas corta de explicar: con la
+    cuenta atras ya agotada, el cabezal de la vuelta `v` tiene que valer
+    exactamente el reloj del analisis menos lo que el audio lleva gastado en
+    cuentas y vueltas anteriores,
+
+        cabezal = t - (v * cuenta + (v - 1) * tramo)
+
+    porque la cadena alinea el eje del cabezal con el final de la cabecera tecnica
+    y el resto del audio es exactamente esa geometria. **Medido: desvio maximo
+    0,000000 ms sobre los 1828 cuadros de ocho vueltas.**
+
+    Un arrastre no se puede esconder de esto, y ahi esta su valor frente a las
+    medias por vuelta: 37 ms por vuelta son 1,7 cuadros, y las medias hay que
+    leerlas comparando vueltas, mientras que esto falla en el primer cuadro de la
+    segunda vuelta. La tolerancia es de MICROsegundos y no de un cuadro porque no
+    hay nada que redondear: el reloj del seguidor sale de una resta entre dos
+    numeros exactos.
+
+    Se cuentan los cuadros comprobados y se exige un suelo: sin eso, un filtro que
+    dejara la lista vacia -o una cuenta que no se agotara nunca- daria la prueba
+    por buena sin haber comparado un solo cuadro.
+    """
+    _, _, conductor, cuenta_s, _ = _pasada_con_cuenta_atras(
+        repeticiones=8, en_bucle=True
+    )
+
+    comprobados = 0
+    peor_ms = 0.0
+    for instante, estado in conductor.cuadros:
+        if estado.cuenta_atras_restante_s > 0:
+            continue
+        gastado_s = estado.repeticion * cuenta_s + (estado.repeticion - 1) * TRAMO_S
+        esperado_s = instante - gastado_s
+        if esperado_s < 0:
+            # El cuadro en que la cuenta se agota puede dejar el reloj justo en el
+            # inicio con el analisis todavia por debajo del reparto: no hay nada
+            # que comparar ahi.
+            continue
+        comprobados += 1
+        peor_ms = max(peor_ms, abs(estado.carril.instante_s - esperado_s) * 1000.0)
+
+    assert comprobados > 1500, (
+        f"solo {comprobados} cuadros comparados de los 1828 de ocho vueltas: el "
+        "filtro se ha comido la prueba"
+    )
+    assert peor_ms < 0.001, (
+        f"el cabezal se desvia hasta {peor_ms:.6f} ms de su sitio: el reloj del "
+        "bucle con cuenta atras arrastra"
+    )
+
+
 def test_el_bucle_con_cuenta_atras_no_arrastra_el_reloj():
-    """**ROJA, y es un hallazgo de esta tarea.** El bucle con cuenta atras arrastra.
+    """**LA PRUEBA DEL DEFECTO QUE ESTA TAREA ENCONTRO.** Estuvo roja; hoy no.
 
     El interprete es PERFECTO y no cambia nada entre vueltas, asi que si el
     desfase que la cadena firma cambia de una vuelta a otra, lo que se movio es el
     reloj y no el guitarrista. Es la misma afirmacion que
-    `test_el_bucle_no_arrastra_el_reloj_entre_vueltas` hace sin cuenta atras, con
+    `test_el_bucle_no_arrastra_el_reloj_entre_vueltas` hace SIN cuenta atras, con
     el mismo ayudante y el mismo margen de un cuadro, y por eso se pueden
-    comparar: alli el recorrido de las cuatro vueltas son 13,5 ms y aqui 81,4.
+    comparar.
 
-    El signo tambien es parte del dato y por eso se afirma: sin cuenta atras los
-    desfases son POSITIVOS -la cadena publica tarde, que es latencia real-, y aqui
-    la primera vuelta ya sale negativa y cada vuelta se va 37 ms mas abajo. Un
-    desfase negativo es el cabezal por DETRAS del audio: el alumno toca a tiempo y
-    el carril le dice que se adelanta.
+    Medido con cuatro vueltas: `+24,8 / +27,8 / +23,0 / +28,6` ms, recorrido
+    5,6 ms. **Antes del arreglo: `-7,9 / -44,6 / -89,3` -37 ms por vuelta,
+    recorrido 81,4 ms, y la cuarta vuelta sin cerrar-.** Sin cuenta atras los
+    cuatro numeros son `+36,1 / +32,0 / +22,6 / +31,6` y **no se han movido ni una
+    decima** con el arreglo, que es la comprobacion de que no alcanzo mas de lo que
+    debia.
 
-    Las dos aserciones son las del bucle sin cuenta y no se rebajan: el recorrido
-    de las vueltas cabe en un cuadro, y cada vuelta cae en su numero medido con el
-    margen de un cuadro -la cota por abajo, sin la cual una cadena que dejara de
+    El signo tambien es parte del dato y por eso se afirma aparte: los desfases
+    son POSITIVOS, o sea que la cadena publica tarde, que es latencia real del
+    detector. Negativos serian el cabezal por DETRAS del audio -el alumno toca a
+    tiempo y el carril le dice que se adelanta-, que es lo que el arrastre hacia
+    desde la primera vuelta.
+
+    Las aserciones son las del bucle sin cuenta y no se rebajan: el recorrido de
+    las vueltas cabe en un cuadro, y cada vuelta cae en su numero medido con el
+    margen de un cuadro -la cota POR ABAJO, sin la cual una cadena que dejara de
     retrasar pasaria la primera sin tocarla-.
     """
     _, registro, _, _, _ = _pasada_con_cuenta_atras(repeticiones=4, en_bucle=True)
 
+    assert len(registro.vueltas) == 4
     desfases = [_desfase_medio_ms(informe) for informe in registro.vueltas]
     for vuelta, (medido, inscrito) in enumerate(
         zip(desfases, DESFASES_CON_CUENTA_POR_VUELTA_MS, strict=True), start=1
@@ -588,9 +697,60 @@ def test_el_bucle_con_cuenta_atras_no_arrastra_el_reloj():
         "cuadro de analisis: el reloj del bucle con cuenta atras arrastra"
     )
     assert all(desfase > 0.0 for desfase in desfases), (
-        f"hay vueltas con desfase negativo ({desfases}): la cadena no puede "
-        "reportar un ataque antes de que suene"
+        f"hay vueltas con desfase negativo ({desfases}): el cabezal se ha quedado "
+        "por detras del audio"
     )
     assert max(abs(desfase) for desfase in desfases) < (
         VENTANA_ATAQUE_COMO_ONSET_S * 1000.0
     )
+    assert [_suma(informe, "limpias") for informe in registro.vueltas] == [NOTAS] * 4, (
+        "las cuatro vueltas tienen que salir limpias enteras: con el arrastre, la "
+        "tercera bajaba a 1 de 8"
+    )
+
+
+def test_las_ocho_vueltas_con_cuenta_atras_siguen_sin_arrastre():
+    """Ocho vueltas, que es donde el arrastre se veia a simple vista.
+
+    Cuatro no bastan para esta afirmacion y por eso esta prueba existe aparte,
+    igual que su hermana sin cuenta atras: con 37 ms por vuelta, la octava vuelta
+    firmaba **-231,0 ms** y las limpias llevaban cinco vueltas en 1 de 8. Hoy la
+    octava firma +32,7 y esta a 7,9 ms de la primera.
+
+    Las limpias se afirman EXACTAS -`8/8/8/8/7/8/7/7`- y no con un suelo, porque
+    los tres numeros que no son ocho tienen nombre: el 7 de la vuelta 5 es el error
+    de octava del detector (la nota `(5, 7)`, la misma que sin cuenta atras) y los
+    de la 7 y la 8 son el temblor del onset que el oraculo tiene en
+    `xfail(strict=True)`. Antes del arreglo la lista era `8/8/1/1/1/1/1`, con siete
+    vueltas y no ocho.
+
+    El recorrido de las ocho NO se afirma como un cuadro, y se dice por que: la
+    vuelta 5 firma -26,2 ms por ese error de octava -sin cuenta atras firma -11,9
+    por lo mismo- y eso ensancha el recorrido a 63,8 ms sin que haya arrastre
+    ninguno. Lo que se afirma en su lugar es mas fuerte que un recorrido: cada
+    vuelta contra su numero medido con margen de un cuadro, y la octava contra la
+    primera. La cota global del cabezal la pone
+    `test_el_cabezal_de_cada_vuelta_es_el_reloj_del_analisis_menos_la_cuenta`, que
+    no tiene que tolerar nada.
+    """
+    _, registro, _, _, _ = _pasada_con_cuenta_atras(repeticiones=8, en_bucle=True)
+
+    assert len(registro.vueltas) == 8, (
+        "ocho vueltas de audio cierran ocho informes con el reloj sin arrastre; "
+        f"estas cerraron {len(registro.vueltas)}"
+    )
+    desfases = [_desfase_medio_ms(informe) for informe in registro.vueltas]
+    for vuelta, (medido, inscrito) in enumerate(
+        zip(desfases, DESFASES_CON_CUENTA_EN_OCHO_VUELTAS_MS, strict=True), start=1
+    ):
+        assert medido == pytest.approx(inscrito, abs=MARGEN_MS), (
+            f"la vuelta {vuelta} firma {medido:+.1f} ms y el numero medido es "
+            f"{inscrito:+.1f}"
+        )
+    assert abs(desfases[7] - desfases[0]) <= RECORRIDO_SIN_ARRASTRE_MS, (
+        f"la vuelta 8 ({desfases[7]:+.1f} ms) se ha ido de la vuelta 1 "
+        f"({desfases[0]:+.1f} ms)"
+    )
+    assert tuple(
+        _suma(informe, "limpias") for informe in registro.vueltas
+    ) == LIMPIAS_CON_CUENTA_EN_OCHO_VUELTAS
