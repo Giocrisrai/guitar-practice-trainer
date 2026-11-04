@@ -110,11 +110,49 @@ class RegistroDeLaCadena:
     no es un defecto: el audio se acaba antes de que el bucle de la vuelta, asi
     que esa vuelta sigue abierta y nadie la ha cerrado. Inventarle un cierre seria
     anotar una vuelta que el conductor no anoto.
+
+    `vueltas` y `estado_final` tienen valor por omision porque hay un segundo
+    recolector que no los conoce: `RecolectorDeLaSesion`
+    (`nucleo.gemelo.dispositivo`) recoge de lo que la sesion completa PUBLICA, y
+    ahi no viajan ni los informes de las vueltas -el servidor los sirve aparte- ni
+    el objeto del estado final. `pasar_por_la_cadena` los da siempre, porque la
+    cadena directa conduce al conductor y los tiene; `juzgar` no lee ninguno de
+    los dos, y quien si los lea tiene que contar con el `None`.
     """
 
     reportes: tuple[ReporteDeLaCadena, ...]
-    vueltas: tuple[InformeDePasada, ...]
-    estado_final: EstadoEstudio
+    vueltas: tuple[InformeDePasada, ...] = ()
+    estado_final: EstadoEstudio | None = None
+
+
+def desplazamiento_del_cabezal_s(
+    interpretacion: Interpretacion, tamano_ventana: int
+) -> float:
+    """Cuanto audio del gemelo va DELANTE del cero del cabezal.
+
+    Es la cabecera TECNICA -el silencio que `interpretar` mete para que la primera
+    ventana de analisis llegue completa-, nunca menor que una ventana. El por que
+    de las dos cosas, con sus medidas, esta en la cabecera del modulo y en el
+    comentario largo de `pasar_por_la_cadena`, que es quien lo usa para poner el
+    cabezal a cero cuando suena la nota que la pieza escribe en cero.
+
+    Se nombra aparte porque hay un SEGUNDO camino que necesita exactamente el
+    mismo numero y lo paga en otra moneda: quien mete el audio del gemelo por el
+    dispositivo simulado (`nucleo.gemelo.dispositivo`) no puede desplazar un eje,
+    porque el cabezal de la sesion completa lo mueve el reloj de pared; tiene que
+    ESPERAR este tiempo antes de arrancar la pasada. Si los dos caminos calcularan
+    el numero por su cuenta, se separarian, y lo que se separaria con ellos es la
+    unica prueba que vigila que los dos niveles del gemelo concuerdan.
+
+    La cuenta atras NO se descuenta: si es tiempo de la pasada -el estudio la
+    modela congelando el cabezal mientras dura-, asi que descontarla aqui la
+    contaria dos veces.
+    """
+    cabecera_tecnica_s = max(
+        0.0,
+        interpretacion.silencio_de_cabecera_s - interpretacion.segundos_de_cuenta_atras,
+    )
+    return max(cabecera_tecnica_s, tamano_ventana / interpretacion.frecuencia_muestreo)
 
 
 def pasar_por_la_cadena(
@@ -191,11 +229,7 @@ def pasar_por_la_cadena(
     # 42,7 ms de deuda en todas las notas, el suelo subia a +195,0 ms de mediana y
     # +231,0 de maximo -a 19 ms del techo del detector- y el oraculo sacaba 5
     # notas limpias de 8 en vez de 7.
-    cabecera_tecnica_s = max(
-        0.0,
-        interpretacion.silencio_de_cabecera_s - interpretacion.segundos_de_cuenta_atras,
-    )
-    desplazamiento_s = max(cabecera_tecnica_s, ventana / frecuencia)
+    desplazamiento_s = desplazamiento_del_cabezal_s(interpretacion, ventana)
 
     # La mirada se fija en el origen del eje del cabezal. Hace falta fijarla
     # porque el conductor que llegue con una mirada puesta en el reloj de pared

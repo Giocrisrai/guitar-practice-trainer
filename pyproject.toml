@@ -31,3 +31,15 @@ include = ["nucleo*", "servidor*", "herramientas*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+# Las pruebas que pagan tiempo de RELOJ DE PARED porque es justo el reloj de pared
+# lo que verifican: la sesion completa del gemelo digital mete su audio por el
+# dispositivo simulado y lo recorre a tiempo real, segundo por segundo.
+#
+# NO van desactivadas por omision, y es una decision: una prueba lenta que nadie
+# corre no vigila nada, y estas son las unicas que ejercitan los hilos, el buffer
+# circular y el reloj de pared de la pasada. Lo que se acota es su coste, no su
+# ejecucion: son dos, comparten una sola pasada y la pieza dura tres segundos.
+# Para saltarlas a mano: `-m "not slow"`.
+markers = [
+    "slow: paga segundos de reloj de pared porque es el reloj lo que verifica",
+]
