@@ -797,6 +797,289 @@ def test_el_bucle_da_la_vuelta_con_cuadros_de_audio_y_sin_cuenta_atras():
     assert sesion.estado.carril.instante_s < 1.0
 
 
+# -- El bucle sin arrastre y la nota de la frontera (Task 7) ----------------
+#
+# El reloj del bucle perdia tiempo en cada vuelta por DOS sumideros, y los dos
+# se miden aqui por separado porque se arreglan por separado:
+#
+# 1. El EXCESO con que el reloj cruzaba el final del tramo se tiraba.
+# 2. Con audio, `avanzar_a` invalida la correspondencia entre los dos relojes del
+#    seguidor y no se vuelve a fijar hasta el cuadro siguiente, asi que el reloj
+#    se quedaba quieto UN CUADRO en cada vuelta.
+#
+# Lo que esos dos sumideros le hacian a una pasada de verdad esta medido con el
+# gemelo en `tests/test_gemelo_bucle.py`: 36 ms por vuelta, y a las ocho vueltas
+# cero notas limpias. Aqui se miden los mecanismos, con numeros exactos.
+
+
+def test_la_vuelta_del_bucle_conserva_el_exceso_del_reloj():
+    """El reloj no se re-ancla en el inicio: se re-ancla en inicio + exceso.
+
+    Sin audio y con numeros redondos, asi que el exceso es exacto y no hay nada
+    que estimar: el tramo es el compas 1 (0 a 4 s) y la segunda mirada cruza el
+    final con 0,5 s de exceso. Tirarlo -lo que se hacia- dejaba el reloj en 0,0 y
+    perdia medio segundo de pasada.
+    """
+    sesion = SesionDeEstudio(
+        pieza_de_doce_compases(),
+        PlanDePasada(primer_compas=1, ultimo_compas=1, en_bucle=True,
+                     compases_de_cuenta_atras=0),
+    )
+    sesion.avanzar(3.0)
+    sesion.avanzar(1.5)
+    assert sesion.estado.repeticion == 2
+    assert sesion.estado.carril.instante_s == pytest.approx(0.5)
+
+
+def test_el_camino_sin_audio_no_arrastra_el_reloj_en_treinta_vueltas():
+    """Treinta vueltas con miradas que no caen nunca en la frontera: cero deriva.
+
+    Es la afirmacion fuerte del exceso, y se hace sin audio porque ahi el reloj se
+    puede comprobar EXACTO: tras N miradas de 0,3 s sobre un tramo de 4 s, el
+    reloj tiene que valer `0,3 N` modulo 4 y la repeticion `0,3 N // 4 + 1`. Nada
+    de margenes: lo que el bucle pierda por vuelta aparece aqui multiplicado por
+    treinta.
+
+    Con el exceso tirado, tras 400 miradas el reloj iba 23,1 s por detras -el
+    equivalente a casi seis vueltas enteras- y la cuenta de repeticiones salia 25
+    en vez de 31.
+    """
+    sesion = SesionDeEstudio(
+        pieza_de_doce_compases(),
+        PlanDePasada(primer_compas=1, ultimo_compas=1, en_bucle=True,
+                     compases_de_cuenta_atras=0),
+    )
+    paso = 0.3
+    for mirada in range(1, 401):
+        sesion.avanzar(paso)
+        transcurrido = paso * mirada
+        estado = sesion.estado
+        # La invariante, y no el reloj modulo cuatro: lo recorrido en esta vuelta
+        # MAS lo que ocupan las vueltas ya dadas es el tiempo que ha pasado.
+        # Escrita con el modulo, una mirada que cae en la frontera a 2e-15 por
+        # debajo de 4,0 -y hay dos en 400- parece un error de cuatro segundos
+        # cuando lo que pasa es que la vuelta llega una mirada despues. La
+        # invariante no se entera de eso y sigue viendo el arrastre, que es lo que
+        # aqui se mide.
+        recorrido = estado.carril.instante_s + (estado.repeticion - 1) * 4.0
+        assert recorrido == pytest.approx(transcurrido, abs=1e-9), (
+            f"el reloj se ha ido en la mirada {mirada}"
+        )
+    # Y las vueltas se han contado: 120 s de miradas sobre un tramo de 4 s son
+    # treinta vueltas, y la trigesima esta a punto de darse -el reloj marca 4,0
+    # menos 1,8e-14, porque 0,3 x 400 en binario no llega a 120 exacto-. La vuelta
+    # llega con la mirada siguiente, y eso es el redondeo del llamador, no
+    # arrastre: el arrastre lo vigila la invariante de dentro del bucle, mirada a
+    # mirada.
+    assert sesion.estado.repeticion == 30
+    assert sesion.estado.carril.instante_s == pytest.approx(4.0, abs=1e-9)
+
+
+def test_un_exceso_mayor_que_el_tramo_no_se_arrastra():
+    """Un salto enorme da UNA vuelta y deja el reloj dentro del tramo.
+
+    Un exceso mayor que el tramo entero no es una vuelta: es un salto de reloj -un
+    `avanzar` con un delta absurdo, una mirada tras un apagon- y arrastrarlo
+    dejaria el cabezal MUY por delante del final del tramo que acaba de empezar.
+    Acotado a la longitud del tramo, el reloj acaba como mas tarde en el final del
+    tramo: sin el tope saldria 96,0, que son veinticuatro tramos por delante.
+    """
+    sesion = SesionDeEstudio(
+        pieza_de_doce_compases(),
+        PlanDePasada(primer_compas=1, ultimo_compas=1, en_bucle=True,
+                     compases_de_cuenta_atras=0),
+    )
+    sesion.avanzar(100.0)
+    assert sesion.estado.repeticion == 2
+    assert sesion.estado.carril.instante_s == pytest.approx(4.0)
+    assert sesion.estado.compas_en_curso == 1
+
+
+def test_la_vuelta_con_audio_no_se_come_un_cuadro_de_analisis():
+    """Con cuadros, la vuelta no congela el reloj: la pasada cuadra al milimetro.
+
+    **Es el segundo sumidero, y no se ve con una sola vuelta.** Con audio el reloj
+    de la pieza lo mueve solo la correspondencia entre los dos relojes del
+    seguidor; `avanzar_a` la invalida y la vuelve a fijar el cuadro SIGUIENTE, con
+    el reloj donde la vuelta lo dejo, asi que entre los dos cuadros el reloj se
+    quedaba quieto un cuadro entero.
+
+    La invariante que se afirma es exacta y es la definicion de «no arrastra»: lo
+    recorrido por el cabezal MAS lo que ocupan las vueltas ya dadas tiene que ser
+    el tiempo de analisis transcurrido. Con el cuadro perdido en cada vuelta, tras
+    las cuatro vueltas de esta prueba faltaban 84 ms: cuatro cuadros.
+
+    Se comprueba en cada cuadro MENOS en el que da la vuelta, donde el reloj va un
+    cuadro por delante a proposito (es la compensacion, que se adelanta al hueco
+    que viene); el cuadro siguiente lo cuadra.
+    """
+    sesion = SesionDeEstudio(
+        pieza_de([0.0]),
+        PlanDePasada(primer_compas=1, ultimo_compas=1, en_bucle=True,
+                     compases_de_cuenta_atras=0),
+    )
+    paso = 0.021
+    arranque = 100.0
+    sesion.colocar_en(0.0)
+    vueltas = 0
+    for cuadro in range(800):
+        instante = arranque + cuadro * paso
+        antes = sesion.estado.repeticion
+        estado = sesion.procesar(SILENCIO, instante)
+        dio_la_vuelta = estado.repeticion != antes
+        vueltas = estado.repeticion - 1
+        if dio_la_vuelta:
+            continue
+        recorrido = estado.carril.instante_s + vueltas * 4.0
+        assert recorrido == pytest.approx(instante - arranque, abs=1e-9), (
+            f"en el cuadro {cuadro} el cabezal lleva {recorrido:.6f} s y el "
+            f"analisis {instante - arranque:.6f} s"
+        )
+    assert vueltas == 4, f"800 cuadros de 21 ms son 16,8 s, o sea cuatro vueltas de 4 s"
+
+
+def test_la_nota_del_final_cuenta_en_la_vuelta_que_cierra():
+    """Una nota atacada 50 ms antes del final es de la vuelta que CIERRA.
+
+    **La semantica de la tarea, afirmada: una nota pertenece a la vuelta en que se
+    ATACÓ, no a la vuelta en que el detector la resolvio.** El detector firma un
+    ataque hasta 250 ms despues de que ocurriera (`VENTANA_ATAQUE_COMO_ONSET_S`),
+    asi que esta nota se resuelve con la vuelta siguiente ya abierta.
+
+    La nota esta escrita en el pulso 3,98 -a 60 ppm, el segundo 3,98 de un tramo
+    que acaba en 4,0- y se ataca en el cuadro 3,963. El detector le pone el onset
+    en 3,984 y la sella dos cuadros despues, en 4,026, ya pasada la vuelta (que
+    ocurre en el cuadro 4,005).
+
+    Antes de la T7 esta nota NO existia en ninguna parte: `_adjudicar` la
+    descartaba por ser anterior al primer cuadro posterior al salto. Hoy sale en el
+    informe de la vuelta que cerro, con su desfase medido (+4 ms, «a tiempo»), y
+    la vuelta nueva empieza EN BLANCO, que es la otra mitad de la afirmacion: lo
+    contrario le regalaria a la vuelta nueva una nota que nadie toco en ella.
+    """
+    sesion = SesionDeEstudio(
+        pieza_de([3.98]),
+        PlanDePasada(primer_compas=1, ultimo_compas=1, en_bucle=True,
+                     compases_de_cuenta_atras=0),
+    )
+    sesion.colocar_en(3.9)
+    instante = 3.9
+    for _ in range(20):
+        sesion.procesar(SILENCIO if instante < 3.963 else suena("E2"), instante)
+        instante += 0.021
+
+    assert sesion.estado.repeticion == 2
+    cerrada = compas_numero(sesion.ultima_vuelta, 1)
+    assert cerrada.acertadas == 1, "la nota de la frontera es de la vuelta que cerro"
+    assert cerrada.a_tiempo == 1
+    assert cerrada.desfase_medio_s == pytest.approx(0.004, abs=0.021)
+    # La vuelta nueva, en blanco: no se le regala una nota que no se toco en ella.
+    assert sesion.estado.carril.tocadas == ()
+    # Y la pasada entera la cuenta UNA vez, ni cero ni dos.
+    assert compas_numero(sesion.informe, 1).acertadas == 1
+    assert [t.indice for t in sesion.tocadas_de_la_ultima_vuelta] == [0]
+
+
+def test_la_nota_atacada_tras_la_frontera_cuenta_en_la_vuelta_que_abre():
+    """El otro lado de la misma frontera, y es lo que la hace una frontera.
+
+    Misma mecanica que la prueba de arriba y resultado CONTRARIO: la nota se ataca
+    en el cuadro 4,005, que es el cuadro en que el reloj cruza el final del tramo,
+    o sea DESPUES del instante en que el reloj paso por el final (4,0). Se atacó ya
+    en la vuelta nueva, asi que es de la vuelta nueva.
+
+    La pieza tiene dos notas -el pulso 0 y el 3,98- porque la pregunta es a QUE
+    nota se le adjudica: a la nota 0 de la vuelta que abre, no a la del final de la
+    que cierra.
+
+    Medido: la nota 0 sale en `estado.carril.tocadas` de la vuelta nueva, «a
+    tiempo» con +5 ms, y el informe de la vuelta cerrada se queda a cero. Si las
+    dos pruebas dieran lo mismo, la frontera no estaria decidiendo nada: es el
+    mutante 3 del informe de la tarea.
+    """
+    sesion = SesionDeEstudio(
+        pieza_de([0.0, 3.98]),
+        PlanDePasada(primer_compas=1, ultimo_compas=1, en_bucle=True,
+                     compases_de_cuenta_atras=0),
+    )
+    sesion.colocar_en(3.9)
+    instante = 3.9
+    for _ in range(20):
+        sesion.procesar(SILENCIO if instante < 4.005 else suena("E2"), instante)
+        instante += 0.021
+
+    assert sesion.estado.repeticion == 2
+    assert compas_numero(sesion.ultima_vuelta, 1).acertadas == 0, (
+        "nada se atacó dentro de la vuelta que cerro"
+    )
+    assert sesion.tocadas_de_la_ultima_vuelta == ()
+    tocadas = sesion.estado.carril.tocadas
+    assert [t.indice for t in tocadas] == [0]
+    assert tocadas[0].clasificacion == "a_tiempo"
+    assert tocadas[0].desfase_s == pytest.approx(0.005, abs=0.021)
+
+
+def test_lo_adjudicado_en_el_cuadro_que_da_la_vuelta_se_puede_leer():
+    """Una nota sellada EN el cuadro de la vuelta no desaparece sin que nadie la vea.
+
+    **El cuarto defecto de la tarea, y era invisible por construccion.**
+    `SesionDeEstudio.procesar` llama al seguidor y, en la misma llamada, acaba en
+    `_dar_la_vuelta` -> `cerrar_repeticion`, cuyo ultimo acto es `olvidar_tramo`, y
+    devuelve el estado DESPUES de eso: lo adjudicado en ese cuadro no aparece en
+    `estado.carril.tocadas` de NINGUNA llamada. El informe no lo salvaba porque
+    solo lleva conteos por compas, no notas.
+
+    Aqui la nota se ataca en el cuadro 3,942, el detector le pone el onset en 3,963
+    y la sella dos cuadros despues, en 4,005, que es exactamente el cuadro en que
+    el reloj cruza el final. Se comprueban las tres cosas: que no aparece en
+    ninguna de las veinte miradas, que el informe de la vuelta la cuenta, y que
+    `tocadas_de_la_ultima_vuelta` la entrega -que es la unica forma de leerla-.
+    """
+    sesion = SesionDeEstudio(
+        pieza_de([3.98]),
+        PlanDePasada(primer_compas=1, ultimo_compas=1, en_bucle=True,
+                     compases_de_cuenta_atras=0),
+    )
+    sesion.colocar_en(3.9)
+    instante = 3.9
+    vistas = 0
+    for _ in range(20):
+        estado = sesion.procesar(
+            SILENCIO if instante < 3.942 else suena("E2"), instante
+        )
+        vistas += len(estado.carril.tocadas)
+        instante += 0.021
+
+    assert vistas == 0, (
+        "la nota del cuadro de la vuelta no sale en ningun estado publicado, y "
+        "por eso hay que poder leerla aparte"
+    )
+    assert compas_numero(sesion.ultima_vuelta, 1).acertadas == 1
+    assert [t.indice for t in sesion.tocadas_de_la_ultima_vuelta] == [0]
+    assert sesion.tocadas_de_la_ultima_vuelta[0].desfase_s == pytest.approx(
+        -0.017, abs=0.021
+    )
+
+
+def test_las_tocadas_de_la_ultima_vuelta_se_olvidan_al_reiniciar_la_pasada():
+    """Reiniciar la pasada no deja las notas de la vuelta anterior colgando.
+
+    Es la hermana de `test_reiniciar_la_pasada_olvida_la_ultima_vuelta_de_la_anterior`:
+    lo que vale para el informe vale para las notas, y por el mismo motivo -dejarlas
+    seria una repeticion fantasma en la pasada nueva-.
+    """
+    sesion = SesionDeEstudio(
+        pieza_de([0.0]),
+        PlanDePasada(primer_compas=1, ultimo_compas=1, en_bucle=True,
+                     compases_de_cuenta_atras=0),
+    )
+    tocar(sesion, "E2", en=0.0)
+    sesion.avanzar(4.0)
+    assert len(sesion.tocadas_de_la_ultima_vuelta) == 1
+    sesion.reiniciar_pasada()
+    assert sesion.tocadas_de_la_ultima_vuelta == ()
+
+
 def test_una_pieza_sin_compases_en_bucle_no_da_vueltas_ni_se_da_por_terminada():
     sesion = SesionDeEstudio(pieza_de([]), PlanDePasada(en_bucle=True))
     sesion.avanzar(5.0)
@@ -827,9 +1110,15 @@ class EspiaDelSeguidor:
         self._llamadas.append(("olvidar_tramo", desde_s, hasta_s))
         return self._seguidor.olvidar_tramo(desde_s, hasta_s)
 
-    def avanzar_a(self, instante_s):
-        self._llamadas.append(("avanzar_a", instante_s))
-        return self._seguidor.avanzar_a(instante_s)
+    def avanzar_a(self, instante_s, frontera_del_salto_s=None):
+        # La frontera se anota tambien: es lo que distingue un salto CONTINUO -la
+        # vuelta del bucle, que retiene las pulsaciones en vuelo- de un salto
+        # ordinario, que las tira. Una espia que se la comiera no podria notar la
+        # diferencia.
+        self._llamadas.append(("avanzar_a", instante_s, frontera_del_salto_s))
+        return self._seguidor.avanzar_a(
+            instante_s, frontera_del_salto_s=frontera_del_salto_s
+        )
 
     def __getattr__(self, nombre):
         return getattr(self._seguidor, nombre)
@@ -845,9 +1134,16 @@ def espiar(sesion):
 
 
 def test_la_vuelta_del_bucle_olvida_el_tramo_antes_de_colocar_el_reloj():
-    # Contrato de orden: `avanzar_a` es quien descarta las pulsaciones en vuelo
-    # y va DESPUES de `olvidar_tramo`. Como las dos operaciones no se pisan, el
-    # resultado final no distingue el orden; por eso se mide la secuencia.
+    # Contrato de orden: `olvidar_tramo` primero y la colocacion del reloj
+    # despues. Como las dos operaciones no se pisan, el resultado final no
+    # distingue el orden; por eso se mide la secuencia.
+    #
+    # El motivo del orden cambio con la T7 y conviene no citar el viejo: `avanzar_a`
+    # ya no es «quien descarta las pulsaciones en vuelo», porque en la vuelta del
+    # bucle las RETIENE (ver `SeguidorPieza.avanzar_a`). El orden se mantiene
+    # porque olvidar el tramo es lo que deja las notas recobrables para la vuelta
+    # nueva, y hacerlo despues de colocar el reloj no tendria nada que ver con la
+    # colocacion.
     sesion = SesionDeEstudio(
         pieza_de_doce_compases(),
         PlanDePasada(primer_compas=2, ultimo_compas=3, en_bucle=True,
@@ -856,7 +1152,12 @@ def test_la_vuelta_del_bucle_olvida_el_tramo_antes_de_colocar_el_reloj():
     llamadas = espiar(sesion)
     sesion.avanzar(8.0)
     # Tras la colocacion del llamador y el volcado del informe, vienen estas dos.
-    assert llamadas[-2:] == [("olvidar_tramo", 4.0, 12.0), ("avanzar_a", 4.0)]
+    # Sin frontera, porque este camino es el de SIN AUDIO: no hay correspondencia
+    # entre relojes que retirar ni, por tanto, pulsacion en vuelo que retener.
+    assert llamadas[-2:] == [
+        ("olvidar_tramo", 4.0, 12.0),
+        ("avanzar_a", 4.0, None),
+    ]
 
 
 def test_saltar_al_compas_olvida_su_tramo_y_despues_coloca_el_reloj():
@@ -864,7 +1165,13 @@ def test_saltar_al_compas_olvida_su_tramo_y_despues_coloca_el_reloj():
     llamadas = espiar(sesion)
     sesion.saltar_al_compas(3)
     # Del compas 3 (segundo 8) al final del tramo (segundo 48), y luego el reloj.
-    assert llamadas[-2:] == [("olvidar_tramo", 8.0, 48.0), ("avanzar_a", 8.0)]
+    # Sin frontera: saltar de compas NO es un salto continuo -el reloj se va a
+    # otra parte-, asi que las pulsaciones del tramo abandonado se tiran, que es
+    # lo que ha hecho `avanzar_a` siempre.
+    assert llamadas[-2:] == [
+        ("olvidar_tramo", 8.0, 48.0),
+        ("avanzar_a", 8.0, None),
+    ]
 
 
 def test_la_cuenta_atras_se_agota_con_cuadros_de_audio_y_despues_la_pasada_corre():

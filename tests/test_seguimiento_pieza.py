@@ -724,3 +724,168 @@ def test_el_factor_es_de_solo_lectura():
     assert seguidor.factor_tempo == 0.5
     with pytest.raises(AttributeError):
         seguidor.factor_tempo = 0.7
+
+
+# -- El salto CONTINUO y la cola de la vuelta (Task 7) ----------------------
+
+
+class DetectorDeUnSoloOnset:
+    """Suelta UNA pulsacion, en el cuadro que se le diga y con el onset que se le diga.
+
+    El onset se fija a mano a proposito: lo que estas pruebas miden es que el
+    seguidor decida bien a QUE tramo pertenece un onset, y eso se decide
+    comparandolo con la frontera del salto. Con el detector de verdad, el onset
+    saldria de la energia del audio y la prueba mediria dos cosas a la vez.
+    """
+
+    def __init__(self, nota, onset, en_el_cuadro):
+        self.nota = nota
+        self.onset = onset
+        self.en_el_cuadro = en_el_cuadro
+        self.cuadros = 0
+
+    def reiniciar(self):
+        self.cuadros = 0
+
+    def procesar(self, resultado, instante):
+        self.cuadros += 1
+        if self.cuadros == self.en_el_cuadro:
+            return Pulsacion(nota=self.nota, cents=0.0, instante=self.onset)
+        return None
+
+
+def _hasta_la_vuelta(seguidor, fin=4.0, desde=2.9, paso=0.021):
+    """Da una vuelta de bucle sobre el tramo [0, `fin`) y devuelve el cuadro siguiente.
+
+    Imita a `SesionDeEstudio._dar_la_vuelta` con audio, porque el reparto de la
+    frontera solo tiene sentido contra esa vuelta: cuadros hasta que el reloj
+    CRUZA el final, y entonces `olvidar_tramo` mas un salto continuo a
+    `exceso + un cuadro` -el exceso con que el reloj se paso, mas el cuadro que el
+    re-anclaje congela- con la frontera en el instante en que el reloj paso por el
+    final, que es `exceso` segundos antes del cuadro que lo vio.
+
+    Imitarlo entero no es ceremonia: es lo que hace que la correspondencia nueva
+    mande el instante 4,0 del reloj del analisis al 0,0 de la pieza, o sea que el
+    reloj sea CONTINUO en la frontera. Con un salto a 0,0 pelado, el mismo onset
+    sale 13 ms corrido y los numeros de estas pruebas dejan de ser redondos sin
+    que nada este mal.
+    """
+    silencio = suena("E2", nivel=-90.0, confianza=0.0)
+    seguidor.avanzar_a(desde)
+    instante = desde
+    while True:
+        estado = seguidor.procesar(silencio, instante)
+        if estado.instante_s >= fin:
+            break
+        instante += paso
+    exceso = estado.instante_s - fin
+    seguidor.olvidar_tramo(0.0, fin)
+    seguidor.avanzar_a(exceso + paso, frontera_del_salto_s=instante - exceso)
+    return instante + paso
+
+
+def test_un_onset_de_antes_de_la_frontera_se_retiene_en_la_cola():
+    """La nota atacada antes de la vuelta es de la vuelta que CIERRA.
+
+    **Es la semantica de la Task 7 medida en el sitio donde se decide.** El onset
+    esta en 3,9 -el reloj de la pieza marcaba 3,9 cuando se atacó, con la nota 3
+    escrita en 3,0- y el detector lo firma en un cuadro POSTERIOR a la vuelta, que
+    es lo que pasa de verdad: el detector tarda hasta 250 ms en firmar un ataque.
+
+    Lo que se afirma es que no se descarta (eso era el defecto), que NO sale en
+    `estado.tocadas` -el carril pinta el tramo que corre, y esa nota no es de este
+    tramo- y que el desfase se mide con el reloj de ANTES del salto: +0,9 s sobre
+    la nota 3, «tarde». Medido con la correspondencia nueva saldria −3,05 s y la
+    nota seria otra.
+    """
+    detector = DetectorDeUnSoloOnset("D3", onset=3.9, en_el_cuadro=1)
+    seguidor = SeguidorPieza(pieza_de([40, 45, 47, 50]), detector=detector)
+    instante = _hasta_la_vuelta(seguidor)
+    # El contador del detector fingido se pone a cero DESPUES de la vuelta: asi
+    # la pulsacion sale en el primer cuadro de la vuelta nueva, que es cuando el
+    # detector de verdad firma el ataque del final del tramo anterior.
+    detector.cuadros = 0
+
+    estado = seguidor.procesar(suena("D3"), instante)
+
+    assert estado.tocadas == (), "la nota de la vuelta anterior no se pinta en esta"
+    cola = seguidor.recoger_la_cola()
+    assert len(cola) == 1
+    assert cola[0].indice == 3
+    assert cola[0].acertada is True
+    assert cola[0].desfase_s == pytest.approx(0.9)
+    assert cola[0].clasificacion == "tarde"
+    # Se entrega UNA vez: quien la cobro no la vuelve a cobrar.
+    assert seguidor.recoger_la_cola() == ()
+
+
+def test_un_onset_de_despues_de_la_frontera_es_de_la_vuelta_que_abre():
+    """Y la de despues es de la vuelta que ABRE. Sin este lado no hay frontera.
+
+    Mismo montaje y resultado contrario: el onset esta en 4,05, o sea 50 ms
+    DESPUES del instante en que el reloj paso por el final del tramo, asi que se
+    atacó ya en la vuelta nueva. Se adjudica con la correspondencia nueva -el
+    reloj de la pieza marca 0,05 en ese onset-, va a la nota 0 «a tiempo» y sale
+    en `estado.tocadas`, que es donde el carril la pinta.
+
+    Antes de la Task 7 este onset tambien se descartaba, y era la perdida que el
+    gemelo medía una vez cada tres vueltas: la primera nota de la vuelta.
+    """
+    detector = DetectorDeUnSoloOnset("E2", onset=4.05, en_el_cuadro=1)
+    seguidor = SeguidorPieza(pieza_de([40, 45, 47, 50]), detector=detector)
+    instante = _hasta_la_vuelta(seguidor)
+    detector.cuadros = 0
+
+    estado = seguidor.procesar(suena("E2"), instante)
+
+    assert [t.indice for t in estado.tocadas] == [0]
+    assert estado.tocadas[0].acertada is True
+    assert estado.tocadas[0].desfase_s == pytest.approx(0.05)
+    assert estado.tocadas[0].clasificacion == "a_tiempo"
+    assert seguidor.recoger_la_cola() == ()
+
+
+def test_sin_frontera_el_salto_sigue_descartando_lo_que_estaba_en_vuelo():
+    """El contrato de siempre, intacto: un salto ORDINARIO tira lo que venia.
+
+    Es la mitad que no cambio, y hace falta afirmarla: `avanzar_a` sin frontera -o
+    sea colocar, congelar, saltar de compas, la pausa, la cuenta atras- tiene que
+    seguir descartando un onset anterior al salto, porque ahi el reloj SI se fue a
+    otra parte y traducir ese onset lo colocaria donde no paso nada.
+
+    Mismo onset de 3,9 que la prueba de la cola: sin frontera no se anota en
+    ninguna parte, ni en `tocadas` ni en la cola.
+    """
+    detector = DetectorDeUnSoloOnset("D3", onset=3.9, en_el_cuadro=1)
+    seguidor = SeguidorPieza(pieza_de([40, 45, 47, 50]), detector=detector)
+    seguidor.avanzar_a(2.9)
+    instante = 2.9
+    while instante < 4.0:
+        seguidor.procesar(suena("E2", nivel=-90.0, confianza=0.0), instante)
+        instante += 0.021
+    seguidor.olvidar_tramo(0.0, 4.0)
+    seguidor.avanzar_a(0.0)
+    detector.cuadros = 0
+
+    estado = seguidor.procesar(suena("D3"), instante)
+
+    assert estado.tocadas == ()
+    assert seguidor.recoger_la_cola() == ()
+
+
+def test_un_salto_ordinario_tira_la_cola_que_nadie_recogio():
+    """Una cola sin recoger no sobrevive a abandonar el tramo de verdad.
+
+    Si entre la vuelta y la recogida el usuario salta de compas o cambia el plan,
+    esa nota es de un tramo que ya no se esta estudiando y cobrarla la metería en
+    el informe de otra cosa.
+    """
+    detector = DetectorDeUnSoloOnset("D3", onset=3.9, en_el_cuadro=1)
+    seguidor = SeguidorPieza(pieza_de([40, 45, 47, 50]), detector=detector)
+    instante = _hasta_la_vuelta(seguidor)
+    detector.cuadros = 0
+    seguidor.procesar(suena("D3"), instante)
+
+    seguidor.avanzar_a(2.0)
+
+    assert seguidor.recoger_la_cola() == ()

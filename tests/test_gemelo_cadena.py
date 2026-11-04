@@ -545,34 +545,45 @@ def test_el_registro_guarda_las_notas_de_todas_las_vueltas():
     assert vueltas_reportadas == {1, 2, 3}, (
         f"se reporto en las vueltas {sorted(vueltas_reportadas)}, y el bucle dio tres"
     )
-    # La pasada acaba EN la tercera vuelta, y el numero es exacto, no «al menos
-    # tres»: el tramo son 2,4 s (cuatro pulsos a 100 ppm), el audio dura 7,328 s
-    # -tres tramos mas los 0,128 s de silencio de cabecera- y la cadena descuenta
-    # esa cabecera del eje del cabezal, asi que el cabezal recorre tres tramos
-    # justos y no se mete en un cuarto.
+    # El audio son TRES TRAMOS JUSTOS: el tramo es 2,4 s (cuatro pulsos a 100 ppm)
+    # y el audio dura 7,328 s, tres tramos mas los 0,128 s de cabecera, que la
+    # cadena descuenta del eje del cabezal.
     #
-    # Antes de la T6d el cabezal corria durante la cabecera y esos 128 ms de cola
-    # abrian una CUARTA vuelta: `repeticion` salia 4. Que ahora salga 3 es la
-    # consecuencia observable de la alineacion, y es lo correcto: tres vueltas de
-    # audio son tres vueltas, no tres y pico.
+    # Y por eso el estado final va por la vuelta CUATRO: el cabezal recorre los
+    # tres tramos enteros, asi que la tercera vuelta TERMINA dentro del audio y el
+    # bucle abre la cuarta -vacia, que por eso no hay ni un reporte en ella-. Este
+    # numero valia 3 hasta la T7 y lo que medía era el arrastre: el reloj perdia
+    # 36 ms en cada vuelta (el exceso tirado mas el cuadro que el re-anclaje
+    # congelaba) y se quedaba a 72 ms de acabar la tercera. Tres tramos de audio
+    # son tres vueltas acabadas, y un reloj que no llega al final del tercero esta
+    # arrastrando, no contando bien.
     assert interpretacion.duracion_s == pytest.approx(3 * 2.4 + 0.128, abs=1e-3)
-    assert registro.estado_final.repeticion == 3
+    assert registro.estado_final.repeticion == 4
+    # Y el cabezal esta recien entrado en la cuarta, no perdido en ella: lo que
+    # lleva dentro es la cola de ventanas rellenadas con ceros del final del
+    # audio, que son 85 ms (la ventana) como mucho.
+    assert 0.0 <= registro.estado_final.carril.instante_s <= 0.086
 
 
 def test_el_registro_guarda_un_informe_por_vuelta_cerrada():
-    """DOS informes con tres vueltas de audio, y es lo que el nombre dice.
+    """TRES informes con tres vueltas de audio, uno por vuelta ACABADA.
 
     Una vuelta se cierra AL DAR LA SIGUIENTE (`_dar_la_vuelta` guarda su informe y
     `mirar` lo anota al ver cambiar `repeticion`), asi que los informes son las
-    TRANSICIONES: 1→2 y 2→3. La tercera vuelta se queda ABIERTA porque el audio se
-    acaba con ella, y nadie le inventa un cierre. No es «un informe por repeticion
-    de audio»: es un informe por vuelta CERRADA, que es otra cosa.
+    TRANSICIONES: 1→2, 2→3 y 3→4. No es «un informe por repeticion de audio»: es
+    un informe por vuelta CERRADA, y aqui coinciden porque el audio trae tres
+    tramos JUSTOS y el cabezal los recorre enteros.
 
-    Eran tres informes antes de la T6d, y por una coincidencia que ya no existe:
-    el cabezal corria durante los 0,128 s de cabecera, asi que iba adelantado y la
-    cola del audio provocaba una transicion 3→4 de regalo. Con el cabezal
-    alineado, tres vueltas de audio cierran dos. El numero bajo porque el que
-    sobraba era el viejo.
+    **Este numero valia 2 y lo que medía era el arrastre del reloj.** Hasta la T7
+    el bucle perdia 36 ms por vuelta -el exceso con que el reloj cruzaba el final,
+    tirado, mas el cuadro que el re-anclaje de la correspondencia congelaba-, asi
+    que tras dos vueltas el reloj iba 72 ms corto y no llegaba a terminar la
+    tercera: la transicion 3→4 no ocurria. Con el reloj sin arrastre ocurre, y es
+    lo correcto: tres tramos de audio son tres vueltas acabadas.
+
+    (Antes de la T6d tambien salian tres, pero por otra cosa: el cabezal corria
+    durante los 0,128 s de cabecera y la cola del audio regalaba la transicion. Un
+    mismo numero por dos motivos distintos, y por eso aqui se escribe el motivo.)
 
     El cierre de vueltas vive en `mirar`, NO en `observar`: una cadena que solo
     observara dejaria `vueltas_cerradas` vacio y esto saldria a cero.
@@ -582,13 +593,20 @@ def test_el_registro_guarda_un_informe_por_vuelta_cerrada():
     registro = pasar_por_la_cadena(interpretacion, conductor)
 
     assert len(registro.vueltas) == len(conductor.vueltas_cerradas)
-    assert len(registro.vueltas) == 2
-    assert registro.estado_final.repeticion == 3, (
-        "dos informes son dos transiciones, y la tercera vuelta se queda abierta"
+    assert len(registro.vueltas) == 3
+    assert registro.estado_final.repeticion == 4, (
+        "tres informes son tres transiciones, y la cuarta vuelta se queda abierta"
     )
     assert all(informe.repeticiones == 1 for informe in registro.vueltas), (
         "cada informe es el de SOLO esa vuelta, no el acumulado"
     )
+    # Y las tres vueltas traen las cuatro notas del compas: el informe de una
+    # vuelta cerrada por un reloj que no arrastra no se queda a medias.
+    assert [sum(c.acertadas for c in informe.compases) for informe in registro.vueltas] == [
+        4,
+        4,
+        4,
+    ]
 
 
 def test_no_se_reporta_la_misma_nota_dos_veces():
