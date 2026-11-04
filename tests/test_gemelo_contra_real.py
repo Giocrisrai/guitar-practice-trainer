@@ -45,8 +45,9 @@ INICIAL de cada parcial; el ritmo al que ese parcial se apaga lo fija el filtro
 del lazo, que es deterministico. Una pendiente en dB/s de UNA componente es un
 cociente de amplitudes de esa misma componente, asi que el factor de escala que
 la semilla introduce se cancela. Medido sobre ocho semillas (0, 1, 2, 3, 5, 7, 42
-y 99) y las seis cuerdas, la dispersion que queda es de **1,06 en el peor caso**
--la sexta; en las otras cinco es 1,00-, contra el 5,1 de la medida vieja.
+y 99) y las seis cuerdas, la dispersion que queda es de **1,005 en el peor caso**
+-la sexta; en la cuarta es 1,001 y en las otras cuatro 1,000-, contra el 5,1 de
+la medida vieja.
 
 Lo que el gemelo da hoy, y es reproducible semilla a semilla: **-0,015 dB/s en la
 sexta (E2), -0,028 (A2), -0,102 (D3), -0,243 (G3), -0,327 (B3) y -1,133 en la
@@ -58,9 +59,36 @@ puente decae, asi que lo esperable es que esta prueba salte por el lado de que
 **el gemelo sostiene demasiado**, que es la misma direccion que el riesgo de
 arriba y lo contrario de lo que decia la version anterior de este docstring (que
 razonaba desde los 0,405-0,768 s de la semilla 0, el valor atipico: lo tipico de
-la medida vieja era 0,15-0,30 s). Si salta, lo que hay que mover es el `brillo`
-del anillo de Karplus-Strong -que es lo que gobierna el filtro del lazo- y no el
-factor.
+la medida vieja era 0,15-0,30 s).
+
+**Y EL ARREGLO NO ES GIRAR EL `brillo`.** Esto estaba escrito tres veces en este
+archivo como el consejo a seguir y es falso, que es peor que un docstring falso
+cualquiera: es una INSTRUCCION, y el dia que las grabaciones existan alguien va a
+girar el parametro, va a ver que no sirve y va a desconfiar de la prueba en vez
+del consejo. Barrido del recorrido ENTERO de `brillo`, en dB/s:
+
+    brillo    0,00     0,25     0,50     0,75     1,00    razon
+    E2     -0,0114  -0,0132  -0,0149  -0,0146  -0,0121     1,31
+    A2     -0,0364  -0,0258  -0,0277  -0,0294  -0,0260     1,41
+    D3     -0,1155  -0,1147  -0,1019  -0,0772  -0,0406     2,85
+    G3     -0,2746  -0,2730  -0,2429  -0,1845  -0,0977     2,81
+    B3     -0,4003  -0,2766  -0,3269  -0,3419  -0,3002     1,45
+    E4     -0,9455  -1,1066  -1,1328  -1,0240  -0,7803     1,45
+
+De punta a punta, el parametro mueve E2 un factor 1,31 y lo deja en 0,01 dB/s,
+que sigue a dos ordenes de magnitud de los varios dB/s de una cuerda real. **Y la
+razon es estructural, no de calibracion**: la atenuacion del promedio de dos
+tomas en `f0` va como ω², asi que el decaimiento en dB/s va como **`f0`³** y se
+desvanece en las graves con cualquier peso. Comprobado: `dB/s` dividido por `f0`³
+se queda entre 2,1 y 3,2e-8 en las seis cuerdas, o sea casi constante a lo largo
+de un rango de 4 en `f0` que cambia la pendiente por 76.
+
+Lo que haria falta es **otra familia de arreglo, en la sintesis y no en un
+parametro**: una perdida INDEPENDIENTE DE LA FRECUENCIA en el lazo -una ganancia
+escalar por vuelta, que da `dB/s` proporcional a `f0` en vez de a `f0`³- o una
+envolvente global en `cuerda_pulsada`, que daria los mismos dB/s en las seis.
+**Eso no se decide aqui ni ahora**: se decide con las grabaciones delante, no a
+ciegas contra una guitarra imaginaria.
 
 **NINGUNA PRUEBA DE ESTE ARCHIVO ABRE EL DISPOSITIVO DE AUDIO.** Lee archivos
 `.wav` del disco y sintetiza en memoria; el cable solo hizo falta el dia que se
@@ -114,8 +142,13 @@ MARGEN_DE_FACILIDAD = 0.10
 # El factor se queda en 2 y lo que se arreglo fue la METRICA (ver la cabecera del
 # modulo): la medida vieja -el tiempo hasta la mitad del RMS- tenia un ruido de
 # semilla de 5,1, o sea mas que su propia tolerancia, y entonces el 2 no decidia
-# nada. Con la pendiente del fundamental el ruido de semilla es 1,06 y el factor 2
-# deja casi todo su margen para el timbre, que es lo que tiene que juzgar.
+# nada. Con la pendiente del fundamental el ruido de semilla es 1,005 y el factor
+# 2 deja casi todo su margen para el timbre, que es lo que tiene que juzgar.
+#
+# Y si el factor salta en las graves, lo que NO lo arregla es girar el `brillo`:
+# el decaimiento del lazo va como `f0`³ y en las graves se desvanece con
+# cualquier peso. El barrido y la familia de arreglo que si valdria estan en la
+# cabecera del modulo.
 FACTOR_DEL_DECAIMIENTO = 2.0
 
 # Los tres numeros de la medida del decaimiento, y por que son estos:
@@ -267,12 +300,24 @@ def _decaimiento_db_s(muestras: np.ndarray, frecuencia_muestreo: int, nota: str)
     Una pendiente en dB/s de una sola componente es un cociente de amplitudes de
     ESA componente, asi que la escala que la semilla introduce se cancela y lo que
     queda es el filtro del lazo, que es deterministico. Medido sobre ocho semillas
-    y las seis cuerdas: dispersion de 1,06 en el peor caso.
+    y las seis cuerdas: dispersion de 1,005 en el peor caso.
 
     El ajuste es por minimos cuadrados sobre `20*log10(amplitud)` contra el
     tiempo, saltando el ataque y tirando los puntos que caen mas de
     `PISO_DE_LA_MEDIDA_DB` por debajo del maximo (en una grabacion, eso ya es
     ruido de fondo y doblaria la recta hacia la horizontal).
+
+    **EL PISO ESTA REFERIDO AL MAXIMO MEDIDO Y NO AL RUIDO, y eso es un limite
+    declarado de esta medida.** El bin de `f0` no baja de donde el suelo de ruido
+    de la grabacion lo deje, asi que con una relacion señal-ruido modesta -menos
+    de esos 40 dB- el piso NO se activa, los puntos del final se quedan pegados al
+    ruido y la pendiente sale **subestimada**, hacia la horizontal. Y eso es el
+    mismo sesgo que esta prueba vigila entrando por otra puerta: una grabacion con
+    poco margen de ruido parece decaer MENOS de lo que decae, o sea mas parecida
+    al gemelo que lo que es. El otro limite de la misma familia -el batido de las
+    dos polarizaciones de una cuerda real, que ondula la envolvente del
+    fundamental y que el ajuste lineal promedia- esta en el informe de la tarea.
+    Los dos solo se pueden medir con grabaciones delante.
 
     Devuelve `nan` si no quedan puntos suficientes, que es un resultado y no un
     error: significa que esta señal no tiene fundamental medible, y la prueba lo
@@ -387,7 +432,7 @@ def test_el_decaimiento_es_del_mismo_orden(archivo, cuerda):
     **La metrica se cambio porque la primera era mas ruidosa que su tolerancia.**
     Media el tiempo hasta la mitad del RMS, y eso depende de la semilla del ruido
     de pua: factor 5,1 entre dos semillas del mismo sintetizador. La pendiente del
-    fundamental tiene 1,06 de dispersion sobre ocho semillas. El por que esta en
+    fundamental tiene 1,005 de dispersion sobre ocho semillas. El por que esta en
     `_decaimiento_db_s` y en la cabecera del modulo.
 
     El factor 2 es grueso a proposito: el decaimiento de una cuerda depende de la
@@ -399,9 +444,17 @@ def test_el_decaimiento_es_del_mismo_orden(archivo, cuerda):
     Medido hoy en el gemelo, reproducible semilla a semilla: **-0,015 dB/s (E2),
     -0,028 (A2), -0,102 (D3), -0,243 (G3), -0,327 (B3), -1,133 (E4)**. En la sexta
     son 0,045 dB en tres segundos, o sea que **el fundamental del gemelo casi no
-    decae en las graves**: lo esperable es que esto salte por ahi. Si salta, lo
-    que hay que mover es el `brillo` del anillo de `cuerda_pulsada`, que es lo que
-    gobierna el filtro del lazo, y no este factor.
+    decae en las graves**: lo esperable es que esto salte por ahi.
+
+    **Y SI SALTA AHI, NO SE ARREGLA GIRANDO EL `brillo`.** El decaimiento del lazo
+    va como `f0`³ -la atenuacion del promedio de dos tomas en `f0` va como ω²-, asi
+    que en las graves se desvanece con cualquier peso: el recorrido entero del
+    parametro mueve E2 un factor 1,31 y lo deja en 0,01 dB/s, a dos ordenes de
+    magnitud de una cuerda real. La tabla del barrido y la familia de arreglo que
+    si valdria -una perdida independiente de la frecuencia en el lazo, o una
+    envolvente global en `cuerda_pulsada`: un cambio de la SINTESIS, no un giro de
+    parametro- estan en la cabecera del modulo. Lo que no hay que mover es este
+    factor.
 
     **Y SE SABE EXACTAMENTE LO QUE DISCRIMINA**, medido con guitarras de mentira
     iguales al gemelo mas un decaimiento extra uniforme:
@@ -409,12 +462,13 @@ def test_el_decaimiento_es_del_mismo_orden(archivo, cuerda):
         extra      -0,1    -0,3    -1,0    -3,0  dB/s
         cuerdas       2       4       5       6  de 6 fallan
 
-    O sea: es monotono y fino. Y en las graves es **casi de un solo lado**, porque
-    el factor 2 sobre -0,015 dB/s son 0,015 dB/s de margen absoluto: cualquier
-    cuerda real que decaiga de verdad hace saltar E2 y A2. Eso **no es ruido de la
-    medida** -la medida tiene 1,06 de dispersion- sino el hallazgo: el gemelo
-    sostiene su fundamental mas que una cuerda. Si sale rojo ahi, no se busque un
-    defecto en la prueba.
+    O sea: es monotono, fino y **anidado** -las cuerdas caen en orden, E2, A2, D3,
+    G3, B3, E4, que es el orden de `f0`³-. Y en las graves es **casi de un solo
+    lado**, porque el factor 2 sobre -0,015 dB/s son 0,015 dB/s de margen
+    absoluto: cualquier cuerda real que decaiga de verdad hace saltar E2 y A2. Eso
+    **no es ruido de la medida** -la medida tiene 1,005 de dispersion- sino el
+    hallazgo: el gemelo sostiene su fundamental mas que una cuerda. Si sale rojo
+    ahi, no se busque un defecto en la prueba.
     """
     muestras_reales, frecuencia_muestreo = _grabacion(archivo)
     sintetica = _gemelo_como(muestras_reales, cuerda.nota, frecuencia_muestreo)
