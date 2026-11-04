@@ -394,6 +394,20 @@ def test_la_racha_estable_supera_al_suavizador():
     Con el bajo el margen es CERO. Esta prueba seguiria verde y el defecto
     estaria de vuelta, asi que no cubre el bajo: lo dice para que nadie crea que
     si. Ver el docstring de `nucleo/ejercicios/pulsaciones.py`.
+
+    **Y hay un segundo limite, del mismo tipo:** se afirma sobre la CONSTANTE del
+    modulo, pero `Suavizador(tamano=...)` y `Analizador(tamano_suavizado=...)`
+    aceptan cualquier valor, asi que un suavizador construido a mano con siete
+    entradas publicaria la altura vieja durante tres cuadros y tampoco lo veria
+    nadie. Y el parametro SE USA: `herramientas/grabar_muestras.py` construye el
+    analizador con `tamano_suavizado=1` para ver cada ventana tal cual, y
+    `tests/test_pipeline.py` pasa 1, 3 y 5. Lo que hoy salva la desigualdad es
+    que todos esos valores son MENORES O IGUALES que la constante -y 1 es ademas
+    el caso sin retraso ninguno-, no que nadie toque el parametro. Nada lo
+    impone: pasar 7 romperia el margen en silencio. Se deja nombrado y no
+    cubierto porque la comprobacion correcta tendria que mirar el tamaño de la
+    INSTANCIA del suavizador, y el detector de pulsaciones no tiene acceso a
+    ella; el dia que haga falta, ese es el sitio por donde empezar.
     """
     assert CUADROS_PARA_NOTA_ESTABLE > TAMANO_SUAVIZADO // 2
 
@@ -516,11 +530,33 @@ def test_un_ataque_pasado_el_filo_se_abandona_y_el_onset_es_la_racha():
 def secuencia_donde_el_camino_a_salva_el_ataque_siguiente():
     """Los ocho cuadros donde el camino A cambia el resultado, y no otros.
 
-    Salieron de una busqueda EXHAUSTIVA: de las 1.679.616 secuencias de ocho
-    cuadros sobre un alfabeto de seis lecturas, solo 9 distinguen al detector
-    con camino A del mismo detector con el camino A apagado, y las 9 tienen esta
-    forma. La diferencia esta siempre en el ONSET de la segunda pulsacion -nunca
-    en su altura ni en cuantas hay-, y es de un cuadro: 21 ms.
+    Salieron de una busqueda EXHAUSTIVA sobre secuencias de cuadros sinteticos,
+    comparando el detector con camino A contra el mismo detector con el camino A
+    apagado.
+
+    **LA CIFRA DE SECUENCIAS QUE DIFIEREN NO ES UN INVARIANTE: es funcion del
+    alfabeto y del largo**, y se escriben los dos para que la medicion se pueda
+    rehacer. El alfabeto usado aqui son estas seis lecturas, con el paso de
+    cuadro de produccion (21 ms):
+
+        silencio a -90 dB
+        silencio a -15 dB
+        D4 con confianza 0,2 a -15 dB      (dudoso)
+        D4 con confianza 0,9 a -15 dB
+        E4 con confianza 0,9 a -15 dB
+        E4 con confianza 0,9 a -40 dB
+
+        largo 7, 6 lecturas:    279.936 secuencias ->  0 difieren
+        largo 8, 6 lecturas:  1.679.616 secuencias ->  9 difieren
+        largo 6, 8 lecturas:    262.144 secuencias ->  0 difieren
+
+    Hacen falta OCHO cuadros para que el caso aparezca -el testigo los usa
+    todos-, y con otro alfabeto de seis lecturas una revision independiente conto
+    116 en vez de 9: trece veces mas, misma conclusion. Asi que el numero que
+    importa no es el 9 sino lo que no cambia con el alfabeto: la fraccion es
+    minuscula, **la diferencia esta siempre en el ONSET** -nunca en la altura ni
+    en cuantas pulsaciones hay, comprobado en las tres filas de arriba- y con
+    audio real del gemelo es CERO.
 
         0  nivel pero sin nota (el ataque de la primera pulsacion)
         1  E4 creible a -15 dB

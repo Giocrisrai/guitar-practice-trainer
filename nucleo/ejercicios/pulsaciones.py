@@ -18,15 +18,11 @@ misma nota con confianza suficiente. Al llegar a `cuadros_para_nota_estable`
 cuadros, y si esa nota es distinta de la ultima ya resuelta, se dispara el
 evento sin esperar ningun salto de energia.
 
-EL CAMINO A APORTA EL ONSET Y EL CAMINO B APORTA LA ALTURA. Los dos caminos
-leen la MISMA racha estable para decidir QUE nota sono; lo que distingue al
-camino A es que, al haber visto un salto de energia, firma el onset con el
-instante de ESE salto en vez de con el comienzo de la racha. Es decir: el camino
-A ya no lee la altura del PRIMER cuadro posterior a su espera, sino la de una
-racha de `cuadros_para_nota_estable` cuadros creibles seguidos (tres, no uno).
-Y esto esta MEDIDO, no elegido: la altura que el pipeline PUBLICA llega tarde
-respecto del ataque real, y `espera_estabilizacion_s` (60 ms) no alcanza a
-cubrir ese retraso.
+LOS DOS CAMINOS LEEN LA MISMA RACHA ESTABLE. Desde la Task 6c, el camino A ya no
+lee la altura del PRIMER cuadro posterior a su espera, sino la de una racha de
+`cuadros_para_nota_estable` cuadros creibles seguidos (tres, no uno). Y esto esta
+MEDIDO, no elegido: la altura que el pipeline PUBLICA llega tarde respecto del
+ataque real, y `espera_estabilizacion_s` (60 ms) no alcanza a cubrir ese retraso.
 
     ventana de analisis (4096 muestras a 48 kHz)        85,3 ms
     suavizador de mediana 5 (nucleo/analisis/pipeline)  42,0 ms
@@ -46,6 +42,53 @@ porque seria ACOPLAR este modulo al tamaño de la ventana del pipeline y al de
 su suavizador: dos numeros que este detector no conoce ni debe conocer, y que
 cambian con el perfil de afinacion. Exigir la racha no necesita saber cuanto
 tarda el tono en cuajar: espera a que cuaje.
+
+ENTONCES, ¿PARA QUE SIRVE HOY EL CAMINO A? NO para firmar el onset con el ataque,
+y conviene decirlo claro porque es lo que uno supondria. Cuando el ataque sigue
+vigente, `_onset_camino_b` firma EL MISMO instante que el camino A habria
+firmado -eso es la unificacion del onset, y es deliberada-, asi que en el caso
+normal los dos caminos producen exactamente la misma pulsacion. Medido por fuerza
+bruta sobre secuencias de cuadros sinteticos: la fraccion que los distingue es
+minuscula -del orden de 10^-6 a 10^-4, y el numero exacto DEPENDE DEL ALFABETO Y
+DEL LARGO de la busqueda, asi que no se inscribe aqui como si fuera una
+propiedad del detector; los parametros y las cifras estan en el docstring de
+`test_el_camino_a_reinicia_la_racha_y_eso_salva_el_onset_siguiente`-, la
+diferencia es SIEMPRE en el onset y nunca en la altura ni en el recuento, y con
+AUDIO REAL del gemelo (escala de ocho notas y demostracion de cuarenta y ocho,
+doce semillas cada una) es CERO.
+
+Lo que el camino A aporta de verdad es su REINICIO DE LA RACHA. Al sellar pone
+`_nota_candidata` y su contador a cero; el camino B no los toca. Y eso decide el
+onset de la pulsacion SIGUIENTE: con la racha a cero, el cuadro siguiente no
+tiene `nota_estable`, nadie llama a `_sellar` y un ataque recien detectado
+SOBREVIVE para firmar la nota que viene. Sin ese reinicio, la racha de la nota
+vieja sigue viva, `_sellar` la descarta por nombre y el descarte BORRA el ataque
+-el borrado existe para que un ataque ya gastado no firme la pulsacion
+siguiente-, de modo que la nota que viene pierde su ataque y se queda con el
+comienzo de su racha. Medido sobre el testigo, variando cuantos cuadros publican
+la altura vieja tras el ataque: 21 ms de diferencia con un cuadro, 42 ms con DOS
+-que es la racha del perfil real, o sea que el mecanismo no es un borde, crece
+con el retraso del suavizador- y 0 ms con tres, porque ahi la racha vieja se come
+el margen y los dos caminos acaban firmando el mismo onset tardio. Esta clavado en
+`tests/test_pulsaciones.py::test_el_camino_a_reinicia_la_racha_y_eso_salva_el_onset_siguiente`,
+la unica prueba de la suite que muere si el camino A desaparece.
+
+DEUDA ANOTADA: EL CAMINO A MERECE UNA RUTA DE RETIRADA, y no se hace aqui. Lo
+que aporta es COMPENSATORIO: tapa una sobre-reaccion del descarte por nombre de
+`_sellar`, que borra el ataque incluso cuando ese ataque acaba de detectarse y
+pertenece a la nota que todavia no ha cuajado. El arreglo mas honesto y mas
+pequeño estaria ahi, en `_sellar`: no borrar el ataque cuando el descarte por
+nombre coincide con un ataque recien detectado. Hecho eso, el camino A se queda
+sin ninguna aportacion propia y se puede retirar, dejando un solo camino de
+disparo con un onset que sabe de ataques. No se hace en esta tarea porque obliga
+a rehacer un contrato que tiene prueba propia
+(`test_el_descarte_por_nombre_no_deja_al_camino_a_resolver_sin_onset` y
+`test_la_nota_nueva_que_de_verdad_suena_se_resuelve_igual_y_con_su_onset`), y
+porque el camino A fue justamente el componente que causo el defecto que la
+Task 6c vino a arreglar: tocar las dos cosas a la vez seria rehacer el modulo
+con una sola red. La PRUEBA DE ACEPTACION de esa retirada ya existe y es
+`test_el_camino_a_reinicia_la_racha_y_eso_salva_el_onset_siguiente`: quien
+arregle `_sellar` tiene que dejarla verde con el camino A quitado.
 
 EL MARGEN ES DE UN CUADRO, Y ES UN UMBRAL CALIBRADO, NO UN INVARIANTE. Lo que
 protege de volver a sellar la altura vieja es una desigualdad:
@@ -358,11 +401,7 @@ class DetectorPulsaciones:
         # un ataque de 350 ms de antiguedad firmando el onset de la racha
         # siguiente (ver
         # test_el_onset_del_camino_b_es_el_comienzo_de_la_racha_no_el_final).
-        if (
-            self._lectura_pendiente is not None
-            and self._instante_ataque is not None
-            and not self._ataque_vigente(instante)
-        ):
+        if self._lectura_pendiente is not None and not self._ataque_vigente(instante):
             self._lectura_pendiente = None
 
         if (
@@ -483,6 +522,17 @@ class DetectorPulsaciones:
         el ultimo instante en que el ataque puede hablar, no el primero en que ya
         no. Es el mismo criterio que usa el veredicto del gemelo para emparejar
         un reporte con un ataque, y hay prueba de los dos lados del borde.
+
+        El caso «no hay ataque» se contesta AQUI tambien, y por eso quien llama
+        no lo vuelve a comprobar: sin ataque no hay nada vigente. La caducidad de
+        `procesar` llevaba esa comprobacion repetida al lado de esta llamada, lo
+        que dejaba la decision sobre `None` en dos sitios mientras este docstring
+        presumia de uno. Quitarla no cambia nada, y esta medido: el estado
+        «lectura pendiente puesta con el ataque ya borrado» no se da NUNCA
+        -0 veces en 60.000 secuencias aleatorias sobre un alfabeto de diez
+        lecturas y en las 279.936 secuencias de largo 7 de un alfabeto de seis-,
+        porque la lectura pendiente y el ataque se ponen juntos (con un ataque
+        nuevo) y se limpian juntos (en `_sellar`).
         """
         return (
             self._instante_ataque is not None

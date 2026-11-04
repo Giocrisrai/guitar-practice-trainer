@@ -65,6 +65,14 @@ INTERVALO_DE_ANALISIS_S = 0.021
 # medicion en el docstring de `nucleo/ejercicios/pulsaciones.py`. La desigualdad
 # esta afirmada en
 # `tests/test_pulsaciones.py::test_la_racha_estable_supera_al_suavizador`.
+#
+# Y esa afirmacion tiene DOS limites, los dos nombrados en el docstring de la
+# prueba: no cubre el perfil de bajo (donde el margen ya es cero por la ventana)
+# ni un suavizador construido con otro tamaño, porque se afirma sobre esta
+# constante y no sobre el tamaño de la instancia. `tamano` y `tamano_suavizado`
+# siguen siendo parametros libres -`herramientas/grabar_muestras.py` pasa 1- y
+# nada impide pasar un 7, que romperia el margen sin que ninguna prueba se
+# enterase.
 TAMANO_SUAVIZADO = 5
 
 
