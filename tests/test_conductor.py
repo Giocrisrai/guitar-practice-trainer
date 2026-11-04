@@ -110,6 +110,50 @@ def test_observar_mueve_el_reloj_con_el_cuadro():
     assert estado.carril.instante_s == pytest.approx(0.021, abs=1e-6)
 
 
+def test_un_hueco_de_audio_en_plena_cuenta_atras_no_la_gasta():
+    """El hueco por el camino de PRODUCCION: `observar` tras un apagon.
+
+    Es la misma regla que `TECHO_TRAMO_S` sostiene para el reloj de la pasada -«un
+    hueco largo no entra en la pieza por ningun camino»- vista por el otro lado: el
+    conductor detecta el hueco (`_hueco_de_audio`) y le congela el reloj al
+    estudio, pero `congelar_en` NO reinicia el reloj del analisis que el estudio
+    recuerda, asi que el hueco entero llegaba a la resta con que la cuenta atras se
+    descuenta. Medido con 30 s de hueco: la cuenta se gastaba de golpe y el bucle
+    daba una VUELTA FANTASMA con el cabezal en el final del tramo.
+
+    Esta prueba conduce el camino de produccion entero -mirar, observar, hueco,
+    observar- y no la resta a solas, porque es el conductor quien hace que el hueco
+    llegue: una prueba solo sobre la sesion no ve que `congelar_en` sea el que lo
+    deja pasar.
+
+    La cuenta baja los 0,1 s de la mirada del hueco y **nada mas**: esa mirada SI
+    es tiempo contado -el conductor la acota con su techo y se lo pasa al estudio
+    por `avanzar`, que es su contrato- y los otros 29,9 s no entran por ninguna
+    parte.
+    """
+    conductor = conductor_de(
+        plan=PlanDePasada(en_bucle=True, compases_de_cuenta_atras=1), ahora=1000.0
+    )
+    conductor.mirar(1000.0, senal_ausente=False)
+    estado = conductor.observar(SILENCIO, 1000.0)
+    assert estado.cuenta_atras_restante_s == pytest.approx(COMPAS_S)
+
+    # El apagon: nadie publica cuadros durante 30 s y despues vuelve uno.
+    conductor.mirar(1030.0, senal_ausente=False)
+    estado = conductor.observar(SILENCIO, 1030.0)
+
+    assert estado.cuenta_atras_restante_s == pytest.approx(
+        COMPAS_S - TECHO_TRAMO_S, abs=1e-6
+    ), "el apagon de 30 s se comio la cuenta atras"
+    assert estado.carril.instante_s == pytest.approx(0.0), (
+        "el cabezal se fue del inicio del tramo por un hueco de audio"
+    )
+    assert estado.repeticion == 1, (
+        "el bucle dio una vuelta que nadie toco: el hueco entro en el reloj"
+    )
+    assert conductor.instante == pytest.approx(0.0)
+
+
 def test_mirar_sin_cuadros_avanza_con_techo():
     """Sin ningun cuadro previo y con un salto de 5 s, el reloj avanza el techo.
 

@@ -675,11 +675,26 @@ def test_la_cuenta_atras_se_traduce_pasando_por_la_cadena_de_verdad():
     (`tests/test_gemelo_cuenta_atras.py`), y lo que este suelo mide -la distancia
     entre el ataque y la publicacion- sube a +131,3 / +206,3.
 
-    Sigue 21 ms por debajo de la mediana sin cuenta atras (+152,3) y eso NO es eje:
-    con 2,4 s de silencio delante, el detector tiene nivel de referencia limpio y
-    firma algunas notas un cuadro antes. El maximo, en cambio, sube por encima del
-    de sin cuenta (+188,3), asi que no es un desplazamiento del eje -un eje movido
-    movería los dos en el mismo sentido-.
+    **POR QUE LA MEDIANA BAJA 21 ms Y EL MAXIMO SUBE 18, Y POR QUE NINGUNA DE LAS
+    DOS COSAS ES UN EJE MOVIDO.** Medido nota a nota, retraso de publicacion con
+    cuenta atras menos sin ella:
+
+        nota      0      1      2      3      4      5      6      7
+        sin    188,3  113,3  164,3  131,3  140,3  170,3  116,3  167,3
+        con    182,3  128,3  116,3  167,3  134,3  206,3  110,3  119,3
+        dif     -6,0  +15,0  -48,0  +36,0   -6,0  +36,0   -6,0  -48,0
+
+    **Las ocho diferencias son de la forma `n * 21 - 6` ms**, con `n` en
+    `{-2, 0, 1, 2}`: el detector publica cada nota un numero ENTERO de cuadros
+    antes o despues, y los 6 ms son la fase de la cuenta atras en la rejilla de
+    cuadros (2,4 s son 114 cuadros de 21 ms **mas 6 ms**). Con la cuenta delante,
+    cada ataque cae 6 ms mas tarde dentro de su ventana de analisis, y la nota se
+    resuelve en el cuadro de al lado o en el de dos mas alla segun donde caiga.
+
+    Asi que no hay sesgo: cuatro notas suben y cuatro bajan. La mediana baja
+    porque cuatro de las ocho se publican antes, y el maximo sube porque la nota 5
+    se publica DOS cuadros mas tarde (170,3 -> 206,3). Un eje desplazado habria
+    movido las ocho en el mismo sentido y por la misma cantidad.
 
     Con el termino de la cuenta atras quitado del modulo salen 8 perdidas y 8
     inventadas de 8.

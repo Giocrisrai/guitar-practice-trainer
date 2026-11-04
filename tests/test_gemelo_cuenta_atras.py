@@ -489,7 +489,7 @@ def test_la_cuenta_atras_de_cada_vuelta_tambien_sobrevive():
     Lo que se afirma es el instante en que cada vuelta cobra su PRIMERA nota,
     fechado en el reloj del analisis, contra el instante en que la cuenta de esa
     vuelta se acaba (`vuelta * cuenta + (vuelta - 1) * tramo`, que es la geometria
-    del audio que el gemelo genero). Medido: +182,3 / +185,3 / +188,3 / +212,3 ms
+    del audio que el gemelo genero). Medido: +182,3 / +185,3 / +188,3 / +191,3 ms
     DESPUES de su cuenta, que es el retraso con que la cadena publica un ataque.
     Si una cuenta se hubiera muerto, su primera nota se habria cobrado antes de que
     la cuenta terminara y ese numero saldria negativo.

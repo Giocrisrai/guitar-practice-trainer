@@ -486,16 +486,51 @@ class SesionDeEstudio:
         )
 
     def _delta_del_analisis(self, instante_analisis: float) -> float:
-        """Cuanto tiempo paso entre dos cuadros, nunca negativo.
+        """Cuanto tiempo paso entre dos cuadros, nunca negativo y SIN HUECOS.
 
         Solo lo necesita la cuenta atras: el reloj de la pieza lo mueve
         `procesar` del seguidor por su correspondencia, no esta resta.
+
+        **UN HUECO DE AUDIO NO ES TIEMPO TRANSCURRIDO Y AQUI VALE CERO.** Es la
+        misma regla que `ConductorDeEstudio` escribe para el reloj de la pasada
+        -«un hueco largo no entra en la pieza por ningun camino»- y el mismo
+        criterio con que ese conductor decide que un cuadro llega tras un apagon
+        (`_hueco_de_audio`, que mide `VENTANA_ATAQUE_COMO_ONSET_S` contra el reloj
+        del analisis). Se vuelve a aplicar aqui porque el conductor no lo puede
+        aplicar por nosotros: `congelar_en` -lo que llama al detectar el hueco- NO
+        reinicia `_ultimo_analisis`, asi que el cuadro siguiente llega con el hueco
+        entero en la resta.
+
+        Era un defecto medido en los dos caminos que la usan, y el segundo lo
+        trajo la rama que le entrega al reloj lo que sobra del cuadro que agota la
+        cuenta:
+
+        * la cuenta atras se la comia un apagon de golpe -30 s de hueco se tragan
+          cualquier cuenta-, cuando `congelar_en` existe precisamente para que
+          perder la señal en plena cuenta NO sea motivo para tirarla;
+        * y lo que sobraba de ese hueco se le daba al reloj: medido con un hueco de
+          30 s dentro de la cuenta, **el cabezal se iba al final del tramo y el
+          bucle daba una VUELTA FANTASMA** que nadie toco (repeticion 2 con el
+          alumno con el cable desenchufado).
+
+        El techo es el del propio detector y no un numero nuevo: por encima de
+        `VENTANA_ATAQUE_COMO_ONSET_S` sin un cuadro no queda nada en vuelo que
+        pueda resolverse, que es la definicion de hueco que ya usan el conductor
+        (`ESPERA_SIN_CUADROS_S`) y `_ataques_en_vuelo`. Y el hueco vale CERO y no
+        el techo, porque el tiempo sin señal no entra en la pieza por ninguna
+        puerta: quien desenchufa el cable a media cuenta y lo vuelve a enchufar se
+        encuentra la cuenta DONDE LA DEJO, no reiniciada y no gastada.
+
+        Es el mismo razonamiento que `_exceso_de_la_vuelta` escribe dos metodos mas
+        abajo -«un exceso mayor que el tramo no es una vuelta sino un salto de
+        reloj»- aplicado a la otra punta.
         """
         anterior = self._ultimo_analisis
         self._ultimo_analisis = instante_analisis
         if anterior is None:
             return 0.0
-        return max(0.0, instante_analisis - anterior)
+        delta = max(0.0, instante_analisis - anterior)
+        return 0.0 if delta >= VENTANA_ATAQUE_COMO_ONSET_S else delta
 
     def _exceso_de_la_vuelta(self, inicio: float, fin: float) -> float:
         """Con cuanto se paso el reloj del final del tramo, acotado al tramo.

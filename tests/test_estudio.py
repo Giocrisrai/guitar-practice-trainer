@@ -585,6 +585,53 @@ def test_durante_la_cuenta_atras_no_se_cobra_nada():
     assert sesion.estado.carril.tocadas == ()
 
 
+def test_un_apagon_en_plena_cuenta_atras_no_la_gasta_ni_mueve_el_cabezal():
+    """**UN HUECO DE AUDIO NO ES TIEMPO TRANSCURRIDO.** Defecto medido.
+
+    El caso es real y no de laboratorio: el alumno desenchufa el cable -o el
+    dispositivo desaparece- a media cuenta atras y lo vuelve a enchufar. El cuadro
+    que llega entonces trae el hueco ENTERO en la resta de `_delta_del_analisis`,
+    porque `congelar_en` -lo que el conductor llama al detectar el hueco- mueve el
+    reloj pero NO reinicia `_ultimo_analisis`.
+
+    Lo que tiene que pasar es que la cuenta siga DONDE LA DEJO. No reiniciada
+    -nadie ha vuelto a pulsar «empezar»- y no gastada: `congelar_en` existe
+    precisamente para que perder la señal en plena cuenta no sea motivo para
+    tirarla, y el tiempo sin señal no entra en la pieza por ninguna puerta.
+
+    Lo que pasaba, medido con un hueco de 30 s: el hueco se tragaba la cuenta de
+    golpe y lo que sobraba de el se le daba al reloj, que se iba al final del tramo
+    y le hacia dar al bucle una **VUELTA FANTASMA** -repeticion 2- que nadie toco,
+    con el cable desenchufado. Las tres aserciones son las tres mitades de eso.
+    """
+    sesion = SesionDeEstudio(
+        pieza_de_doce_compases(),
+        PlanDePasada(primer_compas=1, ultimo_compas=1, en_bucle=True,
+                     compases_de_cuenta_atras=1),
+    )
+    sesion.arrancar()
+    sesion.procesar(SILENCIO, 100.0)
+    entera = sesion.estado.cuenta_atras_restante_s
+    assert entera == pytest.approx(4.0)
+
+    sesion.procesar(SILENCIO, 130.0)
+
+    estado = sesion.estado
+    assert estado.cuenta_atras_restante_s == pytest.approx(entera), (
+        "el apagon se comio la cuenta atras: el tiempo sin señal no entra en la "
+        "pieza, y perder la señal no es motivo para tirar la cuenta"
+    )
+    assert estado.carril.instante_s == pytest.approx(0.0), (
+        "el cabezal se fue del inicio del tramo por un hueco de audio"
+    )
+    assert estado.repeticion == 1, (
+        "el bucle dio una vuelta que nadie toco: el hueco entro en el reloj"
+    )
+    # Y el cuadro siguiente, ya sin hueco, descuenta lo que le toca y nada mas.
+    sesion.procesar(SILENCIO, 130.021)
+    assert sesion.estado.cuenta_atras_restante_s == pytest.approx(entera - 0.021)
+
+
 def test_tras_la_vuelta_del_bucle_las_notas_se_pueden_volver_a_cobrar():
     sesion = SesionDeEstudio(
         pieza_de_doce_compases(),
