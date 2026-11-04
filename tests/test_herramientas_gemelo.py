@@ -14,15 +14,22 @@ El paso del brief que SI levanta el servidor de verdad se ejecuta a mano una vez
 y su salida queda en el informe de la tarea, que es donde sirve de algo.
 """
 
+import os
 import pathlib
+import subprocess
+import time
+import urllib.error
 from dataclasses import replace
 
 import pytest
 
 from herramientas.gemelo import (
     _analizador_de_argumentos,
+    _esperar_al_servidor,
+    _seguir_la_pasada,
     armar_la_pasada,
     codigo_de_salida,
+    main,
     leer_bucle,
     perfil_de_destreza,
     pieza_pedida,
@@ -50,11 +57,26 @@ RAIZ = pathlib.Path(__file__).resolve().parent.parent
 # de los derechos de autor en una lista de excepciones.
 EXTENSIONES_DE_PARTITURA = (".gp3", ".gp4", ".gp5", ".mid", ".midi", ".mxl", ".musicxml")
 
+# Una ruta de ejemplo para las pruebas de la linea de ordenes. Sale de `$TMPDIR` y
+# no de `/tmp` -la restriccion de la etapa-, y nadie la abre: `argparse` solo guarda
+# la cadena. Se nombra aqui porque una ruta de ejemplo en una prueba es lo que
+# alguien copia.
+RUTA_DE_EJEMPLO = pathlib.Path(os.environ.get("TMPDIR", "/var/tmp")) / "x.gp5"
+
 
 def _veredicto(
-    perdidas=(), inventadas=0, mal_adjudicadas=(), excluidas=(), tocadas=8
+    perdidas=(),
+    inventadas=0,
+    mal_adjudicadas=(),
+    excluidas=(),
+    tocadas=8,
+    maximo=188.3,
 ) -> Veredicto:
-    """Un `Veredicto` armado a mano, para probar lo que se hace CON el."""
+    """Un `Veredicto` armado a mano, para probar lo que se hace CON el.
+
+    `maximo` es el peor desfase emparejado, y se puede fijar porque de el depende
+    si el resumen avisa de que los hallazgos son el borde del detector.
+    """
     return Veredicto(
         notas_de_la_pieza=8,
         notas_tocadas=tocadas,
@@ -63,7 +85,7 @@ def _veredicto(
         mal_adjudicadas=mal_adjudicadas,
         excluidas=excluidas,
         desfase_introducido_ms=152.3,
-        desfase_maximo_ms=188.3,
+        desfase_maximo_ms=maximo,
     )
 
 
@@ -78,14 +100,22 @@ def test_el_bucle_se_lee_de_la_forma_primero_guion_ultimo():
 def test_un_tramo_imposible_se_rechaza_con_el_texto_recibido_dentro(texto):
     """Lo que no es un tramo se rechaza, y el mensaje trae el texto RECIBIDO.
 
-    Sin el texto dentro, quien escribio `17–20` con el guion largo que pone el
-    corrector de macOS lee «no sirve» y no ve la diferencia con `17-20`. Es el
-    unico dato que convierte el mensaje en algo accionable.
+    Sin el texto dentro, quien escribio `17-20` con el guion largo que pone el
+    corrector de macOS lee «no sirve» y no ve la diferencia con el guion normal. Es
+    el unico dato que convierte el mensaje en algo accionable.
+
+    El texto se busca ENTRE COMILLAS (`'...'`) y no suelto, que es como el mensaje lo
+    escribe. Antes se buscaba suelto con un `or` de dos ramas, y con el texto vacio
+    -uno de los casos- la segunda rama era verdad siempre: de ese caso solo se
+    comprobaba que lanzaba, no que el mensaje dijera nada. Una asercion que no puede
+    fallar en un caso parametrizado es peor que no tener el caso.
     """
     with pytest.raises(ValueError) as fallo:
         leer_bucle(texto)
 
-    assert repr(texto)[1:-1] in str(fallo.value) or texto in str(fallo.value)
+    assert f"'{texto}'" in str(fallo.value), (
+        f"el mensaje no trae el texto recibido entre comillas: {fallo.value}"
+    )
 
 
 def test_sin_pieza_usa_la_de_demostracion_construida_en_codigo(monkeypatch):
@@ -116,19 +146,47 @@ def test_sin_pieza_usa_la_de_demostracion_construida_en_codigo(monkeypatch):
 def test_el_repositorio_no_lleva_ninguna_partitura_dentro():
     """Ningun archivo con derechos de autor entra al repositorio. Nunca.
 
-    Es la regla del proyecto y aqui queda afirmada sobre lo que git tiene
-    seguido, no sobre lo que haya en el disco: lo que importa es lo que se
-    publica. La pieza del escaparate se construye en codigo justamente para que
-    esta prueba pueda ser verdad.
+    **SE PREGUNTA A GIT, Y NO AL DISCO**, porque lo que importa es lo que se
+    PUBLICA. La version anterior recorria el disco con `rglob` -lo que el docstring
+    prometia y el codigo no hacia-, y eso la ponia roja en la maquina del usuario en
+    cuanto usara la funcion principal del programa: `servidor/canciones.py` crea
+    `canciones/` al guardar la primera cancion, esa carpeta esta en el `.gitignore`
+    a proposito, y la prueba acusaba al usuario de meter material con derechos de
+    autor en el repositorio por tener su propia musica en su propio disco. La
+    biblioteca del usuario no es el repositorio.
+
+    `git ls-files` lista exactamente lo seguido, incluido lo que este en el indice
+    sin cometer todavia, que es lo que hay que vigilar: una partitura añadida con
+    `git add` ya esta a un `commit` de publicarse.
+
+    Se salta si no hay git (un tarball del codigo, sin `.git`): la prueba no puede
+    afirmar nada sobre lo publicado si no hay con quien hablar, y fingir que si es
+    peor que decirlo.
     """
+    try:
+        seguidos = subprocess.run(
+            ["git", "ls-files", "-z"],
+            cwd=RAIZ,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError) as error:
+        pytest.skip(f"sin git no se puede preguntar que hay seguido: {error}")
+
     partituras = [
-        ruta
-        for extension in EXTENSIONES_DE_PARTITURA
-        for ruta in RAIZ.rglob(f"*{extension}")
-        if ".venv" not in ruta.parts and "node_modules" not in ruta.parts
+        nombre
+        for nombre in seguidos.split("\0")
+        if nombre.lower().endswith(EXTENSIONES_DE_PARTITURA)
     ]
 
-    assert partituras == [], f"hay partituras en el repositorio: {partituras}"
+    assert partituras == [], f"hay partituras seguidas por git: {partituras}"
+    # Y la lista no esta vacia por un fallo de la orden: si `git ls-files` no
+    # devolviera nada, la asercion de arriba pasaria sin haber mirado nada.
+    assert "pyproject.toml" in seguidos.split("\0"), (
+        "git ls-files no devolvio los archivos del proyecto: la prueba no ha "
+        "comprobado nada"
+    )
 
 
 def test_con_pieza_se_lee_el_archivo_que_el_usuario_da(monkeypatch, tmp_path):
@@ -238,6 +296,46 @@ def test_el_resumen_nombra_lo_que_la_cadena_perdio_y_adjudico_mal():
     assert "vuelta 2, nota 5" in texto
     assert "vuelta 1, nota 3" in texto
     assert "61" in texto
+
+
+def test_el_resumen_explica_los_hallazgos_que_son_el_borde_del_detector():
+    """Un «CON HALLAZGOS» al borde del techo se explica DONDE EL USUARIO LO LEE.
+
+    El escaparate sale con codigo 1 sobre una interpretacion PERFECTA con las 48
+    notas tocadas y la pasada completada, y lo que el usuario leia era «mal
+    adjudicadas: 1» sin nada mas: o sea «el programa se equivoco de nota». La causa
+    -la sesion completa no tiene margen contra el techo de 250 ms del detector-
+    vivia solo en el informe de la tarea y en una cabecera de pruebas, que son los
+    dos sitios donde el usuario no va a mirar.
+
+    No se afloja ninguna tolerancia para que salga limpio: el borde es un hecho
+    medido y taparlo convertiria la demostracion en un juez complaciente. Lo que se
+    añade es la explicacion, con la cifra y la causa.
+    """
+    al_borde = _veredicto(mal_adjudicadas=((1, 39, 62),), maximo=239.1)
+
+    texto = resumen(al_borde, pieza_de_demostracion(), PERFECTO, completada=True)
+
+    assert "CON HALLAZGOS" in texto
+    assert "Aviso" in texto
+    assert "239.1" in texto, "el aviso tiene que traer el desfase medido"
+    assert "250" in texto, "y el techo del detector contra el que choca"
+    assert "no son del producto" in texto.lower() or "NO son del producto" in texto
+    assert "Task 11" in texto, "la causa tiene que quedar localizable"
+
+
+def test_el_resumen_no_avisa_cuando_el_hallazgo_no_es_el_borde():
+    """Y no lo dice cuando no toca: un aviso que sale siempre no avisa de nada.
+
+    Con el peor desfase lejos del techo todavia hay margen, asi que lo que la cadena
+    haya encontrado es cosa suya y el escaparate no tiene nada que disculpar. Lo
+    mismo con un veredicto limpio: ahi no hay hallazgo ninguno.
+    """
+    lejos = _veredicto(perdidas=((1, 2),), maximo=188.3)
+    limpio = _veredicto(maximo=249.0)
+
+    assert "Aviso" not in resumen(lejos, escala_de_ocho_notas(), PERFECTO, True)
+    assert "Aviso" not in resumen(limpio, escala_de_ocho_notas(), PERFECTO, True)
 
 
 @pytest.mark.parametrize("compas, pulsos", [((4, 4), 4), ((3, 4), 3), ((7, 8), 3.5)])
@@ -406,7 +504,7 @@ def test_salir_al_acabar_es_un_interruptor_y_los_demas_se_leen_enteros():
     """La linea de ordenes completa del brief se lee, y cada cosa en su sitio."""
     argumentos = _analizador_de_argumentos().parse_args(
         [
-            "--pieza", "/tmp/x.gp5",
+            "--pieza", str(RUTA_DE_EJEMPLO),
             "--perfil", "caos",
             "--tempo", "0.6",
             "--bucle", "3-7",
@@ -418,7 +516,7 @@ def test_salir_al_acabar_es_un_interruptor_y_los_demas_se_leen_enteros():
         ]
     )
 
-    assert argumentos.pieza == "/tmp/x.gp5"
+    assert argumentos.pieza == str(RUTA_DE_EJEMPLO)
     assert argumentos.perfil == "caos"
     assert argumentos.tempo == 0.6
     assert leer_bucle(argumentos.bucle) == (3, 7)
@@ -443,3 +541,323 @@ def test_el_analizador_no_tiene_argumentos_posicionales():
     ]
 
     assert posicionales == []
+
+
+# ---------------------------------------------------------------------------
+# El PEGAMENTO: `main`, `_seguir_la_pasada` y `_esperar_al_servidor`.
+#
+# Estas pruebas existen porque faltaban, y faltaban de la peor manera: tres
+# mutantes del revisor sobrevivian las 39 pruebas anteriores, y uno de ellos
+# -`if False:` en `--salir-al-acabar`- borra el requisito central del brief. Las
+# 39 exigian mucho de las piezas separables y nada del cableado, que es donde
+# vive cada decision de integracion.
+#
+# NINGUNA levanta servidor: lo que se sustituye es `_leer_json`, que es la unica
+# linea del modulo que habla por la red. Levantar `uvicorn` abriria un puerto de
+# la maquina, y un puerto ocupado pondria la suite roja por algo que no tiene nada
+# que ver con lo que mide.
+# ---------------------------------------------------------------------------
+
+# Cada cuanto cambia de cuadro el guion de los estados publicados.
+#
+# Cincuenta milisegundos, y el numero esta entre dos cotas que hay que respetar a
+# la vez. Por abajo: tiene que ser VARIAS lecturas del escaparate (8,3 ms a 120 Hz)
+# para que un cuadro no se pueda saltar por el temblor de los hilos; con 16,7 ms la
+# prueba era inestable en la suite entera -medido, un cuadro perdido- aunque
+# pasara aislada. Por arriba: tiene que ser bastante MENOR que la lectura del
+# mutante que se quiere matar (200 ms a 5 Hz), para que un lector lento se salte
+# cuadros enteros por construccion y no por suerte. 50 ms son seis lecturas buenas
+# por cuadro y un cuarto de la lectura del mutante.
+PASO_DEL_GUION_S = 0.05
+
+
+def _nota_publicada(indice: int, midi: int = 55) -> dict:
+    """Una `NotaTocada` tal y como el servidor la publica en `/api/piezas/estado`."""
+    return {
+        "indice": indice,
+        "midi": midi,
+        "nombre": "G3",
+        "cents": 0.0,
+        "desfase_s": 0.0,
+        "clasificacion": "a_tiempo",
+        "acertada": True,
+        "afinada": True,
+    }
+
+
+class ServidorDeGuion:
+    """Un `/api/piezas/estado` de mentira cuyo contenido depende del RELOJ.
+
+    Cada nota aparece en UN SOLO cuadro del guion y desaparece despues, que es lo
+    que de verdad hace el servidor: `SesionCarril` publica lo que el seguidor lleva
+    anotado y el seguidor lo TIRA al cerrar una vuelta o al dar la vuelta al tramo.
+    De ahi que el ritmo de lectura importe: lo que no se lea mientras esta
+    publicado no se recupera.
+
+    El guion se indexa por tiempo transcurrido y no por numero de llamada, para
+    que un lector que lea la mitad de veces vea la mitad de los cuadros y no los
+    mismos cuadros mas tarde. Es lo que convierte «leer despacio» en «perder
+    notas», que es la propiedad que se quiere afirmar.
+    """
+
+    def __init__(
+        self,
+        notas_antes: int = 8,
+        notas_tras_completar: int = 1,
+        cuadros_hasta_completar: int = 10,
+    ) -> None:
+        self.notas_antes = notas_antes
+        self.notas_tras_completar = notas_tras_completar
+        self.cuadros_hasta_completar = cuadros_hasta_completar
+        self.arranque = time.monotonic()
+        self.peticiones: list[str] = []
+
+    def _cuadro(self) -> int:
+        return int((time.monotonic() - self.arranque) / PASO_DEL_GUION_S)
+
+    def __call__(self, url: str, limite_s: float = 5.0) -> dict:
+        self.peticiones.append(url)
+        cuadro = self._cuadro()
+        completado = cuadro >= self.cuadros_hasta_completar
+        if cuadro < self.notas_antes:
+            # Antes de completarse: la nota `cuadro` y solo ella.
+            tocadas = [_nota_publicada(cuadro)]
+        elif completado:
+            # Despues de completarse la cadena sigue publicando los ultimos
+            # ataques, uno por cuadro: es lo que la cola existe para recoger.
+            puesto = cuadro - self.cuadros_hasta_completar
+            tocadas = (
+                [_nota_publicada(self.notas_antes + puesto)]
+                if puesto < self.notas_tras_completar
+                else []
+            )
+        else:
+            tocadas = []
+        return {
+            "repeticion": 1,
+            "instante_s": round(cuadro * PASO_DEL_GUION_S, 3),
+            "tocadas": tocadas,
+            "completado": completado,
+        }
+
+
+def test_seguir_la_pasada_recoge_todo_lo_que_se_publico_mientras_corria(monkeypatch):
+    """Lee lo bastante deprisa para no perder ni una nota publicada.
+
+    **Mata el mutante `LECTURAS_POR_SEGUNDO = 5`.** Cada nota del guion esta
+    publicada durante un solo cuadro de 50 ms, asi que un lector a 5 Hz -una
+    lectura cada 200 ms- se salta tres de cada cuatro. No es una prueba del servidor
+    de mentira: es la propiedad de la que cuelga el veredicto del escaparate, y el
+    informe de la tarea ya media que a 30 Hz «casi todos los hallazgos eran del
+    muestreo y no de la cadena».
+    """
+    guion = ServidorDeGuion(notas_antes=8, notas_tras_completar=0)
+    monkeypatch.setattr("herramientas.gemelo._leer_json", guion)
+
+    recolector, completada = _seguir_la_pasada("http://127.0.0.1:0", duracion_s=0.5)
+
+    assert completada is True
+    recogidos = sorted(reporte.tocada.indice for reporte in recolector.registro.reportes)
+    assert recogidos == list(range(8)), (
+        f"se perdieron notas publicadas: se recogieron {recogidos}"
+    )
+    assert guion.peticiones, "no se llamo al endpoint"
+    assert all(url.endswith("/api/piezas/estado") for url in guion.peticiones), (
+        "la pasada se sigue por el mismo endpoint que lee el navegador"
+    )
+
+
+def test_seguir_la_pasada_sigue_leyendo_despues_de_completarse(monkeypatch):
+    """La cola: los ultimos ataques se publican DESPUES de que el cabezal acabe.
+
+    **Mata el mutante `COLA_TRAS_COMPLETAR_S = 0`.** La cadena tarda unos 190 ms en
+    publicar un ataque, asi que la ultima nota del tramo aparece cuando la pasada ya
+    esta completada. Sin cola se perderia SIEMPRE, y el escaparate acusaria a la
+    cadena de algo que hizo bien.
+    """
+    guion = ServidorDeGuion(
+        notas_antes=4, notas_tras_completar=2, cuadros_hasta_completar=5
+    )
+    monkeypatch.setattr("herramientas.gemelo._leer_json", guion)
+
+    recolector, completada = _seguir_la_pasada("http://127.0.0.1:0", duracion_s=0.2)
+
+    assert completada is True
+    recogidos = sorted(reporte.tocada.indice for reporte in recolector.registro.reportes)
+    assert recogidos == [0, 1, 2, 3, 4, 5], (
+        "las notas publicadas tras completarse la pasada tambien se recogen; "
+        f"se recogieron {recogidos}"
+    )
+
+
+def test_seguir_la_pasada_se_rinde_si_la_pasada_no_se_completa(monkeypatch):
+    """Una pasada que no acaba no deja el escaparate colgado para siempre.
+
+    Devuelve `completada=False`, y `main` lo traduce en un codigo distinto de cero:
+    un veredicto sobre una pasada a medias no dice nada de la cadena.
+    """
+    estado = {"repeticion": 1, "instante_s": 0.0, "tocadas": [], "completado": False}
+    monkeypatch.setattr(
+        "herramientas.gemelo._leer_json", lambda url, limite_s=5.0: estado
+    )
+    monkeypatch.setattr("herramientas.gemelo.MARGEN_DE_LA_PASADA_S", 0.1)
+    monkeypatch.setattr("herramientas.gemelo.COLA_TRAS_COMPLETAR_S", 0.0)
+
+    _, completada = _seguir_la_pasada("http://127.0.0.1:0", duracion_s=0.0)
+
+    assert completada is False
+
+
+def test_esperar_al_servidor_distingue_que_contesta_de_que_acepta(monkeypatch):
+    """Se comprueba que el servidor CONTESTA la API, no que el puerto acepte.
+
+    `uvicorn` abre el socket antes de tener la aplicacion lista, asi que una pasada
+    arrancada contra un puerto que acepta pero no responde pierde los primeros
+    cuadros. Por eso se pide `/api/diagnostico` y no se abre un socket a pelo.
+    """
+    intentos = []
+
+    def contesta_a_la_tercera(url: str, limite_s: float = 5.0) -> dict:
+        intentos.append(url)
+        if len(intentos) < 3:
+            raise urllib.error.URLError("conexion rechazada")
+        return {"estado": "ok"}
+
+    monkeypatch.setattr("herramientas.gemelo._leer_json", contesta_a_la_tercera)
+
+    assert _esperar_al_servidor("http://127.0.0.1:0", limite_s=5.0) is True
+    assert len(intentos) == 3
+    assert all(url.endswith("/api/diagnostico") for url in intentos)
+
+
+def test_esperar_al_servidor_se_rinde_y_lo_dice(monkeypatch):
+    """Si no contesta nunca, se agota el limite y se devuelve False.
+
+    Quien llama tiene que poder decir «el servidor no contesto» en vez de arrancar
+    una pasada contra nada.
+    """
+
+    def nunca(url: str, limite_s: float = 5.0) -> dict:
+        raise urllib.error.URLError("conexion rechazada")
+
+    monkeypatch.setattr("herramientas.gemelo._leer_json", nunca)
+
+    assert _esperar_al_servidor("http://127.0.0.1:0", limite_s=0.2) is False
+
+
+class DemostracionDeMentira:
+    """Un doble de `_correr_la_demostracion`: devuelve el veredicto que se le diga.
+
+    Es el seam que permite probar las decisiones de `main` -el codigo de salida y
+    el quedarse vivo- sin levantar `uvicorn`, sin abrir un puerto y sin pagar los
+    31 s de la pieza de demostracion.
+    """
+
+    def __init__(self, veredicto, completada: bool = True) -> None:
+        self.veredicto = veredicto
+        self.completada = completada
+        self.veces = 0
+
+    def __call__(self, pieza, interpretacion, plan, puerto):
+        self.veces += 1
+        if self.veredicto is None:
+            return None
+        return self.veredicto, self.completada
+
+
+def _main_con_doble(monkeypatch, argv, veredicto, completada=True):
+    """Corre `main` con la demostracion y la espera sustituidas. Devuelve lo visto."""
+    demostracion = DemostracionDeMentira(veredicto, completada)
+    miradas = []
+    monkeypatch.setattr("herramientas.gemelo._correr_la_demostracion", demostracion)
+    monkeypatch.setattr(
+        "herramientas.gemelo._quedarse_vivo", lambda: miradas.append(True)
+    )
+    codigo = main(argv)
+    return codigo, demostracion, miradas
+
+
+def test_sin_salir_al_acabar_el_escaparate_se_queda_vivo(monkeypatch, capsys):
+    """**El requisito central del brief, y no tenia ni una prueba.**
+
+    Mata el mutante `if False:` sobre `--salir-al-acabar`: con ese cambio el
+    escaparate termina siempre solo, que es lo contrario de lo que el brief pide y
+    de lo que la cabecera del modulo promete. Su razon de ser es que alguien MIRE:
+    un escaparate que se cierra en cuanto acaba la pasada no se puede mirar.
+    """
+    codigo, demostracion, miradas = _main_con_doble(
+        monkeypatch, [], _veredicto()
+    )
+
+    assert demostracion.veces == 1
+    assert miradas == [True], "sin --salir-al-acabar el escaparate tiene que quedarse"
+    assert codigo == 0
+    assert "LIMPIO" in capsys.readouterr().out
+
+
+def test_con_salir_al_acabar_el_escaparate_termina(monkeypatch, capsys):
+    """Y con la bandera termina, que es la forma de usarlo desde un script."""
+    codigo, demostracion, miradas = _main_con_doble(
+        monkeypatch, ["--salir-al-acabar"], _veredicto()
+    )
+
+    assert demostracion.veces == 1
+    assert miradas == [], "con --salir-al-acabar no se espera a nadie"
+    assert codigo == 0
+    assert "LIMPIO" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "veredicto, completada, esperado",
+    [
+        (_veredicto(), True, 0),
+        (_veredicto(excluidas=((1, 3),)), True, 0),
+        (_veredicto(perdidas=((1, 2),)), True, 1),
+        (_veredicto(mal_adjudicadas=((1, 2, 60),)), True, 1),
+        (_veredicto(), False, 1),
+    ],
+)
+def test_el_codigo_que_main_devuelve_sale_del_veredicto(
+    monkeypatch, veredicto, completada, esperado
+):
+    """**Mata el mutante `codigo = 0` fijo en `main`.**
+
+    `codigo_de_salida` ya estaba probada sobre un `Veredicto` armado a mano, pero el
+    CABLEADO -que `main` use esa funcion y no se invente el numero- no lo miraba
+    nadie. El ultimo caso es el que la funcion sola no puede cubrir: una pasada que
+    no se completa devuelve distinto de cero aunque el veredicto salga limpio,
+    porque un veredicto sobre media pasada no dice nada de la cadena.
+    """
+    codigo, _, _ = _main_con_doble(
+        monkeypatch, ["--salir-al-acabar"], veredicto, completada=completada
+    )
+
+    assert codigo == esperado
+
+
+def test_si_la_demostracion_no_se_puede_montar_main_devuelve_dos(monkeypatch, capsys):
+    """Un fallo de montaje no es un veredicto sucio: es otro codigo.
+
+    Dos y no uno, para que un script pueda distinguir «la cadena tiene hallazgos»
+    de «la demostracion no llego a correr». Y no se imprime ningun resumen: un
+    resumen de una pasada que no existio seria el peor informe posible.
+    """
+    codigo, _, miradas = _main_con_doble(
+        monkeypatch, ["--salir-al-acabar"], None
+    )
+
+    assert codigo == 2
+    assert miradas == [], "sin pasada no hay nada que mirar"
+    assert "GEMELO" not in capsys.readouterr().out
+
+
+def test_una_linea_de_ordenes_imposible_no_llega_a_levantar_nada(monkeypatch, capsys):
+    """El tramo del reves se rechaza antes de tocar el puerto, con codigo 2."""
+    demostracion = DemostracionDeMentira(_veredicto())
+    monkeypatch.setattr("herramientas.gemelo._correr_la_demostracion", demostracion)
+
+    codigo = main(["--bucle", "9-2", "--salir-al-acabar"])
+
+    assert codigo == 2
+    assert demostracion.veces == 0, "no se monta nada con una linea de ordenes mala"
+    assert "9-2" in capsys.readouterr().out

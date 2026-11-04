@@ -1,6 +1,6 @@
 """La sesion ENTERA a tiempo real: el gemelo tocando por donde entra el audio.
 
-Lo que estas dos pruebas ejercitan y la cadena directa NO puede ejercitar: el
+Lo que estas tres pruebas ejercitan y la cadena directa NO puede ejercitar: el
 hilo de la captura, el `BufferCircular`, el hilo de trabajo de `Sesion` con su
 cadencia de analisis, el reloj de PARED de la pasada, `SesionCarril` y el
 `ConductorDeEstudio` movido por los dos hilos a la vez. La cadena directa recorre
@@ -8,11 +8,12 @@ el audio en tiempo virtual -de ahi que corra en cada suite- y por eso no ve nada
 de eso. Aqui se paga el tiempo en el reloj: una pasada de 3,1 s de audio cuesta
 unos 3,6 s de reloj.
 
-**UNA SOLA PASADA PARA LAS DOS PRUEBAS**, en un fixture de modulo. Es la unica
+**UNA SOLA PASADA PARA LAS TRES PRUEBAS**, en un fixture de modulo. Es la unica
 decision de este archivo que esta tomada por el coste: montar la pasada dos veces
-costaria siete segundos de reloj para medir dos veces lo mismo. Las dos pruebas
-miran la misma pasada desde sitios distintos, igual que `_pasada_del_oraculo`
-devuelve tres cosas en `tests/test_gemelo_oraculo.py`.
+costaria once segundos de reloj para medir tres veces lo mismo. Las tres pruebas
+miran la misma pasada desde sitios distintos -el veredicto, el acuerdo con la
+cadena directa y el reloj-, igual que `_pasada_del_oraculo` devuelve tres cosas en
+`tests/test_gemelo_oraculo.py`.
 
 **LA PIEZA VA AL TEMPO 160 Y ESO ESTA MEDIDO, no elegido por gusto.** Son 3,1 s
 -el tamaño que el brief pide- y, sobre 22 pasadas, es el tempo en que la sesion
@@ -325,6 +326,21 @@ def test_la_sesion_completa_concuerda_con_la_cadena_directa(pasada):
 
     assert len(viva.registro.reportes) == len(registro_directo.reportes) == NOTAS
     assert viva.veredicto.mal_adjudicadas == directo.mal_adjudicadas == ()
+
+    # Los dos campos que la T11 aflojo a un valor por omision quedan afirmados por
+    # los dos lados, que es lo que hace del aflojamiento un contrato y no un
+    # descuido: `pasar_por_la_cadena` los da SIEMPRE -hay nueve sitios en la suite
+    # que hacen `registro.estado_final.X` sin comprobar el None, y todos reciben
+    # registros de ahi- y el recolector de la sesion completa, que recoge del estado
+    # publicado, no los conoce nunca.
+    assert registro_directo.estado_final is not None, (
+        "la cadena directa conduce al conductor, asi que tiene el estado final: si "
+        "algun dia no lo tuviera, los nueve accesos sin comprobar de la suite "
+        "empezarian a reventar"
+    )
+    assert registro_directo.vueltas != ()
+    assert viva.registro.estado_final is None
+    assert viva.registro.vueltas == ()
 
     diferencia = (
         viva.veredicto.desfase_introducido_ms - directo.desfase_introducido_ms

@@ -73,18 +73,40 @@ from nucleo.piezas.conductor import ConductorDeEstudio
 from nucleo.piezas.estudio import EstadoEstudio, InformeDePasada
 from nucleo.piezas.seguimiento import NotaTocada
 
-# El salto por omision es el de PRODUCCION, y sale de `nucleo.analisis.pipeline`,
-# que es donde vive la cadencia del analisis: la misma constante que alimenta el
-# hilo de trabajo del servidor alimenta esta cadena, que es la unica forma de que
-# el gemelo verifique la cadencia que produccion usa de verdad.
+# El salto por omision es el NOMINAL, y sale de `nucleo.analisis.pipeline`, que es
+# donde vive la cadencia del analisis: la misma constante que alimenta el hilo de
+# trabajo del servidor alimenta esta cadena, de modo que las dos piden la misma
+# cadencia.
 #
-# NO es negociable, y 512 muestras no sirven aunque sean mas rapidas: las
-# constantes del detector estan acopladas a estos 21 ms
+# **PEDIRLA NO ES CORRERLA, Y ESTO ESTA MEDIDO (Task 11).** El hilo de trabajo del
+# servidor NO corre a estos 21 ms: corre a unos 30 (mediana 29,91 ms sobre 133
+# cuadros seguidos), porque espera con `self._parar.wait(INTERVALO_DE_ANALISIS_S)`
+# y en este equipo `Event.wait(0,021)` tarda 27 ms -macOS agrupa los
+# temporizadores-; analizar la ventana cuesta 0,15 ms, asi que no es el trabajo.
+# Esta cadena, en cambio, recorre el audio a 21 ms EXACTOS.
+#
+# Consecuencia, y hay que leerla antes de citar cualquier milisegundo de esta
+# etapa: **los numeros que salen de aqui subestiman la cadena real en unos 30 ms**.
+# Medido sobre la misma interpretacion por los dos caminos, la sesion completa
+# publica los ataques entre 18 y 44 ms mas tarde que esta cadena. El numero, su
+# causa y lo que hay que hacer con el estan inscritos en
+# `tests/test_gemelo_sesion_completa.py` (cabecera y `DIVERGENCIA_MEDIDA_MS`), que
+# es el unico sitio donde esa divergencia esta vigilada. Lo que este modulo
+# verifica es la cadena a su cadencia nominal; quien quiera la de pared tiene que
+# pasar por el dispositivo simulado (`nucleo.gemelo.dispositivo`).
+#
+# Y EL SALTO SIGUE SIENDO NO NEGOCIABLE, por otra razon que nada de lo anterior
+# toca: las constantes del detector estan acopladas a estos 21 ms
 # -`CUADROS_PARA_NOTA_ESTABLE = 3` son 63 ms a 21 ms y 32 ms a 10,7 ms, y
 # `nucleo/ejercicios/pulsaciones.py` advierte por escrito de que quien cambie la
-# tasa de analisis tiene que revisarlas-, asi que recorrer el audio a otra
-# cadencia es ejercitar un detector que nunca corre. Las sondas del diseño usaron
-# un salto de 512 y por eso sus numeros son indicativos y no de referencia.
+# tasa de analisis tiene que revisarlas-. 512 muestras no sirven aunque sean mas
+# rapidas. Las sondas del diseño usaron un salto de 512 y por eso sus numeros son
+# indicativos y no de referencia.
+#
+# (Que produccion corra a 30 ms cuando sus constantes estan calibradas a 21 es un
+# defecto abierto, no una decision: el arreglo -esperar con plazo acumulado- esta
+# escrito en el informe de la Task 11 y no se hizo ahi porque obliga a remedir la
+# etapa entera.)
 
 
 @dataclass(frozen=True)

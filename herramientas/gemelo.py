@@ -27,6 +27,15 @@ Por eso:
   existe para que el usuario toque la suya desde su disco, y lo que lee es la
   ruta que el usuario da; nada se copia a ninguna parte.
 
+**UN «CON HALLAZGOS» CON EL GEMELO PERFECTO NO ES UN FALLO DEL PRODUCTO, Y EL
+RESUMEN LO DICE.** La sesion completa publica su peor ataque a 236-250 ms de que
+sonara, contra los 250 ms que el detector admite para seguir hablando del mismo
+ataque: no le queda margen, y de ahi salen una o dos notas sin emparejar en algunas
+pasadas. La medida y su causa estan en la Task 11; lo que importa aqui es que el
+aviso se imprime junto al veredicto (ver `al_borde_del_techo_del_detector`) y que
+la tolerancia NO se afloja para que el codigo de salida sea cero: la demostracion
+dice lo que mide.
+
 LA PIEZA SE PONE EN MARCHA POR `SesionCarril.iniciar` Y NO POR
 `/api/piezas/iniciar`, y no es por comodidad: ese endpoint admite dos formas de
 pedir una pieza -un ejercicio del catalogo o una cancion de la biblioteca- y la
@@ -58,7 +67,11 @@ from nucleo.gemelo.dispositivo import (
 from nucleo.gemelo.interprete import Interpretacion, interpretar
 from nucleo.gemelo.perfiles import PERFILES_DE_DESTREZA, PerfilDeDestreza
 from nucleo.gemelo.piezas_de_prueba import pieza_de_demostracion
-from nucleo.gemelo.veredicto import Veredicto, juzgar
+from nucleo.gemelo.veredicto import (
+    TOLERANCIA_DE_EMPAREJAMIENTO_MS,
+    Veredicto,
+    juzgar,
+)
 from nucleo.piezas.compases import pulsos_por_compas
 from nucleo.piezas.estudio import PlanDePasada
 from nucleo.piezas.lectores import importar
@@ -105,6 +118,15 @@ LIMITE_DE_ARRANQUE_S = 15.0
 # Margen sobre la duracion del audio antes de dar la pasada por colgada.
 MARGEN_DE_LA_PASADA_S = 10.0
 
+# Desde que desfase se avisa de que los hallazgos pueden ser el borde del detector.
+#
+# MEDIDO, y es el suelo de lo observado: la sesion completa publica su peor ataque
+# entre 236 y 250 ms, y la cadena directa lo publica a 188. El 230 cae entre los
+# dos, asi que un veredicto sucio con el peor desfase por debajo de 230 ms NO lleva
+# el aviso: ahi todavia quedan 20 ms de margen contra el techo y lo que haya
+# encontrado la cadena es cosa suya. Ver `al_borde_del_techo_del_detector`.
+AVISO_DESDE_MS = 230.0
+
 
 def leer_bucle(texto: str) -> tuple[int, int]:
     """Lee `--bucle` en la forma PRIMERO-ULTIMO. `"17"` es el compas 17 solo.
@@ -139,7 +161,7 @@ def leer_bucle(texto: str) -> tuple[int, int]:
     if ultimo < primero:
         raise ValueError(
             f"El tramo '{texto}' no sirve: el compas {ultimo} va antes del "
-            f"{primero}, y un tramo no se puede tocar del revés"
+            f"{primero}, y un tramo no se puede tocar al reves"
         )
     return primero, ultimo
 
@@ -187,6 +209,32 @@ def codigo_de_salida(veredicto: Veredicto) -> int:
     return 0 if veredicto.limpio else 1
 
 
+def al_borde_del_techo_del_detector(veredicto: Veredicto) -> bool:
+    """Si los hallazgos de este veredicto caben en el margen que ya no hay.
+
+    La sesion completa publica su peor ataque entre 236 y 250 ms despues de que
+    sonara, contra los `TOLERANCIA_DE_EMPAREJAMIENTO_MS` (250 ms) que el detector
+    admite para seguir hablando del mismo ataque: **no le queda margen** (la cadena
+    directa tiene 60 ms). Medido en la Task 11, con la causa -el hilo de analisis
+    de produccion corre a ~30 ms y no a los 21 nominales- en la cabecera de
+    `tests/test_gemelo_sesion_completa.py`.
+
+    Cuando el peor desfase emparejado llega ahi arriba, los hallazgos de una
+    interpretacion PERFECTA no son hallazgos del producto: son ese borde. Y hace
+    falta decirlo donde el usuario lo lee, porque lo que ve si no es «el programa se
+    equivoco de nota».
+
+    NO se afloja la tolerancia para que el veredicto salga limpio: ese borde es un
+    hecho medido de la cadena, y taparlo convertiria la demostracion en un juez
+    complaciente justo donde el usuario lo va a sentir. Lo que se hace es
+    explicarlo.
+    """
+    return (
+        not veredicto.limpio
+        and abs(veredicto.desfase_maximo_ms) >= AVISO_DESDE_MS
+    )
+
+
 def resumen(
     veredicto: Veredicto, pieza: Pieza, perfil: PerfilDeDestreza, completada: bool
 ) -> str:
@@ -197,6 +245,11 @@ def resumen(
     llama "(gemelo)" y el diagnostico lo publica; un informe de una pasada
     simulada que se lea igual que uno de una pasada real es peor que no tener
     informe.
+
+    Y CUANDO LOS HALLAZGOS SON EL BORDE DEL DETECTOR, LO DICE. Ver
+    `al_borde_del_techo_del_detector`: un escaparate cuya razon de ser es que
+    alguien lo mire y opine, que acaba diciendo «CON HALLAZGOS» cuando no hay
+    ningun hallazgo del producto, enseña lo contrario de lo que mide.
     """
     lineas = [
         f"Pasada del GEMELO digital (nadie toco): {NOMBRE_DEL_GEMELO}",
@@ -217,6 +270,25 @@ def resumen(
         lineas.append(
             f"    mal adjudicada: vuelta {vuelta}, nota {indice}, "
             f"la cadena dijo midi {midi}"
+        )
+    if al_borde_del_techo_del_detector(veredicto):
+        lineas.extend(
+            [
+                "",
+                f"  Aviso: el peor reporte llego {veredicto.desfase_maximo_ms:+.1f} ms"
+                f" despues de que la nota sonara, y el techo del detector son"
+                f" {TOLERANCIA_DE_EMPAREJAMIENTO_MS:.0f} ms: pasado ese plazo ya no"
+                " puede atribuir el reporte a esa nota.",
+                "  Con el gemelo PERFECTO esos hallazgos NO son del producto: son ese"
+                " borde. La sesion completa publica sus ataques 18-44 ms mas tarde"
+                " que la cadena directa porque el hilo de analisis corre a ~30 ms y"
+                " no a los 21 nominales (medido en la Task 11), y con eso se queda"
+                " sin margen.",
+                "  Lo que importa de esta pasada es que las"
+                f" {veredicto.notas_tocadas} notas llegaron y la pasada se"
+                " completo. No se ha aflojado ninguna tolerancia para que saliera"
+                " limpia.",
+            ]
         )
     return "\n".join(lineas)
 
@@ -271,7 +343,7 @@ def _esperar_al_servidor(base: str, limite_s: float = LIMITE_DE_ARRANQUE_S) -> b
 
 
 def _construir(
-    pieza: Pieza, interpretacion: Interpretacion, plan: PlanDePasada
+    pieza: Pieza, interpretacion: Interpretacion
 ) -> tuple[object, Sesion, SesionCarril, list[CapturaAudio]]:
     """La aplicacion de produccion con el cable del gemelo enchufado.
 
@@ -280,6 +352,11 @@ def _construir(
     la pieza en vez de leerse del disco porque `SesionCarril.iniciar` rechaza una
     pieza escrita en otra afinacion que la activa, y la demostracion no puede
     depender de la afinacion que el usuario tuviera puesta el martes.
+
+    NO recibe el plan, y antes si: lo pedia en la firma y no lo mencionaba en el
+    cuerpo. El plan se aplica despues, en `carril.iniciar(pieza, plan)`, y un
+    parametro muerto en la funcion que «monta la app con el cable enchufado» hace
+    pensar que el plan entra ahi.
     """
     abrir_stream, listar = dispositivo_simulado(interpretacion)
     capturas: list[CapturaAudio] = []
@@ -432,28 +509,48 @@ def armar_la_pasada(
     return pieza, perfil, interpretacion, plan
 
 
-def main(argv: list[str] | None = None) -> int:
-    """Levanta el escaparate. Devuelve el codigo de salida del proceso."""
-    argumentos = _analizador_de_argumentos().parse_args(argv)
+def _quedarse_vivo() -> None:
+    """Se queda esperando a que el usuario mire. Solo sale con Ctrl+C.
 
-    try:
-        pieza, perfil, interpretacion, plan = armar_la_pasada(argumentos)
-    except (ValueError, OSError) as error:
-        print(f"No se puede montar la demostracion: {error}")
-        return 2
+    **Es la razon de ser del escaparate** y por eso es una funcion y no tres lineas
+    dentro de `main`: asi se puede sustituir en una prueba y afirmar que se la llama
+    sin `--salir-al-acabar` y no se la llama con el. Estando dentro de `main`,
+    cambiar la condicion por `if False:` -o sea, cerrar el escaparate en cuanto
+    acaba la pasada, que es lo contrario de lo que existe para hacer- pasaba la
+    suite entera.
+    """
+    print()
+    print(
+        "La pasada acabo y el escaparate sigue vivo: la pantalla se queda donde "
+        "esta para que puedas mirarla. Ctrl+C para salir."
+    )
+    while True:
+        time.sleep(0.5)
 
+
+def _correr_la_demostracion(
+    pieza: Pieza, interpretacion: Interpretacion, plan: PlanDePasada, puerto: int
+) -> tuple[Veredicto, bool] | None:
+    """Levanta el servidor, mete el audio por el cable y devuelve lo que salio.
+
+    Devuelve `(veredicto, completada)`, o `None` cuando la demostracion no se pudo
+    montar -el servidor no contesta, el cable no entrega audio-, que es otra cosa
+    que un veredicto sucio y `main` lo traduce a otro codigo de salida.
+
+    Esta aparte de `main` para que las decisiones de `main` -el codigo de salida y
+    el quedarse vivo- se puedan probar sin levantar `uvicorn`, sin abrir un puerto
+    y sin pagar los 31 s de la pieza de demostracion. Lo que queda aqui es
+    exactamente lo que no se puede probar sin red: la unica parte del escaparate
+    que la ejecucion real del paso 5 del brief verifica.
+    """
     import uvicorn
 
-    app, sesion, carril, capturas = _construir(pieza, interpretacion, plan)
-    base = f"http://127.0.0.1:{argumentos.puerto}"
+    app, sesion, carril, capturas = _construir(pieza, interpretacion)
+    base = f"http://127.0.0.1:{puerto}"
     servidor = uvicorn.Server(
-        uvicorn.Config(
-            app, host="127.0.0.1", port=argumentos.puerto, log_level="warning"
-        )
+        uvicorn.Config(app, host="127.0.0.1", port=puerto, log_level="warning")
     )
-    hilo = threading.Thread(target=servidor.run, daemon=True)
-    hilo.start()
-    codigo = 1
+    threading.Thread(target=servidor.run, daemon=True).start()
     try:
         if not _esperar_al_servidor(base):
             print(
@@ -461,7 +558,7 @@ def main(argv: list[str] | None = None) -> int:
                 f"{LIMITE_DE_ARRANQUE_S:.0f} s. Si el puerto esta ocupado, prueba "
                 "con --puerto."
             )
-            return 2
+            return None
         diagnostico = sesion.iniciar()
         print(f"Servidor en {base}")
         print(f"Dispositivo: {diagnostico.mensaje}")
@@ -476,28 +573,50 @@ def main(argv: list[str] | None = None) -> int:
             capturas[0], interpretacion, ventana
         ):
             print("El cable del gemelo no entrego audio: no hay pasada que mirar.")
-            return 2
+            return None
         carril.iniciar(pieza, plan)
         recolector, completada = _seguir_la_pasada(base, interpretacion.duracion_s)
-        veredicto = juzgar(interpretacion, recolector.registro)
-        print()
-        print(resumen(veredicto, pieza, perfil, completada))
-        codigo = codigo_de_salida(veredicto) if completada else 1
-
-        if not argumentos.salir_al_acabar:
-            print()
-            print(
-                "La pasada acabo y el escaparate sigue vivo: la pantalla se queda "
-                "donde esta para que puedas mirarla. Ctrl+C para salir."
-            )
-            while True:
-                time.sleep(0.5)
+        return juzgar(interpretacion, recolector.registro), completada
     except KeyboardInterrupt:
         print()
+        return None
     finally:
         carril.detener()
         sesion.detener()
         servidor.should_exit = True
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Levanta el escaparate. Devuelve el codigo de salida del proceso.
+
+    Tres codigos y se distinguen a proposito: 0 si el veredicto sale limpio, 1 si
+    la cadena tiene hallazgos (o la pasada no se completo), y 2 si la demostracion
+    no llego a montarse. Un script tiene que poder diferenciar «la cadena tiene
+    hallazgos» de «esto no corrio».
+    """
+    argumentos = _analizador_de_argumentos().parse_args(argv)
+
+    try:
+        pieza, perfil, interpretacion, plan = armar_la_pasada(argumentos)
+    except (ValueError, OSError) as error:
+        print(f"No se puede montar la demostracion: {error}")
+        return 2
+
+    resultado = _correr_la_demostracion(
+        pieza, interpretacion, plan, argumentos.puerto
+    )
+    if resultado is None:
+        return 2
+    veredicto, completada = resultado
+
+    print()
+    print(resumen(veredicto, pieza, perfil, completada))
+    # Una pasada que no se completo devuelve distinto de cero aunque el veredicto
+    # salga limpio: un veredicto sobre media pasada no dice nada de la cadena.
+    codigo = codigo_de_salida(veredicto) if completada else 1
+
+    if not argumentos.salir_al_acabar:
+        _quedarse_vivo()
     return codigo
 
 
