@@ -25,36 +25,25 @@ podria perder una nota jamas: todo lo perdido se llamaria «excluido».
 **LOS DOS EJES DE TIEMPO.** `EventoTocado.instante_s` esta en el eje del AUDIO,
 con el silencio de cabecera dentro. `ReporteDeLaCadena.instante_pasada_s` esta en
 el eje del CABEZAL: la posicion que el carril pintaba cuando el reporte aparecio.
-No es un cronometro de la pasada, y esto es lo que hace la traduccion menos obvia
-de lo que parece. Esta MEDIDO, no razonado (sonda sobre `escala_de_ocho_notas`
-con `PERFECTO` y el salto de produccion):
+No es un cronometro de la pasada, y eso es lo que hace la traduccion menos obvia
+de lo que parece. Lo que se descuenta son tres cosas, y la de arriba cambio con la
+cadena (la historia entera y sus numeros estan en `_adelantos_por_vuelta`):
 
-* La cabecera tecnica (`VENTANAS_DE_CABECERA`, 128 ms con guitarra estandar a
-  48 kHz) NO se descuenta. La cadena arranca con `fijar_la_mirada(0.0)` en la
-  muestra cero y el cabezal avanza desde ahi con cada mirada, asi que cuando la
-  primera nota suena -128 ms dentro del audio- el cabezal ya marca 128 ms. Los
-  reportes salen entonces entre +71 y +188 ms de su ataque, mediana +130 ms, que
-  es lo que la cadena tarda en PUBLICAR un ataque (unos 20 ms de deteccion mas
-  unos 165 de estabilizacion: mediana de 5 del suavizador, 60 ms de espera y tres
-  cuadros de racha). Descontando la cabecera salian +199 a +316 ms: 128 ms de
-  sesgo inventado por la traduccion.
-* La cuenta atras SI se descuenta, porque ahi los dos relojes se separan de
-  verdad: mientras dura, `SesionDeEstudio` recoloca el cabezal en el inicio en
-  cada mirada y en cada cuadro, asi que el cabezal se queda quieto mientras el
-  audio del gemelo sigue corriendo.
-* **En un bucle, el cabezal VUELVE ATRAS en cada vuelta**, asi que el reporte de
-  la nota 0 de la vuelta 3 llega con el cabezal en 0,2 s y no en 10 s. Medido:
-  con tres vueltas de la escala, los reportes de las vueltas 2 y 3 empiezan otra
-  vez cerca de cero (0,189 y 0,252). Sin descontarlo, un bucle salia con todas
-  las notas de las vueltas 2 y 3 perdidas e inventadas, y el arreglo del bucle de
-  la T7 no habria tenido como medirse.
-* **El cabezal de un tramo que no empieza en el compas 1 no arranca en cero**:
-  arranca en el instante escrito de ese compas. Medido con el tramo 2-2 de la
-  escala: los reportes de la vuelta 1 caen en 2,6 s mientras los ataques estan a
-  0,128 s del audio. Ese instante se suma, y por eso `Interpretacion` lleva dentro
-  el tramo, el factor de tempo, las vueltas y la cuenta atras con que se toco: sin
-  ellos esta traduccion no se puede hacer, y las secciones de una cancion casi
-  nunca empiezan en el compas 1.
+* **El silencio de cabecera entero.** Desde la T6d la cadena NO deja correr el
+  cabezal mientras se llena la primera ventana: la cabecera tecnica no es tiempo
+  musical, asi que el cabezal marca cero cuando suena la nota que la pieza escribe
+  en cero. Y la cuenta atras tambien se descuenta, porque mientras dura
+  `SesionDeEstudio` recoloca el cabezal en el inicio en cada mirada y en cada
+  cuadro. Las dos juntas son `silencio_de_cabecera_s`.
+* **Lo que ocupan las vueltas anteriores**, porque en un bucle el cabezal VUELVE
+  ATRAS en cada vuelta: el reporte de la nota 0 de la vuelta 3 llega con el
+  cabezal cerca de cero y no en el segundo diez.
+* **Menos el inicio del tramo**, que se SUMA: el cabezal de una pasada que estudia
+  del compas 2 al 2 arranca en el instante escrito de ese compas (medido: los
+  reportes caen en 2,4 s y pico). Por eso `Interpretacion` lleva dentro el tramo,
+  el factor de tempo, las vueltas y la cuenta atras con que se toco; sin ellos
+  esta traduccion no se puede hacer, y las secciones de una cancion casi nunca
+  empiezan en el compas 1.
 
 Queda UNA condicion que el veredicto no puede comprobar, y por eso se escribe: la
 cuenta atras del plan de la pasada y los `segundos_de_cuenta_atras` de la
@@ -278,17 +267,19 @@ def _adelantos_por_vuelta(
     """Lo que hay que descontarle al eje del audio, vuelta a vuelta, para caer en
     el eje del cabezal.
 
-    **Esta traduccion esta MEDIDA, y la intuicion de que hay que restar el
-    silencio de cabecera entero es la equivocada.** Queda escrito aqui con los
-    numeros porque es la trampa de este modulo y el proximo que lo lea va a tener
-    la misma intuicion.
+    **ESTA TRADUCCION ESTA MEDIDA, Y HUBO DOS CADENAS. La historia completa esta
+    aqui porque es la trampa del modulo y porque las dos mitades parecen
+    contradecirse.**
 
     Lo que `instante_pasada_s` lleva dentro no es un cronometro de la pasada: es
-    la POSICION DEL CABEZAL cuando el reporte se publico. Y el cabezal arranca en
-    la muestra cero -la cadena hace `fijar_la_mirada(0.0)`- y avanza con cada
-    mirada, asi que **durante la cabecera tecnica el cabezal ya corre**: cuando la
-    primera nota suena, 128 ms dentro del audio, el cabezal ya marca 128 ms.
-    Sonda sobre la escala de ocho notas con `PERFECTO` y el salto de produccion:
+    la POSICION DEL CABEZAL cuando el reporte se publico.
+
+    *La cadena de antes (T4).* Hacia `fijar_la_mirada(0.0)` en la muestra cero y
+    el cabezal avanzaba con cada mirada, asi que **durante la cabecera tecnica el
+    cabezal ya corria**: cuando sonaba la primera nota, 128 ms dentro del audio,
+    el cabezal ya marcaba 128 ms. Con esa cadena, descontar la cabecera era METER
+    un sesgo de 128 ms, no quitarlo. Sonda sobre la escala de ocho notas con
+    `PERFECTO` y el salto de produccion:
 
         ataque(audio)  cabezal al publicar   crudo    restando la cabecera
             0,1280           0,3163        +188,3 ms       +316,3 ms
@@ -297,22 +288,36 @@ def _adelantos_por_vuelta(
             ...              ...            ...              ...
                                    mediana +130 ms      mediana +258 ms
 
-    La columna cruda (mediana +130 ms) es lo que la cadena tarda en PUBLICAR un
-    ataque: ~20 ms de deteccion mas ~165 de estabilizacion. La otra pasa del techo
-    del propio detector (250 ms) y es un sesgo inventado por la traduccion.
+    Y la comprobacion independiente, que es la que zanjo el asunto entonces: el
+    `desfase_s` que la cadena firmaba para la nota 0 era **148,3 ms = 128 de
+    cabecera + 20,3 de deteccion**. Si el cabezal hubiera ido 128 ms por DETRAS
+    del audio, ese desfase habria salido 20,3. Salio 148,3.
 
-    La comprobacion independiente, que es la que zanja el asunto: el `desfase_s`
-    que la cadena firma para la nota 0 es **148,3 ms = 128 de cabecera + 20 de
-    deteccion**. Si el cabezal fuera 128 ms por DETRAS del audio, ese desfase
-    habria salido 20 ms. Salio 148: el cabezal va con el audio, y restar la
-    cabecera es meter el sesgo, no quitarlo.
+    *Por que la cadena cambio (T6d).* Ese 148,3 era el defecto: el seguidor
+    clasificaba las OCHO notas de una interpretacion PERFECTA como «tarde» y el
+    oraculo sacaba 0 limpias de 8. La cabecera tecnica no es tiempo musical -es el
+    silencio que el gemelo necesita para que la primera ventana llegue completa- y
+    cobrarsela al interprete convertia al oraculo en un interprete tarde, con lo
+    que dejaba de servir para distinguir un defecto de la cadena. Asi que la
+    cadena ya no mueve el cabezal durante ese llenado.
 
-    Lo que si se descuenta son las tres cosas en las que los dos ejes se separan
-    de verdad, y las tres salen de los argumentos que `Interpretacion` registra:
+    *La cadena de ahora.* El cabezal marca cero cuando suena la nota que la pieza
+    escribe en cero, y por tanto **si hay que descontar el silencio de cabecera
+    entero**. Remedido, con el camino A del detector ya arreglado (T6c): el
+    `desfase_s` de la nota 0 es +20,3 ms -la deteccion sola- y el retraso de
+    publicacion que este modulo firma tiene mediana +152,3 ms y maximo +188,3.
+    Ese retraso NO cambio con la alineacion, y tenia que no cambiar: los dos ejes
+    se movieron juntos, asi que la distancia entre ellos es la misma.
 
-    * La cuenta atras, en TODAS las vueltas: mientras dura, `SesionDeEstudio`
-      recoloca el cabezal en el inicio en cada mirada y en cada cuadro, asi que se
-      queda quieto mientras el audio sigue corriendo.
+    Las dos mediciones son correctas y no se contradicen: cada una midio la cadena
+    que habia. Lo que cambio fue la cadena.
+
+    Los otros dos terminos:
+
+    * La cuenta atras se descuenta aparte del resto de la cabecera, porque el
+      estudio la modela: mientras dura, recoloca el cabezal en el inicio en cada
+      mirada y en cada cuadro. Va dentro de `silencio_de_cabecera_s` en la
+      primera vuelta y se repite en cada vuelta del bucle.
     * Lo que ocupan las vueltas anteriores (cuenta atras mas tramo), porque el
       cabezal vuelve atras en cada vuelta.
     * Y en sentido contrario SE SUMA el inicio del tramo, porque el cabezal de una
@@ -329,7 +334,7 @@ def _adelantos_por_vuelta(
 
     total = max(interpretacion.repeticiones, max(vueltas, default=1))
     return {
-        vuelta: cuenta_atras_s
+        vuelta: interpretacion.silencio_de_cabecera_s
         + (vuelta - 1) * (cuenta_atras_s + tramo_s)
         - inicio_tramo_s
         for vuelta in range(1, total + 1)

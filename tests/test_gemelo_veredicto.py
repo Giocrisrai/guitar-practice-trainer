@@ -64,7 +64,12 @@ FUENTE_DEL_VEREDICTO = (
 # Lo que la cadena tardo en PUBLICAR cada uno de los ocho ataques de
 # `escala_de_ocho_notas` interpretada por `PERFECTO`, medido con el salto de
 # produccion. Es el numero que decide si una holgura de emparejamiento sirve.
-RETRASOS_MEDIDOS_MS = (188.3, 71.3, 164.3, 131.3, 98.3, 128.3, 74.3, 167.3)
+#
+# Remedido en la T6d, con el camino A del detector ya arreglado (T6c) y el cabezal
+# alineado: la mediana es +152,3 ms y el maximo +188,3. El retraso de publicacion
+# NO cambio con la alineacion -los dos ejes se movieron juntos- sino con el
+# arreglo del detector, que hace esperar a que la racha cuaje.
+RETRASOS_MEDIDOS_MS = (188.3, 113.3, 164.3, 131.3, 140.3, 170.3, 116.3, 167.3)
 
 # Las REGLAS del seguidor: funciones que deciden si una nota valio. No son campos
 # de `NotaTocada`, asi que no se pueden derivar, y van a mano.
@@ -145,10 +150,14 @@ def _reporte(
 def _adelanto_s(interpretacion: Interpretacion, vuelta: int) -> float:
     """Cuanto va el eje del audio por delante del eje del cabezal en esa vuelta.
 
-    La cuenta atras, mas lo que ocupan las vueltas anteriores, menos el instante
-    en que empieza el tramo -que es donde el cabezal arranca cuando la pasada no
-    estudia desde el compas 1-. La cabecera tecnica NO entra: durante ella el
-    cabezal ya corre.
+    El silencio de cabecera ENTERO -cabecera tecnica mas cuenta atras-, mas lo que
+    ocupan las vueltas anteriores, menos el instante en que empieza el tramo, que
+    es donde el cabezal arranca cuando la pasada no estudia desde el compas 1.
+
+    La cabecera tecnica entra desde la T6d: la cadena ya no deja correr el cabezal
+    durante el llenado de la primera ventana, asi que el cabezal marca cero cuando
+    suena la nota que la pieza escribe en cero. Antes de ese arreglo NO entraba, y
+    las dos cosas son coherentes: lo que se traduce es la cadena que hay.
 
     El tramo se mide con `pulsos_del_compas`, que es el mismo ayudante con el que
     `SesionDeEstudio._inicio_s` coloca el cabezal, y no repitiendo la aritmetica
@@ -162,7 +171,11 @@ def _adelanto_s(interpretacion: Interpretacion, vuelta: int) -> float:
     inicio_tramo_s = pulsos_a_segundos(desde, pieza.tempo) / factor
     tramo_s = pulsos_a_segundos(hasta - desde, pieza.tempo) / factor
     cuenta_atras = interpretacion.segundos_de_cuenta_atras
-    return cuenta_atras + (vuelta - 1) * (cuenta_atras + tramo_s) - inicio_tramo_s
+    return (
+        interpretacion.silencio_de_cabecera_s
+        + (vuelta - 1) * (cuenta_atras + tramo_s)
+        - inicio_tramo_s
+    )
 
 
 def _registro(*reportes: ReporteDeLaCadena) -> RegistroDeLaCadena:
@@ -272,25 +285,33 @@ def test_el_desfase_lleva_signo():
     assert pronto.desfase_maximo_ms == pytest.approx(-40.0, abs=0.5)
 
 
-def test_los_dos_ejes_de_tiempo_se_traducen_sin_sesgo():
-    """El eje del audio y el de la pasada se traducen por la CUENTA ATRAS, y no
-    por el silencio de cabecera entero.
+def test_los_dos_ejes_de_tiempo_se_traducen_por_el_silencio_de_cabecera():
+    """El eje del audio y el del cabezal se traducen por el silencio de cabecera
+    ENTERO, cabecera tecnica incluida, y esa es la historia completa.
 
-    Medido sobre la cadena de verdad (escala de ocho notas, `PERFECTO`, salto de
-    produccion): el reloj de la pasada arranca en la muestra cero -la cadena hace
-    `fijar_la_mirada(0.0)`- y avanza 1:1 con el audio, cabecera tecnica incluida,
-    porque durante esos 128 ms el cabezal ya corre. Los reportes salen entonces
-    entre 71 y 188 ms despues de su ataque, mediana 130, que es la latencia real
-    del detector. Restando la cabecera entera salian entre 199 y 316, o sea 128 ms
-    de sesgo inventado por la traduccion, por encima del techo declarado del
-    detector.
+    **Hubo dos cadenas y esta prueba cambio de numero con ella.** Antes de la T6d,
+    la cadena hacia `fijar_la_mirada(0.0)` en la muestra cero y el cabezal corria
+    durante la cabecera tecnica, asi que NO habia que descontarla: medido, los
+    reportes salian entre +71 y +188 ms de su ataque y descontandola salian entre
+    +199 y +316, o sea 128 ms de sesgo inventado. La comprobacion independiente de
+    entonces: el `desfase_s` que la cadena firmaba para la nota 0 era 148,3 ms =
+    128 de cabecera + 20 de deteccion; si el cabezal hubiera ido 128 ms por
+    detras, habria sido 20.
 
-    La cuenta atras es otra cosa: el estudio CONGELA el cabezal mientras dura
-    (`SesionDeEstudio.avanzar` recoloca el reloj en el inicio en cada mirada), asi
-    que ahi los dos relojes si se separan, y por eso es la unica parte del
-    silencio de cabecera que se descuenta. Esta prueba afirma los dos casos con el
-    mismo retraso de 40 ms: si la traduccion se equivoca, uno de los dos sale
-    desviado por su termino.
+    La T6d cambio la cadena, y por una razon que no es de medida sino de diseño: la
+    cabecera tecnica NO ES TIEMPO MUSICAL -es el silencio que el gemelo necesita
+    para que la primera ventana llegue completa-, y cobrarsela al interprete hacia
+    que el guitarrista PERFECTO tocara 128 ms tarde por construccion y que el
+    oraculo sacara 0 notas limpias de 8. Ahora la cadena no mueve el cabezal
+    durante ese llenado, el `desfase_s` de la nota 0 es +20,3 ms -la deteccion
+    sola- y el oraculo saca 7 limpias de 8.
+
+    Asi que hoy se descuenta el silencio de cabecera entero: la cabecera tecnica
+    porque la cadena la alinea, y la cuenta atras porque el estudio congela el
+    cabezal mientras dura. Esta prueba afirma los dos terminos con el mismo
+    retraso de 40 ms: si uno de los dos se cae, su caso sale desviado por su
+    cantidad. El de la cuenta atras lo ancla ademas, fuera de esta formula, la
+    prueba que pasa por la cadena de verdad.
     """
     sin_cuenta = _interpretacion()
     con_cuenta = _interpretacion(segundos_de_cuenta_atras=1.0)
@@ -376,11 +397,11 @@ def test_la_tolerancia_empareja_y_no_juzga():
 
 def test_apretar_la_tolerancia_pone_el_oraculo_rojo_por_construccion():
     """Con los retrasos MEDIDOS de la cadena, una tolerancia de 120 ms pierde
-    cinco de ocho notas de un interprete perfecto.
+    seis de ocho notas de un interprete perfecto.
 
     Los ocho retrasos son los que la sonda midio sobre `escala_de_ocho_notas` con
     `PERFECTO` y el salto de produccion: lo que la cadena tarda en PUBLICAR cada
-    ataque, que es lo que `instante_pasada_s` lleva dentro. Cinco de los ocho pasan
+    ataque, que es lo que `instante_pasada_s` lleva dentro. Seis de los ocho pasan
     de 120 ms.
 
     Esta prueba existe para que nadie «arregle» un oraculo rojo apretando la
@@ -400,14 +421,14 @@ def test_apretar_la_tolerancia_pone_el_oraculo_rojo_por_construccion():
     )
 
     apretada = juzgar(interpretacion, registro, tolerancia_de_emparejamiento_ms=120.0)
-    assert len(apretada.perdidas) == 5
-    assert apretada.inventadas == 5
+    assert len(apretada.perdidas) == 6
+    assert apretada.inventadas == 6
 
     honesta = juzgar(interpretacion, registro)
     assert honesta.perdidas == ()
     assert honesta.inventadas == 0
     assert honesta.limpio is True
-    assert honesta.desfase_introducido_ms == pytest.approx(129.8, abs=0.5)
+    assert honesta.desfase_introducido_ms == pytest.approx(152.3, abs=0.5)
     assert honesta.desfase_maximo_ms == pytest.approx(188.3, abs=0.5)
 
 
@@ -559,9 +580,12 @@ def test_un_tramo_que_no_empieza_en_el_compas_uno_se_juzga_bien():
     registro = _todo_reportado(interpretacion, 0.030)
 
     assert [evento.indice_pretendido for evento in interpretacion.eventos] == [4, 5, 6, 7]
-    # 2,4 del inicio del tramo + 0,128 de cabecera tecnica (que el cabezal
-    # recorre) + los 30 ms de retraso del reporte.
-    assert registro.reportes[0].instante_pasada_s == pytest.approx(2.4 + 0.128 + 0.030)
+    # 2,4 del inicio del tramo + los 30 ms de retraso del reporte, y nada mas.
+    # Los 0,128 de cabecera tecnica estaban aqui antes de la T6d, cuando el
+    # cabezal corria durante el llenado de la primera ventana; ahora la cadena lo
+    # alinea, asi que la cabecera ya no esta en este eje. Si vuelve a aparecer, es
+    # que alguien deshizo la alineacion.
+    assert registro.reportes[0].instante_pasada_s == pytest.approx(2.4 + 0.030)
 
     veredicto = juzgar(interpretacion, registro)
 
@@ -749,7 +773,10 @@ def test_un_reporte_justo_en_el_techo_todavia_habla_del_ataque():
     """
     base = _interpretacion()
     evento = replace(base.eventos[0], instante_s=1.0)
-    interpretacion = replace(base, eventos=(evento,))
+    # Y sin silencio de cabecera, para que la traduccion del eje sea una resta de
+    # cero y no meta un bit de redondeo en el borde que se mide aqui. Lo que esta
+    # prueba afirma es la frontera de la tolerancia, no la traduccion.
+    interpretacion = replace(base, eventos=(evento,), silencio_de_cabecera_s=0.0)
     techo_s = TOLERANCIA_DE_EMPAREJAMIENTO_MS / 1000.0
     assert techo_s == 0.25
 

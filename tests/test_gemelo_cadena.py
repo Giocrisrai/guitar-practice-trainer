@@ -157,15 +157,23 @@ def pieza_de_bajo():
     )
 
 
-def un_segundo_de_audio(pieza=None):
-    """Una interpretacion de exactamente FS muestras, para contar cuadros."""
+def un_segundo_de_audio(pieza=None, silencio_de_cabecera_s=0.0):
+    """Una interpretacion de exactamente FS muestras, para contar cuadros.
+
+    `silencio_de_cabecera_s` es lo que la cadena descuenta del eje del cabezal, y
+    por omision es CERO, que es lo que un buffer de silencio armado a mano no
+    tiene. Con cero, la cadena descuenta una ventana -lo minimo, para no cobrarle
+    a nadie el llenado del primer cuadro- y los instantes de los cuadros caen en
+    el principio de cada ventana. Las pruebas que quieren ver la ventana del
+    perfil, o el descuento de verdad, piden una cabecera mas larga que la ventana.
+    """
     return Interpretacion(
         pieza=pieza or escala_de_ocho_notas(),
         muestras=np.zeros(FS, dtype=np.float32),
         eventos=(),
         frecuencia_muestreo=FS,
         duracion_s=1.0,
-        silencio_de_cabecera_s=0.0,
+        silencio_de_cabecera_s=silencio_de_cabecera_s,
     )
 
 
@@ -209,9 +217,11 @@ def conductor_de_verdad(pieza=None, plan=None):
 def llamadas_de_los_cuadros(doble: ConductorDeDoble) -> list[tuple[str, float]]:
     """Las llamadas de `doble` fechadas en un instante de cuadro, en orden.
 
-    Deja fuera las miradas que llenan la primera ventana, que caen en multiplos
-    del salto y nunca coinciden con un instante de cuadro (el cuadro va desplazado
-    por la ventana, que no es multiplo del salto).
+    Dejaba fuera las miradas con que la T4 rellenaba el llenado de la primera
+    ventana. La T6d se llevo ese relleno -el cabezal ya no corre mientras la
+    ventana se llena-, asi que hoy no hay nada que dejar fuera; el filtro se queda
+    porque sigue siendo la forma de afirmar que la cadena no llama al conductor
+    con instantes que no son de ningun cuadro.
     """
     instantes = set(doble.instantes_observados)
     return [llamada for llamada in doble.llamadas if llamada[1] in instantes]
@@ -220,40 +230,74 @@ def llamadas_de_los_cuadros(doble: ConductorDeDoble) -> list[tuple[str, float]]:
 # -- el reloj -----------------------------------------------------------------
 
 
-def test_el_instante_de_cada_ventana_es_su_final():
-    """El primero es `ventana / fs`, y de ahi en adelante un salto cada vez.
+def test_el_instante_de_cada_ventana_es_su_final_menos_la_cabecera():
+    """El instante de un cuadro es el FINAL de su ventana, descontada la cabecera.
 
-    Es la convencion que la spec §3.4 MIDIO con una sonda: principio de la
-    ventana da -78,7 ms de error, centro -36,0 ms y final +6,7 ms, que es la
-    latencia propia del detector y debe aparecer. Con el centro, el gemelo
-    acusaria a la cadena de adelantar cada nota 36 ms y toda asercion de desfase
-    quedaria corrupta.
+    Las dos mitades importan y se afirman por separado.
+
+    El FINAL de la ventana, y no su centro ni su principio, es la convencion que
+    la spec §3.4 MIDIO con una sonda: principio da -78,7 ms de error, centro
+    -36,0 ms y final +6,7 ms, que es la latencia propia del detector y debe
+    aparecer. Con el centro, el gemelo acusaria a la cadena de adelantar cada nota
+    36 ms y toda asercion de desfase quedaria corrupta.
+
+    El DESCUENTO de la cabecera es de la T6d: la cabecera tecnica del gemelo no es
+    tiempo musical, asi que el cabezal no corre mientras la primera ventana se
+    llena. Con una cabecera de 0,5 s -mas larga que la ventana, para que el
+    descuento sea el de la cabecera y no el minimo de una ventana-, los veinte
+    primeros cuadros caen enteros dentro de ella y cuentan el instante CERO: sus
+    miradas no mueven el cabezal ni un milisegundo. El cuadro 21 es el primero
+    cuya ventana acaba despues de la cabecera, y lo que marca es exactamente lo
+    que se sale.
+
+    Con el principio de la ventana en vez del final, el cuadro 21 marcaria 85,3 ms
+    menos y la prueba se cae, que es lo que la hace falsable.
     """
     doble = ConductorDeDoble()
     analizador = Analizador(GUITARRA, frecuencia_muestreo=FS)
+    cabecera_s = 0.5
 
-    pasar_por_la_cadena(un_segundo_de_audio(), doble, analizador=analizador)
+    pasar_por_la_cadena(
+        un_segundo_de_audio(silencio_de_cabecera_s=cabecera_s),
+        doble,
+        analizador=analizador,
+    )
 
     instantes = doble.instantes_observados
-    # La guarda es por LO BAJO y con dos: con un solo cuadro, la asercion de las
-    # diferencias compara una lista vacia y pasa sin mirar nada.
     assert len(instantes) >= 2, f"la cadena observo {len(instantes)} cuadros"
-    assert instantes[0] == pytest.approx(VENTANA / FS), (
-        "el primer instante tiene que ser el FINAL de la primera ventana "
-        f"({VENTANA / FS:.4f} s), no su centro ni su principio"
+
+    dentro = [
+        cuadro
+        for cuadro in range(len(instantes))
+        if (cuadro * SALTO_DE_PRODUCCION + VENTANA) / FS <= cabecera_s
+    ]
+    assert len(dentro) == 20, "con 0,5 s de cabecera son veinte cuadros dentro"
+    assert instantes[: len(dentro)] == [0.0] * len(dentro), (
+        "los cuadros que caben dentro de la cabecera no mueven el cabezal"
     )
-    diferencias = np.diff(instantes)
+
+    primero_fuera = len(dentro)
+    assert instantes[primero_fuera] == pytest.approx(
+        (primero_fuera * SALTO_DE_PRODUCCION + VENTANA) / FS - cabecera_s
+    ), "el primer cuadro que se sale marca lo que se sale, contado desde su FINAL"
+    diferencias = np.diff(instantes[primero_fuera:])
     assert diferencias == pytest.approx(SALTO_DE_PRODUCCION / FS), (
         "entre dos cuadros consecutivos hay exactamente un salto"
     )
 
 
-def test_la_mirada_se_fija_en_el_origen_del_audio():
-    """El reloj virtual arranca en la muestra cero, y la cadena lo dice.
+def test_la_mirada_se_fija_en_el_origen_del_eje_del_cabezal():
+    """El eje del cabezal arranca en cero, y la cadena lo dice.
 
     Sin fijarla, el conductor que venga con una mirada puesta en el reloj de
     pared del servidor contaria un tramo de miles de segundos en su primera
     mirada.
+
+    Cero ya no es la muestra cero del audio, y por eso la prueba cambio de nombre
+    en la T6d: es el final de la cabecera tecnica, que es el instante en el que la
+    pieza empieza a sonar. Lo que la cadena fija y lo que la cadena cuenta en cada
+    cuadro tienen que estar en el MISMO eje, y esta asercion es la mitad fija de
+    esa pareja.
     """
     doble = ConductorDeDoble()
     pasar_por_la_cadena(
@@ -324,18 +368,26 @@ def test_el_tramo_que_acaba_en_el_ultimo_cuadro_se_cierra_igual():
     que para al terminar la pieza. `observar` no cierra nada, asi que el informe
     de esa pasada dependeria entera de una mirada que ya no iba a llegar.
 
-    El audio se corta en 227000 muestras (4,729 s) a proposito: el tramo acaba en
-    4,8 s y el ultimo cuadro cae en 4,8103 s, que es el PRIMERO que lo pasa. Con
-    una muestra menos de la cuenta -225 cuadros, 4,7893 s- el tramo no acaba y no
-    hay nada que cerrar, y esa es la frontera que hace la prueba exacta.
+    La frontera es de UNA MUESTRA y esta medida: con 232849 muestras el tramo se
+    cierra y con 232848 no. La aritmetica, que es lo que la hace exacta:
+    `ceil(232849 / 1008)` son 232 cuadros, asi que el ultimo empieza en la muestra
+    232848 y su ventana acaba en 4,9363 s de audio, o sea en 4,8083 s de cabezal
+    una vez descontados los 0,128 s de cabecera -y el tramo acaba en 4,8-. Con una
+    muestra menos son 231 cuadros, el ultimo acaba en 4,7083 s de cabezal y el
+    tramo no se termina.
+
+    Esos numeros se movieron en la T6d: con el cabezal corriendo durante la
+    cabecera, la frontera estaba 6144 muestras (0,128 s) antes, entre 226000 y
+    227000. Que se haya movido exactamente la cabecera es la comprobacion de que
+    lo que cambio es el eje y no la cuenta de cuadros.
     """
     pieza = escala_de_ocho_notas()
     entera = interpretar(pieza, PERFECTO, frecuencia_muestreo=FS)
     justo = replace(
-        entera, muestras=entera.muestras[:227000], duracion_s=227000 / FS
+        entera, muestras=entera.muestras[:232849], duracion_s=232849 / FS
     )
     corta = replace(
-        entera, muestras=entera.muestras[:226000], duracion_s=226000 / FS
+        entera, muestras=entera.muestras[:232848], duracion_s=232848 / FS
     )
 
     cerrada = pasar_por_la_cadena(justo, conductor_de_verdad(pieza))
@@ -356,9 +408,16 @@ def test_ninguna_mirada_se_traga_mas_del_techo_del_tramo():
     acota SIEMPRE, sin excepciones. Con una sola mirada para toda la primera
     ventana, el techo MORDIA: `PERFILES["bajo_4"].tamano_ventana(48000)` son 8192
     muestras, o sea 0,1707 s, asi que con cualquier pieza de bajo el cabezal
-    arrancaba 71 ms corto y en silencio. Por eso la ventana se llena con varias
-    miradas, que es lo que pasa en produccion (el WebSocket mira a 30 Hz mientras
-    el primer cuadro se llena).
+    arrancaba 71 ms corto y en silencio.
+
+    La T4 lo arreglaba rellenando la espera con varias miradas. **La T6d se llevo
+    ese relleno y esta prueba sigue verde**, porque el arreglo de verdad es que el
+    cabezal NO CORRA mientras la ventana se llena: la primera mirada cuenta cero,
+    y de ahi en adelante los huecos son el salto del analisis (21 ms). Un reloj
+    que no avanza no puede quedarse corto, asi que no hay nada que rellenar. Esta
+    prueba es la que lo vigila: si alguien vuelve a dejar correr el cabezal
+    durante el llenado, la primera mirada se traga la ventana entera y aqui se
+    nota.
     """
     doble = ConductorDeDoble(pieza=pieza_de_bajo())
 
@@ -397,6 +456,16 @@ def test_el_salto_por_omision_es_el_de_produccion():
 # -- la ventana ---------------------------------------------------------------
 
 
+def _primer_cuadro_con_cabezal(doble: ConductorDeDoble) -> int:
+    """El primer cuadro cuyo instante ya no es cero: el primero que se sale de la
+    cabecera y por tanto mueve el cabezal."""
+    return next(
+        cuadro
+        for cuadro, instante in enumerate(doble.instantes_observados)
+        if instante > 0.0
+    )
+
+
 def test_la_ventana_sale_del_perfil_de_la_pieza():
     """Sin analizador, la ventana es la del perfil DE LA PIEZA, no la estandar.
 
@@ -406,17 +475,38 @@ def test_la_ventana_sale_del_perfil_de_la_pieza():
     mismos periodos. Una cadena que fijara la de guitarra haria leer al detector
     la mitad de los periodos que lee en produccion con cualquier pieza de bajo.
 
-    Se comprueba por el PRIMER INSTANTE, que es `ventana / fs` y por tanto la
-    delata: 0,1707 s con el bajo contra 0,0853 s con la guitarra.
+    Se comprueba por el PRIMER INSTANTE, que es el final de la primera ventana
+    menos la cabecera y por tanto la delata. La cabecera se pide de 0,5 s, mas
+    larga que las dos ventanas: con la cabecera por omision -cero, el descuento
+    minimo de una ventana- los dos instantes salian a cero y la prueba dejaba de
+    distinguir nada. Es lo que la T6d tuvo que cambiarle.
     """
     con_bajo = ConductorDeDoble(pieza=pieza_de_bajo())
     con_guitarra = ConductorDeDoble(pieza=escala_de_ocho_notas())
+    cabecera_s = 0.5
 
-    pasar_por_la_cadena(un_segundo_de_audio(pieza_de_bajo()), con_bajo)
-    pasar_por_la_cadena(un_segundo_de_audio(), con_guitarra)
+    pasar_por_la_cadena(
+        un_segundo_de_audio(pieza_de_bajo(), silencio_de_cabecera_s=cabecera_s),
+        con_bajo,
+    )
+    pasar_por_la_cadena(
+        un_segundo_de_audio(silencio_de_cabecera_s=cabecera_s), con_guitarra
+    )
 
-    assert con_bajo.instantes_observados[0] == pytest.approx(VENTANA_DEL_BAJO / FS)
-    assert con_guitarra.instantes_observados[0] == pytest.approx(VENTANA / FS)
+    assert con_bajo.instantes_observados[0] == pytest.approx(
+        max(0.0, VENTANA_DEL_BAJO / FS - cabecera_s)
+    )
+    assert con_guitarra.instantes_observados[0] == pytest.approx(
+        max(0.0, VENTANA / FS - cabecera_s)
+    )
+    # Los dos primeros instantes son cero en los dos casos -la cabecera se come
+    # varios cuadros-, asi que lo que distingue de verdad es EN QUE CUADRO cada
+    # ventana se sale de la cabecera: la del bajo, que es el doble de larga, se
+    # sale cuatro cuadros antes. La aritmetica: 8192 muestras se salen de los
+    # 0,5 s en el cuadro 16 (16 x 1008 + 8192 = 24320, o sea 0,5067 s) y 4096 en
+    # el 20 (0,5053 s).
+    assert _primer_cuadro_con_cabezal(con_bajo) == 16
+    assert _primer_cuadro_con_cabezal(con_guitarra) == 20
     assert VENTANA_DEL_BAJO == 2 * VENTANA, "si esto cambia, la prueba ya no distingue"
 
 
@@ -460,27 +550,34 @@ def test_el_registro_guarda_las_notas_de_todas_las_vueltas():
     assert vueltas_reportadas == {1, 2, 3}, (
         f"se reporto en las vueltas {sorted(vueltas_reportadas)}, y el bucle dio tres"
     )
-    # La CUARTA vuelta se abre, y el numero es exacto, no «al menos tres»: el
-    # tramo son 2,4 s (cuatro pulsos a 100 ppm) y el audio dura 7,328 s, o sea
-    # tres tramos MAS los 0,128 s de silencio de cabecera que `interpretar` pone
-    # delante (`VENTANAS_DE_CABECERA = 1,5`). Esa cola de 128 ms cae ya en la
-    # cuarta vuelta. Si alguien mueve la cabecera, esta prueba falla, y falla por
-    # el motivo correcto.
+    # La pasada acaba EN la tercera vuelta, y el numero es exacto, no «al menos
+    # tres»: el tramo son 2,4 s (cuatro pulsos a 100 ppm), el audio dura 7,328 s
+    # -tres tramos mas los 0,128 s de silencio de cabecera- y la cadena descuenta
+    # esa cabecera del eje del cabezal, asi que el cabezal recorre tres tramos
+    # justos y no se mete en un cuarto.
+    #
+    # Antes de la T6d el cabezal corria durante la cabecera y esos 128 ms de cola
+    # abrian una CUARTA vuelta: `repeticion` salia 4. Que ahora salga 3 es la
+    # consecuencia observable de la alineacion, y es lo correcto: tres vueltas de
+    # audio son tres vueltas, no tres y pico.
     assert interpretacion.duracion_s == pytest.approx(3 * 2.4 + 0.128, abs=1e-3)
-    assert registro.estado_final.repeticion == 4
+    assert registro.estado_final.repeticion == 3
 
 
 def test_el_registro_guarda_un_informe_por_vuelta_cerrada():
-    """Tres informes, y la razon es que el bucle dio TRES vueltas, no que haya
-    tres repeticiones de audio.
+    """DOS informes con tres vueltas de audio, y es lo que el nombre dice.
 
     Una vuelta se cierra AL DAR LA SIGUIENTE (`_dar_la_vuelta` guarda su informe y
-    `mirar` lo anota al ver cambiar `repeticion`), asi que tres informes exigen
-    tres transiciones: 1→2, 2→3 y 3→4. La tercera transicion solo ocurre porque
-    los 0,128 s de silencio de cabecera hacen que el audio dure mas que los tres
-    tramos; sin esa cola, la tercera vuelta se quedaria ABIERTA y aqui habria dos
-    informes. No es «un informe por repeticion de audio»: es un informe por
-    vuelta cerrada, que es otra cosa y es la que el nombre dice.
+    `mirar` lo anota al ver cambiar `repeticion`), asi que los informes son las
+    TRANSICIONES: 1→2 y 2→3. La tercera vuelta se queda ABIERTA porque el audio se
+    acaba con ella, y nadie le inventa un cierre. No es «un informe por repeticion
+    de audio»: es un informe por vuelta CERRADA, que es otra cosa.
+
+    Eran tres informes antes de la T6d, y por una coincidencia que ya no existe:
+    el cabezal corria durante los 0,128 s de cabecera, asi que iba adelantado y la
+    cola del audio provocaba una transicion 3→4 de regalo. Con el cabezal
+    alineado, tres vueltas de audio cierran dos. El numero bajo porque el que
+    sobraba era el viejo.
 
     El cierre de vueltas vive en `mirar`, NO en `observar`: una cadena que solo
     observara dejaria `vueltas_cerradas` vacio y esto saldria a cero.
@@ -490,9 +587,9 @@ def test_el_registro_guarda_un_informe_por_vuelta_cerrada():
     registro = pasar_por_la_cadena(interpretacion, conductor)
 
     assert len(registro.vueltas) == len(conductor.vueltas_cerradas)
-    assert len(registro.vueltas) == 3
-    assert registro.estado_final.repeticion == 4, (
-        "tres informes son tres transiciones, y la tercera deja la vuelta cuatro abierta"
+    assert len(registro.vueltas) == 2
+    assert registro.estado_final.repeticion == 3, (
+        "dos informes son dos transiciones, y la tercera vuelta se queda abierta"
     )
     assert all(informe.repeticiones == 1 for informe in registro.vueltas), (
         "cada informe es el de SOLO esa vuelta, no el acumulado"
@@ -637,14 +734,19 @@ def test_una_interpretacion_de_silencio_no_reporta_nada():
     assert registro.reportes == ()
     cuadros = len(espia.tamanos)
     assert cuadros == round(1.0 / INTERVALO_DE_ANALISIS_S)
-    # El reloj de la pasada acaba en el FINAL DE LA ULTIMA VENTANA, 1:1 con el
-    # reloj virtual: es la alineacion de la que cuelga todo el veredicto, porque
-    # el desfase que la T5 va a medir es la diferencia entre este reloj y el
-    # instante del ataque. Si la cadena se dejara por el camino los 85 ms de la
-    # primera ventana, o los metiera dos veces, esta cuenta no cuadraria.
+    # El cabezal acaba en el FINAL DE LA ULTIMA VENTANA menos el descuento, y de
+    # esa cuenta cuelga todo el veredicto: el desfase que el veredicto mide es la
+    # diferencia entre este eje y el instante del ataque. Si la cadena se dejara
+    # por el camino el llenado de la primera ventana, o lo metiera dos veces, esto
+    # no cuadraria.
+    #
+    # Esta interpretacion viene sin cabecera -es un buffer de ceros armado a
+    # mano-, asi que el descuento es el minimo: una ventana, que es lo que tarda
+    # en haber un cuadro que analizar. Con una cabecera de verdad, el descuento es
+    # la cabecera.
     ultima_ventana_s = ((cuadros - 1) * SALTO_DE_PRODUCCION + VENTANA) / FS
     assert registro.estado_final.carril.instante_s == pytest.approx(
-        ultima_ventana_s, abs=1e-6
+        ultima_ventana_s - VENTANA / FS, abs=1e-6
     ), "el cabezal avanza con los cuadros aunque no suene nada, y 1:1 con ellos"
 
 

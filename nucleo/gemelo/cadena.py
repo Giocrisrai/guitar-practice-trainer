@@ -25,6 +25,35 @@ El +6,7 ms es la latencia propia del detector, que es real y debe aparecer. Los
 sobre el centro habria acusado a la cadena de adelantar cada nota 36 ms, y
 cualquier asercion de desfase habria estado corrupta.
 
+Y EL CABEZAL NO CORRE DURANTE LA CABECERA TECNICA DEL GEMELO. El instante de cada
+cuadro es el final de su ventana MENOS ese silencio, asi que el cabezal marca cero
+cuando suena la nota que la pieza escribe en cero. Es una decision de diseño y no
+una medida: la cabecera es un requisito del gemelo -que la primera ventana de
+analisis llegue completa-, no tiempo musical, igual que al usuario no se le cobra
+el tiempo que el buffer tarda en llenarse.
+
+Lo que se arregla con ello esta medido. Con el cabezal arrancando en la muestra
+cero, los desfases que el seguidor firmaba sobre una interpretacion PERFECTA eran
+
+    +148,3  +136,3  +166,3  +217,3  +163,3  +193,3  +139,3  +148,3   ms
+
+contra una ventana de acierto de 80 ms: las OCHO notas «tarde» y cero limpias. El
+primer sumando de cada una son los 128 ms de cabecera. Descontados, quedan
+
+    +20,3   +8,3   +38,3   +89,3   +35,3   +65,3   +11,3   +20,3    ms
+
+y salen SIETE limpias de ocho. La que queda fuera, la nota 3 con 89,3 ms, es el
+temblor del propio detector de ataques, no la cabecera: esa es otra discusion -si
+la clasificacion debe cobrarle al alumno la latencia que el detector sabe que
+añade- y no se decide aqui.
+
+El descuento nunca es menor que una ventana, para que una interpretacion armada a
+mano sin cabecera -un buffer de silencio de una prueba- tampoco pague el llenado
+del primer cuadro. Eso es lo que hizo innecesario el relleno de miradas que la T4
+puso aqui: un reloj que no avanza no se puede quedar corto contra el techo de
+`mover_el_reloj`, que es lo que le pasaba al perfil de bajo (ventana de 171 ms
+contra un techo de 100).
+
 POR QUE EL REGISTRO Y NO EL ESTADO FINAL. `EstadoCarril.tocadas` solo trae lo que
 el seguidor lleva sin volcar, y `cerrar_repeticion` lo vacia en cada vuelta: al
 acabar cuatro repeticiones, el estado final solo conoce la ultima. Y los indices
@@ -40,7 +69,7 @@ import numpy as np
 from nucleo.afinaciones import PERFILES
 from nucleo.analisis.pipeline import INTERVALO_DE_ANALISIS_S, Analizador
 from nucleo.gemelo.interprete import Interpretacion
-from nucleo.piezas.conductor import TECHO_TRAMO_S, ConductorDeEstudio
+from nucleo.piezas.conductor import ConductorDeEstudio
 from nucleo.piezas.estudio import EstadoEstudio, InformeDePasada
 from nucleo.piezas.seguimiento import NotaTocada
 
@@ -129,18 +158,41 @@ def pasar_por_la_cadena(
         raise ValueError(f"El salto {paso} no sirve: tiene que ser de al menos una muestra")
 
     muestras = interpretacion.muestras
-    # El origen del reloj virtual es la MUESTRA CERO, y la mirada se fija ahi.
+    # EL ORIGEN DEL EJE DEL CABEZAL ES EL FINAL DE LA CABECERA TECNICA, no la
+    # muestra cero, y de aqui cuelga todo lo que la cadena le cuenta al estudio.
     #
-    # Hacen falta las dos cosas. Fijarla, porque el conductor que llegue con una
-    # mirada puesta en el reloj de pared -el servidor la fija al arrancar la
-    # pasada- contaria en su primera mirada un tramo de miles de segundos, o de
-    # miles negativos. Y fijarla en CERO y no en el primer instante, porque entre
-    # la muestra cero y el primer cuadro pasa una ventana entera de tiempo real
-    # (85 ms con guitarra estandar a 48 kHz) que en produccion tambien pasa: ahi
-    # el audio ya esta entrando y las miradas del WebSocket mueven el cabezal
-    # mientras el primer cuadro se llena. Con la mirada fijada en el primer
-    # instante, esos 85 ms desaparecian y el cabezal quedaba adelantado respecto
-    # del audio por una cantidad que no corresponde a nada.
+    # La cabecera tecnica -el silencio que `interpretar` mete delante de la
+    # primera nota- NO ES TIEMPO MUSICAL: es un requisito del gemelo para que la
+    # primera ventana de analisis llegue completa. Con el cabezal arrancando en la
+    # muestra cero, ese silencio se le cobraba al interprete: el guitarrista
+    # PERFECTO tocaba 128 ms tarde por construccion, el seguidor clasificaba las
+    # ocho notas como «tarde» y el oraculo sacaba 0 limpias de 8. Un gemelo
+    # estructuralmente tarde no es un oraculo, es un interprete tarde, y entonces
+    # lo que la cadena diga de el ya no distingue un defecto de la cadena.
+    #
+    # Al usuario tampoco se le cobra: en produccion la pasada empieza cuando hay
+    # audio que analizar, no cuando el buffer empieza a llenarse.
+    #
+    # El desplazamiento es la cabecera TECNICA y no el silencio de cabecera
+    # entero: la cuenta atras si es tiempo de la pasada -el estudio la modela,
+    # congelando el cabezal mientras dura-, asi que descontarla aqui la contaria
+    # dos veces. Y nunca es menor que una ventana, para que una interpretacion
+    # armada a mano sin cabecera -un buffer de silencio de una prueba- tampoco
+    # tenga que tragarse el llenado de la primera ventana en la primera mirada:
+    # con el perfil de bajo eso eran 171 ms contra el techo de 100 ms de
+    # `mover_el_reloj`, que es el defecto que la T4 arreglaba con un relleno de
+    # miradas. Ese relleno se ha ido: sin reloj corriendo durante el llenado, no
+    # hay nada que rellenar.
+    cabecera_tecnica_s = max(
+        0.0,
+        interpretacion.silencio_de_cabecera_s - interpretacion.segundos_de_cuenta_atras,
+    )
+    desplazamiento_s = max(cabecera_tecnica_s, ventana / frecuencia)
+
+    # La mirada se fija en el origen del eje del cabezal. Hace falta fijarla
+    # porque el conductor que llegue con una mirada puesta en el reloj de pared
+    # -el servidor la fija al arrancar la pasada- contaria en su primera mirada un
+    # tramo de miles de segundos, o de miles negativos.
     conductor.fijar_la_mirada(0.0)
 
     reportes: list[ReporteDeLaCadena] = []
@@ -153,17 +205,20 @@ def pasar_por_la_cadena(
     # registro es de ESTA pasada.
     cerradas_al_empezar = len(conductor.vueltas_cerradas)
 
-    # Sin un solo cuadro, la mirada final cae en CERO y no en el primer instante:
-    # la ventana no se llega a llenar, asi que no ha pasado tiempo que meter en la
-    # pieza. Puesta en `ventana / frecuencia`, un audio de cero muestras movia el
-    # cabezal 85 ms sin que sonara nada.
+    # Sin un solo cuadro, la mirada final cae en CERO: la ventana no se llega a
+    # llenar, asi que no ha pasado tiempo que meter en la pieza.
     instante = 0.0
-    if len(muestras):
-        _mirar_mientras_se_llena_la_ventana(
-            conductor, ventana / frecuencia, paso / frecuencia
-        )
     for inicio in range(0, len(muestras), paso):
-        instante = (inicio + ventana) / frecuencia
+        # EL INSTANTE DE CADA VENTANA ES SU FINAL, menos la cabecera que no es
+        # tiempo musical. El final y no el centro ni el principio esta medido (ver
+        # la cabecera del modulo); el descuento es lo que pone el cabezal a cero
+        # cuando suena la nota que la pieza escribe en cero.
+        #
+        # Los cuadros que caen DENTRO de la cabecera se entregan igual, con el
+        # instante acotado a cero: el detector necesita ese silencio para tener
+        # nivel de referencia con el que ver el primer ataque, y como todos
+        # cuentan el mismo instante, sus miradas avanzan el cabezal cero.
+        instante = max(0.0, (inicio + ventana) / frecuencia - desplazamiento_s)
         # MIRAR antes de OBSERVAR, y con el mismo instante, que es el orden del
         # servidor (ver `ConductorDeEstudio.observar`: «quien conduce mira y en
         # seguida observa con el mismo instante»).
@@ -204,39 +259,6 @@ def pasar_por_la_cadena(
         vueltas=tuple(conductor.vueltas_cerradas[cerradas_al_empezar:]),
         estado_final=estado_final,
     )
-
-
-def _mirar_mientras_se_llena_la_ventana(
-    conductor: ConductorDeEstudio, primer_instante: float, cadencia_s: float
-) -> None:
-    """Las miradas que pasan ANTES del primer cuadro, mientras la ventana se llena.
-
-    Entre la muestra cero y el primer cuadro pasa una ventana entera de tiempo
-    real -85 ms con guitarra estandar a 48 kHz, 171 ms con un bajo- y en
-    produccion ese tiempo pasa igual: el audio ya esta entrando y las miradas del
-    WebSocket, a 30 Hz, mueven el cabezal mientras el primer cuadro se llena. Son
-    varias miradas, no una.
-
-    Y tienen que ser varias AQUI TAMBIEN, porque `mover_el_reloj` acota lo que
-    entra en la pieza por cada aviso a `TECHO_TRAMO_S` (0,100 s) y lo acota
-    SIEMPRE, sin excepciones -cada excepcion a esa regla ha sido un camino nuevo
-    por el que un hueco largo volvia a entrar-. Con una sola mirada que tuviera
-    que tragarse la ventana entera, el techo mordia:
-    `PERFILES["bajo_4"].tamano_ventana(48000)` son 8192 muestras, o sea 0,1707 s,
-    asi que con cualquier pieza de bajo el cabezal arrancaba 71 ms corto y en
-    silencio. Medido: 0,1707 - 0,100.
-
-    La cadencia es la del propio analisis (21 ms), que es la que tendran los
-    cuadros en seguida, y se acota por el techo por si alguien conduce con un
-    salto enorme: lo que esta funcion garantiza es que NINGUNA mirada tenga que
-    recorrer mas de `TECHO_TRAMO_S`, que es la condicion para que el techo no
-    recorte nada.
-    """
-    paso_s = min(cadencia_s, TECHO_TRAMO_S)
-    ahora = paso_s
-    while ahora < primer_instante:
-        conductor.mirar(ahora, False)
-        ahora += paso_s
 
 
 def _analizador_de(
