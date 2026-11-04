@@ -1075,6 +1075,12 @@ class SesionDeEstudio:
         bucle. Contarlas inflaria `repeticiones` y hundiria `proporcion_limpia`
         cada vez que el usuario moviera el deslizador del tempo.
 
+        Y lo usa un tercero, que es el que delato el defecto: `ConductorDeEstudio`
+        al cerrar un tramo **sin bucle**. Esa pasada tiene UNA vuelta, la que el
+        `+1` de `informe` ya cuenta; sumarle otra dejaba `repeticiones=2` con el
+        seguidor ya vacio, o sea el denominador doblado y el numerador quieto:
+        ocho notas limpias de ocho salian 0,5.
+
         Vaciar el seguidor despues es lo que impide contar dos veces: el informe
         suma lo acumulado MAS lo que el seguidor tenga.
 
@@ -1142,15 +1148,25 @@ class HistorialDeEstudio:
         se puede medir una nota de cada acorde, asi que saldrian fallados siempre
         y el boton de machacar mandaria al usuario justo a los compases que nunca
         podra pasar.
+
+        **LAS NOTAS MEDIBLES SE MULTIPLICAN POR LAS REPETICIONES DEL INFORME**, y
+        por lo mismo que en `proporcion_limpia`: `limpias` acumula TODAS las
+        vueltas que el informe lleva dentro y `notas_medibles` es lo que hay
+        escrito en el compas, que no se repite. Sin multiplicar, un informe de
+        cuatro vueltas con un compas de cuatro notas daba el compas por bueno con
+        **cuatro limpias de las dieciseis** que se tocaron -tres vueltas enteras
+        falladas-, y el boton de machacar no lo nominaba nunca. Era el defecto 4
+        del §8.
         """
         fallos: dict[int, list[int]] = {}
         for informe in self._pasadas:
+            vueltas = max(1, informe.repeticiones)
             for compas in informe.compases:
                 if compas.tiene_acordes:
                     continue
                 marca = fallos.setdefault(compas.numero, [0, 0])
                 marca[1] += 1
-                if compas.limpias < compas.notas_medibles:
+                if compas.limpias < compas.notas_medibles * vueltas:
                     marca[0] += 1
         ordenados = sorted(
             ((numero, fallo, contadas) for numero, (fallo, contadas) in fallos.items()),

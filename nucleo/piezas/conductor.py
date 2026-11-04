@@ -499,8 +499,23 @@ class ConductorDeEstudio:
             # y su informe se perdio: lo que se anota aqui es lo que el estudio
             # tenga cerrado. Por eso `SesionDeEstudio._dar_la_vuelta` guarda el
             # informe de la vuelta en `self._ultima_vuelta`, y aqui se lee.
+            # **SIN BUCLE, CERRAR EL TRAMO NO ES DAR UNA VUELTA**, y por eso va con
+            # `cuenta_como_vuelta=False`. Era un defecto medido: con `True`, el
+            # `_vueltas_cerradas` del estudio subia a 1 al terminar el tramo y
+            # `informe.repeticiones` -que es `_vueltas_cerradas + 1`- salia 2 en una
+            # pasada de una sola vuelta. El seguidor ya esta vacio, asi que el
+            # numerador de `proporcion_limpia` no sube y el denominador se duplica:
+            # **ocho notas limpias de ocho salian 0,5**. Y ese numero es el que la
+            # pantalla publica (`SesionCarril.informe`) y el que decide si el tempo
+            # sube solo, asi que cualquier alumno que termine un tramo sin bucle veia
+            # su proporcion a la mitad.
+            #
+            # Lo que se anota en el historial no cambia: `cerrar_repeticion` devuelve
+            # igual el informe de SOLO esa vuelta, con `repeticiones=1`.
             informe = (
-                estudio.ultima_vuelta if dio_la_vuelta else estudio.cerrar_repeticion()
+                estudio.ultima_vuelta
+                if dio_la_vuelta
+                else estudio.cerrar_repeticion(cuenta_como_vuelta=False)
             )
             if informe is None:
                 return None

@@ -177,11 +177,17 @@ def _pasada_del_oraculo(
     veredicto = juzgar(interpretacion, registro)
 
     # El informe de la VUELTA CERRADA, no `estudio.informe`. Los dos traen los
-    # mismos contadores, pero el de la sesion sale de esta pasada con
-    # `repeticiones=2` -la mirada final de la cadena cierra la vuelta y el
-    # contador de la sesion ya va por la siguiente-, y `proporcion_limpia` divide
-    # por ese numero: con el informe de la sesion, ocho notas limpias de ocho
-    # salian 0,5. Medido. Lo que esta pasada cerro es UNA vuelta.
+    # mismos contadores y desde la T9 los dos dicen `repeticiones=1`, que es lo
+    # que esta pasada tiene: una vuelta.
+    #
+    # Hasta la T9 no era asi, y de ahi viene esta linea: la mirada final de la
+    # cadena cerraba la vuelta CONTANDOLA, el contador de la sesion se iba a 2 y
+    # `proporcion_limpia` divide por ese numero, asi que con el informe de la
+    # sesion ocho notas limpias de ocho salian 0,5. Medido entonces, arreglado
+    # ahora en `ConductorDeEstudio._cerrar` -cerrar un tramo sin bucle no es dar
+    # una vuelta- y con prueba propia en
+    # `tests/test_gemelo_informe.py::test_una_pasada_sin_bucle_no_cuenta_dos_vueltas`.
+    # Se sigue usando el informe de la vuelta porque es el que el historial anota.
     assert len(registro.vueltas) == 1, (
         "una pasada sin bucle cierra exactamente una vuelta; "
         f"esta cerro {len(registro.vueltas)}"
