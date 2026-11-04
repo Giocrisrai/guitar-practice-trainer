@@ -929,6 +929,11 @@ def test_dos_pulsaciones_de_la_cola_no_se_adjudican_a_la_misma_nota():
     salto llega el seguidor ya no sabe que llevaba cobrado el tramo que se va. Lo
     sabe quien cerro la vuelta, y ahi esta vigilado
     (`SesionDeEstudio._cobrar_la_cola`, con su prueba en `tests/test_estudio.py`).
+
+    Esta prueba se escribio en la segunda ronda de la Task 7, pero lo que sujeta
+    -el marcado por-cola de `_adjudicar`- es de la primera: se añadio con la cola
+    misma y estaba sin prueba. Conviene no leerla como el testigo del arreglo del
+    doble cobro, que es el del estudio.
     """
     class DetectorDeLaCola:
         """Suelta los dos onsets, pero solo cuando se le abre (tras la vuelta)."""

@@ -372,10 +372,10 @@ class SeguidorPieza:
             self._cobradas = np.zeros(len(self._inicios_s), dtype=bool)
             # Lo que la cola ya cobro, aparte de `_cobradas` y a proposito: la
             # nota de la frontera es de la vuelta que CERRO, asi que la vuelta que
-            # abre tiene que poder cobrar su propia copia de esa misma nota. En
-            # cada salto continuo arranca como COPIA de `_cobradas` -lo que el
-            # tramo que se abandona llevaba cobrado-, que es lo que impide cobrar
-            # dos veces la misma nota de la misma vuelta (ver `avanzar_a`).
+            # abre tiene que poder cobrar su propia copia de esa misma nota. Lo
+            # que este array impide es que dos pulsaciones DE LA COLA se lleven la
+            # misma nota; lo que la vuelta que cierra ya tenia cobrado no se puede
+            # saber desde aqui (ver `avanzar_a`).
             self._cobradas_de_la_cola = np.zeros(len(self._inicios_s), dtype=bool)
 
     @property
@@ -523,22 +523,28 @@ class SeguidorPieza:
             )
         with self._candado:
             self._instante_pieza = float(instante_s)
+            # La cola arranca sin nada cobrado en CUALQUIER salto, y aqui NO se
+            # hereda lo que el tramo que se abandona llevaba cobrado, aunque
+            # parezca lo natural. **No se puede desde aqui**: quien repite llama a
+            # `olvidar_tramo` antes del salto -es su contrato, para que la vuelta
+            # nueva pueda volver a cobrar- asi que cuando el salto llega
+            # `_cobradas` ya esta a cero y heredarlo seria heredar ceros. Se probo
+            # y se midio: la linea que lo heredaba no la ejecutaba ningun camino y
+            # su mutante no mataba ni una prueba.
+            #
+            # Que una nota ya cobrada por la vuelta que cierra no se vuelva a
+            # cobrar por la cola lo decide, por eso, quien cerro la vuelta:
+            # `SesionDeEstudio._cobrar_la_cola`, que es el unico que sigue
+            # teniendo esa lista. Lo que este array si decide es que dos
+            # pulsaciones DE LA COLA no se adjudiquen a la misma nota.
+            self._cobradas_de_la_cola[:] = False
             if frontera_del_salto_s is None:
-                self._cobradas_de_la_cola[:] = False
                 self._origen_retirado = None
                 self._frontera_del_salto = None
                 self._tocadas_de_la_cola = []
                 self._origen_analisis = None
                 self._analisis_desde = None
             else:
-                # LA COLA HEREDA LO COBRADO, y es lo que impide que una nota de la
-                # vuelta que cierra se cobre DOS VECES: una por el camino normal,
-                # antes del salto, y otra por la cola. Medido antes de arreglarlo:
-                # la nota 3 salia en `tocadas` «a tiempo» con +0,000 y otra vez en
-                # la cola «tarde» con +0,900, o sea un compas con mas acertadas que
-                # notas escritas. Arrancar la cola a cero era creerse que el tramo
-                # que se abandona no habia cobrado nada.
-                self._cobradas_de_la_cola[:] = self._cobradas
                 self._origen_retirado = self._origen_analisis
                 self._frontera_del_salto = float(frontera_del_salto_s)
                 # La correspondencia, escrita y no estimada: el reloj de la pieza
