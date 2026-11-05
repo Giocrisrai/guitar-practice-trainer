@@ -551,6 +551,8 @@ def test_un_veredicto_limpio_se_distingue_de_uno_sucio():
     base = Veredicto(
         notas_de_la_pieza=8,
         notas_tocadas=8,
+        notas_del_tramo=8,
+        vueltas=1,
         perdidas=(),
         inventadas=0,
         mal_adjudicadas=(),
@@ -876,3 +878,53 @@ def test_un_reporte_justo_en_el_techo_todavia_habla_del_ataque():
     pasado = veredicto_con(1.0 + techo_s + 1e-6)
     assert pasado.perdidas == ((1, 0),)
     assert pasado.inventadas == 1
+
+
+# -- las dos cantidades que no son la misma -----------------------------------
+
+
+def test_el_veredicto_distingue_las_notas_del_tramo_de_las_de_la_pieza():
+    """`notas_tocadas` es tramo x vueltas; `notas_de_la_pieza` es la pieza ENTERA.
+
+    **Compararlas por igualdad es comparar cantidades de clase distinta**, y con
+    un tramo de 4 notas a 2 vueltas la igualdad se cumple por pura coincidencia
+    aritmetica: 4 x 2 = 8 = las 8 escritas. Medido en el escaparate con
+    `--bucle 1-6 --repeticiones 2` sobre la pieza de demostracion (24 x 2 = 48 de
+    48), donde el aviso del borde afirmaba «el gemelo toco las 48 notas de las 48
+    escritas» de una pasada que toco 24 dos veces.
+
+    Asi que el veredicto publica las dos cantidades que faltaban -las notas del
+    TRAMO y las VUELTAS- y la pregunta que de verdad se queria hacer
+    (`toco_la_pieza_entera_una_vez`) se contesta aqui, donde estan los datos, y no
+    con una resta en el sitio donde se imprime.
+    """
+    interpretacion = _interpretacion(ultimo_compas=1, repeticiones=2)
+
+    veredicto = juzgar(interpretacion, _todo_reportado(interpretacion, 0.030))
+
+    assert veredicto.notas_de_la_pieza == 8
+    assert veredicto.notas_del_tramo == 4
+    assert veredicto.vueltas == 2
+    assert veredicto.notas_tocadas == 8, "la coincidencia aritmetica del defecto"
+    assert veredicto.toco_la_pieza_entera_una_vez is False
+    assert veredicto.a_dict()["notas_del_tramo"] == 4
+    assert veredicto.a_dict()["vueltas"] == 2
+
+
+def test_la_pieza_entera_una_vez_es_el_unico_caso_que_lo_afirma():
+    """La pieza entera, una vuelta y todas las notas tocadas: ahi si se afirma.
+
+    Los tres casos que lo niegan -un tramo, una vuelta de mas, una nota sin
+    tocar- se niegan por separado, porque cada uno rompe la frase por un sitio
+    distinto.
+    """
+    entera = juzgar(
+        _interpretacion(), _todo_reportado(_interpretacion(), 0.030)
+    )
+    assert entera.notas_del_tramo == 8
+    assert entera.vueltas == 1
+    assert entera.toco_la_pieza_entera_una_vez is True
+
+    assert replace(entera, notas_del_tramo=4).toco_la_pieza_entera_una_vez is False
+    assert replace(entera, vueltas=2).toco_la_pieza_entera_una_vez is False
+    assert replace(entera, notas_tocadas=7).toco_la_pieza_entera_una_vez is False

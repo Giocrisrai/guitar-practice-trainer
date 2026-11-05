@@ -103,6 +103,16 @@ class Veredicto:
     que de verdad sono se saca de `Interpretacion.eventos`, que es la verdad, y no
     se repite aqui.
 
+    **CUATRO CANTIDADES Y NINGUNA SUSTITUYE A OTRA.** `notas_de_la_pieza` es la
+    pieza ENTERA, `notas_del_tramo` son las escritas en el tramo que se
+    interpreto, `vueltas` son las repeticiones de ese tramo y `notas_tocadas` son
+    los eventos que el interprete genero, o sea tramo x vueltas. Compararlas por
+    igualdad entre si es comparar cantidades de clase distinta: con un tramo de 24
+    notas a 2 vueltas, `notas_tocadas == notas_de_la_pieza` se cumple por pura
+    coincidencia aritmetica sobre una pasada que toco la mitad de la pieza dos
+    veces. De ahi `toco_la_pieza_entera_una_vez`, que es la pregunta que de verdad
+    se queria hacer.
+
     Los dos desfases van en milisegundos y CON SIGNO: una cadena que reporta
     tarde y una que reporta pronto se arreglan por caminos distintos, y un valor
     absoluto las dejaria iguales. `desfase_maximo_ms` es el emparejado de mayor
@@ -112,6 +122,8 @@ class Veredicto:
 
     notas_de_la_pieza: int
     notas_tocadas: int
+    notas_del_tramo: int
+    vueltas: int
     perdidas: tuple[tuple[int, int], ...]
     inventadas: int
     mal_adjudicadas: tuple[tuple[int, int, int], ...]
@@ -129,10 +141,35 @@ class Veredicto:
         """
         return not self.perdidas and not self.inventadas and not self.mal_adjudicadas
 
+    @property
+    def toco_la_pieza_entera_una_vez(self) -> bool:
+        """True solo si la pasada recorrio la pieza ENTERA, una vez, sin dejarse nada.
+
+        NO decide nada del veredicto: `limpio` es lo unico que juzga a la cadena y
+        esto no lo toca. Esta aqui porque es donde estan los cuatro numeros, y
+        porque la pregunta se la hace quien AFIRMA algo sobre «todo lo escrito»
+        -hoy el aviso del borde del escaparate- y una afirmacion asi no puede
+        sostenerse con una igualdad entre dos cantidades distintas.
+
+        Las tres condiciones son necesarias y cada una rompe la frase por un sitio:
+        un tramo (`notas_del_tramo != notas_de_la_pieza`) no es la pieza, un bucle
+        (`vueltas != 1`) la toca varias veces -y en un bucle las perdidas de la
+        frontera de vuelta son un mecanismo declarado, no un borde del detector-, y
+        un interprete que falla notas (`notas_tocadas != notas_de_la_pieza`) no
+        toco todo lo escrito.
+        """
+        return (
+            self.vueltas == 1
+            and self.notas_del_tramo == self.notas_de_la_pieza
+            and self.notas_tocadas == self.notas_de_la_pieza
+        )
+
     def a_dict(self) -> dict:
         return {
             "notas_de_la_pieza": self.notas_de_la_pieza,
             "notas_tocadas": self.notas_tocadas,
+            "notas_del_tramo": self.notas_del_tramo,
+            "vueltas": self.vueltas,
             "perdidas": [list(perdida) for perdida in self.perdidas],
             "inventadas": self.inventadas,
             "mal_adjudicadas": [list(mala) for mala in self.mal_adjudicadas],
@@ -231,12 +268,33 @@ def juzgar(
     return Veredicto(
         notas_de_la_pieza=len(interpretacion.pieza.notas),
         notas_tocadas=len(interpretacion.eventos),
+        notas_del_tramo=_notas_escritas_del_tramo(interpretacion),
+        vueltas=interpretacion.repeticiones,
         perdidas=tuple(sorted(perdidas)),
         inventadas=inventadas,
         mal_adjudicadas=tuple(sorted(mal_adjudicadas)),
         excluidas=tuple(sorted(excluidas)),
         desfase_introducido_ms=_mediana_ms(desfases_s),
         desfase_maximo_ms=_maximo_con_signo_ms(desfases_s),
+    )
+
+
+def _notas_escritas_del_tramo(interpretacion: Interpretacion) -> int:
+    """Cuantas notas ESCRITAS caen en el tramo que se interpreto.
+
+    Se cuenta sobre la pieza y no sobre los eventos, que es lo que la hace la
+    hermana de `notas_de_la_pieza` y no otra lectura de `notas_tocadas`: con la
+    pieza entera las dos coinciden, y con un tramo la diferencia es exactamente lo
+    que nadie podia ver desde el veredicto.
+
+    El intervalo es el mismo `[inicio, fin)` que usan la traduccion de ejes y las
+    exclusiones, por el mismo motivo: las tres tienen que hablar del MISMO tramo.
+    """
+    inicio_tramo, fin_tramo = _tramo_en_pulsos(interpretacion)
+    return sum(
+        1
+        for nota in interpretacion.pieza.notas
+        if inicio_tramo <= nota.inicio_pulsos < fin_tramo
     )
 
 

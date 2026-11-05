@@ -78,15 +78,25 @@ def _veredicto(
     excluidas=(),
     tocadas=8,
     maximo=188.3,
+    del_tramo=8,
+    vueltas=1,
 ) -> Veredicto:
     """Un `Veredicto` armado a mano, para probar lo que se hace CON el.
 
     `maximo` es el peor desfase emparejado, y se puede fijar porque de el depende
     si el resumen avisa de que los hallazgos son el borde del detector.
+
+    `del_tramo` y `vueltas` valen por omision lo de una pasada de la pieza entera
+    de una sola vuelta -8 notas, 1 vuelta-, que es el caso del que hablan casi
+    todas las pruebas de aqui. Quien pruebe un bucle los pone: son las dos
+    cantidades con las que `toco_la_pieza_entera_una_vez` distingue las 8 notas de
+    una pieza entera de las 4 x 2 de un tramo repetido.
     """
     return Veredicto(
         notas_de_la_pieza=8,
         notas_tocadas=tocadas,
+        notas_del_tramo=del_tramo,
+        vueltas=vueltas,
         perdidas=perdidas,
         inventadas=inventadas,
         mal_adjudicadas=mal_adjudicadas,
@@ -394,6 +404,44 @@ def test_el_aviso_del_borde_no_afirma_que_llego_todo_si_no_llego():
     assert "las 8 notas de las 8 escritas" in con_aviso, (
         "la linea tiene que nombrar lo tocado Y lo escrito; decia solo lo tocado"
     )
+
+
+def test_el_aviso_del_borde_no_sale_en_bucle_aunque_la_aritmetica_cuadre():
+    """**El defecto que el revisor reprodujo en una pasada real del escaparate.**
+
+    La condicion era `notas_tocadas == notas_de_la_pieza`, y esas dos cantidades
+    son de clase distinta: la primera es tramo x vueltas y la segunda es la pieza
+    entera. Con `--bucle 1-6 --repeticiones 2` sobre la pieza de demostracion la
+    igualdad se cumple por coincidencia aritmetica (24 x 2 = 48 == 48) y el aviso
+    salia afirmando «el gemelo toco las 48 notas de las 48 escritas» de una
+    pasada que toco 24 notas dos veces.
+
+    Y peor que la frase: en un bucle, perder la ultima nota de cada vuelta es un
+    mecanismo DECLARADO del bucle -lo escriben `veredicto.py` y
+    `test_gemelo_bucle.py`-, asi que el aviso estaba atribuyendo al «borde del
+    detector» perdidas que tienen otro nombre y otra causa. Un aviso que excusa un
+    fallo de verdad es peor que no tener aviso.
+
+    Aqui se afirman los dos casos con la MISMA aritmetica: 4 notas de tramo por 2
+    vueltas y 8 notas de una pieza entera de una vuelta dan los dos
+    `notas_tocadas == 8`, y solo el segundo puede afirmar la frase.
+    """
+    en_bucle = _veredicto(
+        perdidas=((2, 3),), maximo=248.0, tocadas=8, del_tramo=4, vueltas=2
+    )
+    entera = _veredicto(perdidas=((1, 3),), maximo=248.0, tocadas=8)
+
+    sin_aviso = resumen(en_bucle, escala_de_ocho_notas(), PERFECTO, True)
+    con_aviso = resumen(entera, escala_de_ocho_notas(), PERFECTO, True)
+
+    assert en_bucle.notas_tocadas == en_bucle.notas_de_la_pieza, (
+        "la coincidencia aritmetica tiene que seguir en pie: es el caso del defecto"
+    )
+    assert "Aviso" not in sin_aviso, (
+        "en bucle el aviso no puede hablar: ni la frase es cierta ni las perdidas "
+        "de la frontera de vuelta son del borde del detector"
+    )
+    assert "Aviso" in con_aviso
 
 
 def test_el_aviso_del_borde_no_sale_sobre_una_pasada_sin_completar():

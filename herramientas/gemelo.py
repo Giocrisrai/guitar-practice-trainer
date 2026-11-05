@@ -248,11 +248,18 @@ def al_borde_del_techo_del_detector(
       funcion es publica y la condicion tiene que ser la de verdad.
     * `completada` -- una pasada que se corto por la mitad tiene hallazgos que
       pueden venir del corte, y el borde no los explica.
-    * `notas_tocadas == notas_de_la_pieza` -- el aviso afirma que lo que importa de
-      la pasada es que el gemelo toco todo lo escrito, asi que lo COMPARA en vez de
-      creerselo. Con `PERFECTO` siempre coincide (no falla notas), de modo que esta
-      condicion no quita ningun caso real: esta para que la afirmacion no pueda
-      salir sin ser verdad.
+    * `veredicto.toco_la_pieza_entera_una_vez` -- el aviso afirma que lo que
+      importa de la pasada es que el gemelo toco todo lo escrito, asi que lo
+      COMPARA en vez de creerselo. **Y lo compara con las cuatro cantidades, no
+      con dos**: aqui estaba `notas_tocadas == notas_de_la_pieza`, que son
+      cantidades de clase distinta -tramo x vueltas contra la pieza entera-, y con
+      `--bucle 1-6 --repeticiones 2` sobre la pieza de demostracion la igualdad se
+      cumplia por coincidencia aritmetica (24 x 2 = 48 == 48): el aviso salia
+      diciendo «el gemelo toco las 48 notas de las 48 escritas» de una pasada que
+      toco 24 dos veces, y excusaba como «el borde del detector» las perdidas de la
+      frontera de vuelta, que son un mecanismo DECLARADO del bucle con nombre
+      propio. Reproducido en pasada real por el revisor. La pregunta vive en
+      `Veredicto`, que es donde estan los numeros.
     * los dos de siempre: hay hallazgos y el peor desfase llega a `AVISO_DESDE_MS`.
 
     NO se afloja la tolerancia para que el veredicto salga limpio: ese borde es un
@@ -263,7 +270,7 @@ def al_borde_del_techo_del_detector(
     return (
         perfil == PERFECTO
         and completada
-        and veredicto.notas_tocadas == veredicto.notas_de_la_pieza
+        and veredicto.toco_la_pieza_entera_una_vez
         and not veredicto.limpio
         and abs(veredicto.desfase_maximo_ms) >= AVISO_DESDE_MS
     )
