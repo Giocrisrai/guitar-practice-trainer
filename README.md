@@ -156,6 +156,15 @@ guitarra» sería falso, y un aviso falso justo cuando más se ve es un aviso qu
 deja de leer. Tampoco sale con la pieza terminada. El carril se pausa igual en
 todos los casos y sigue donde estaba en cuanto vuelves a tocar.
 
+**El precio de esa regla, dicho en claro:** si el cable se rompe *a mitad* de la
+pasada —el jack se afloja, el volumen de la guitarra se va a cero— el aviso **no**
+sale, porque el cable ya había entregado señal y para el programa eres tú quien
+ha dejado de tocar. Verás el carril pausado y ningún texto naranja. Es una
+elección deliberada: silenciar un fallo poco frecuente que notas en cuanto miras
+el cable, a cambio de no gritarte en falso cada vez que descansas la mano en un
+bucle, que es lo que se hace en cada sesión de práctica. Si el carril se pausa y
+no entiendes por qué, lo primero que hay que mirar es el jack.
+
 **Hay cuenta atrás desde el primer compás, y no hay metrónomo salvo que lo
 pidas.** El plan de fábrica trae **un compás de cuenta atrás** antes de la primera
 entrada —y antes de cada vuelta del bucle—, así que la primera nota, que está

@@ -780,8 +780,12 @@ empieza a dar valor en cuanto existan esas grabaciones.
   aquella sonda (10,67 ms). A la cadencia de producción toda separación es
   múltiplo de 21 ms, así que 32 ms es **imposible por construcción**; el número
   estructuralmente análogo es el suelo de tres cuadros, **63 ms**, y con
-  `sustain=1.0` y la semilla 0 las separaciones estrechas medidas son dos, de
-  **105 y 126 ms**.) Al 60 % del pulso salen ocho exactas. En una guitarra de verdad las
+  `sustain=1.0` y la semilla 0 las separaciones medidas por debajo de 200 ms son
+  tres, de **105, 126 y 168 ms**. Los tres números, y el suelo de 63 ms, son
+  mediciones de sonda que NINGUNA prueba afirma: quien los use en la etapa 3e
+  vuelve a medirlos antes. Y el «60 % del pulso», que esta spec traía como
+  régimen donde «salen ocho exactas», pertenece al mismo juego de sondas no
+  reproducibles: no se afirma nada de él.) En una guitarra de verdad las
   cuerdas SÍ siguen sonando unas sobre otras, así que esto no es un artefacto de
   laboratorio: es un acierto fantasma esperando a pasar, y en la etapa 3e -donde
   un acierto fantasma rompe una racha o la regala- importa el doble. El gemelo

@@ -265,7 +265,13 @@ def test_el_detector_firma_mas_ataques_que_notas_cuando_las_colas_se_solapan(
 
     El dia que el detector se arregle, lo que hay que escribir aqui es ocho en las
     nueve. Bajar la tabla a «mas de ocho» no seria lo mismo: lo que esta medido es
-    cuantos, y de los 9 a 12 hay de 1 a 4 que nadie toco.
+    cuantos, y de los 9 a 12 FIRMADOS hay de 1 a 4 que nadie toco.
+
+    Ese «1 a 4» NO es el «1 a 5 invenciones» del §10 de la spec, aunque se
+    parezcan: aqui se cuentan firmas de sobra del detector (12 - 8 = 4 como
+    maximo), y alli invenciones del veredicto, que no es lo mismo porque una
+    firma fantasma puede ademas ocupar el puesto del emparejamiento de una nota
+    de verdad. Dos magnitudes distintas, las dos medidas.
     """
     perfil = replace(PERFECTO, nombre="solapado", sustain=1.0)
     interpretacion = interpretar(escala_de_ocho_notas(), perfil, semilla=semilla)

@@ -1164,6 +1164,46 @@ def test_los_cuadros_de_silencio_no_cuentan_como_cable_que_entrego():
     sesion.detener()
 
 
+def test_el_umbral_que_decide_si_el_cable_entrego_es_el_de_la_configuracion():
+    """**EL MUTANTE QUE SOBREVIVIO A LA RE-REVISION: el umbral de fabrica siempre.**
+
+    `_cuadro_con_senal` existe para no tener dos respuestas a la misma pregunta:
+    el umbral con el que se decide «este cuadro trae señal» tiene que ser el mismo
+    con el que la sesion de audio decide «falta señal», y ese lo elige el usuario
+    en su configuracion. Ninguna prueba miraba esa rama, porque el doble de la
+    sesion no lleva configuracion y entonces manda el de fabrica: la rama de
+    PRODUCCION -la unica que el usuario ejecuta- no la vigilaba nadie.
+
+    El cuadro de aqui trae -45 dBFS: por ENCIMA del umbral de fabrica (-60) y por
+    DEBAJO del que esta puesto (-30). Con el umbral correcto no es el cable
+    entregando, asi que el aviso del cable NO se calla. Con el mutante -usar
+    siempre `UMBRAL_DE_RUIDO_POR_DEFECTO_DBFS`- se callaria.
+
+    Los dos numeros de la asercion vienen de la configuracion y de la constante,
+    no de llamar a `_cuadro_con_senal`.
+    """
+    reloj = RelojFalso()
+    sesion = SesionAudioFalsa()
+    sesion.configuracion = Configuracion(umbral_ruido_dbfs=-30.0)
+    sesion_carril = SesionCarril(sesion, reloj=reloj)
+    try:
+        sesion_carril.iniciar(
+            pieza_de([40, 45, 50, 55]), PlanDePasada(compases_de_cuenta_atras=0)
+        )
+        publicar(sesion, reloj, suena("E2", nivel=-45.0), cuadros=60)
+        sesion.senal_ausente = True
+        estado = avanzar_mirando(sesion_carril, reloj, 7.0)
+
+        assert sesion_carril.esperando_notas is True, (
+            "-45 dBFS esta por debajo del umbral puesto (-30) aunque este por "
+            "encima del de fabrica (-60): no es el cable entregando"
+        )
+        assert estado["esperando_notas"] is True
+    finally:
+        sesion_carril.detener()
+        sesion.detener()
+
+
 def test_lo_que_entrego_el_cable_en_la_pasada_anterior_no_calla_la_nueva():
     """**OTRO MUTANTE SUPERVIVIENTE: el hecho es DE LA PASADA, no de la sesion.**
 
