@@ -2240,3 +2240,42 @@ def test_un_hueco_de_audio_en_la_frontera_no_se_cuenta_dos_veces():
         transcurrido += paso
     assert hueco_dado
     assert vueltas >= 2
+
+
+def test_una_nota_firmada_despues_del_final_tambien_sale_en_lo_publicado():
+    """Lo que el detector resuelve con el tramo YA acabado no se pierde.
+
+    El detector firma un onset hasta `VENTANA_ATAQUE_COMO_ONSET_S` (250 ms)
+    despues de que ocurriera, asi que la ultima nota del tramo se adjudica con el
+    tramo ya terminado. El informe por compases la cuenta -suma lo acumulado mas
+    lo que el seguidor lleve-, y el estado publicado tiene que contarla tambien o
+    el numero grande del resumen de fin de pieza se queda otra vez por debajo de
+    la tabla que hay justo debajo.
+
+    Es el caso que `_tocadas_al_acabar_el_tramo` resuelve uniendo las dos listas:
+    aqui lo guardado al acabar esta VACIO -cuando el reloj cruzo el final no habia
+    nada adjudicado- y todo lo que se ve viene de lo que llego despues.
+    """
+    sesion = SesionDeEstudio(
+        pieza_de([0.0, 1.0, 2.0, 3.0]), PlanDePasada(compases_de_cuenta_atras=0)
+    )
+    # El reloj cruza el final del tramo (4,0 s) en silencio: el tramo se da por
+    # acabado sin una sola nota adjudicada.
+    instante = 3.95
+    sesion.colocar_en(instante)
+    for _ in range(6):
+        sesion.procesar(SILENCIO, instante)
+        instante += 0.021
+    assert sesion.estado.tramo_terminado is True
+    assert sesion.estado.carril.tocadas == ()
+
+    # Y AHORA suena la ultima nota, que su ventana de reclamo todavia admite.
+    for _ in range(20):
+        sesion.procesar(suena("E2"), instante)
+        instante += 0.021
+
+    publicadas = sesion.estado.carril.tocadas
+    assert [tocada.indice for tocada in publicadas] == [3]
+    assert publicadas[0].acertada is True
+    acertadas_en_el_informe = sum(c.acertadas for c in sesion.informe.compases)
+    assert sum(1 for t in publicadas if t.acertada) == acertadas_en_el_informe == 1

@@ -355,6 +355,19 @@ class SesionDeEstudio:
         # que da la vuelta no es observable por ninguna API publica (ver
         # `_dar_la_vuelta` y la propiedad `tocadas_de_la_ultima_vuelta`).
         self._tocadas_de_la_vuelta: tuple[NotaTocada, ...] = ()
+        # Las `NotaTocada` que el seguidor tenia cuando el tramo se dio por
+        # acabado SIN bucle, para que el estado publicado no se quede mudo al
+        # terminar. Ver `_tocadas_al_acabar_el_tramo`, que es quien las publica.
+        #
+        # NO hace falta vaciarla al reabrir el tramo, y se probo a hacerlo: ese
+        # borrado era codigo muerto y lo delato un mutante que ninguna prueba podia
+        # matar. Se escribe SIEMPRE junto con `_tramo_terminado = True` (es la unica
+        # linea que la toca, en `_al_dia`) y solo se publica con `_tramo_terminado`
+        # puesto, asi que el tramo reabierto no puede publicar nada viejo: cuando
+        # vuelva a acabarse, la lista se habra reescrito con lo que el seguidor
+        # tenga entonces. Si algun dia `_tramo_terminado` se enciende desde otro
+        # sitio, esa linea tiene que guardar tambien esto.
+        self._tocadas_del_tramo_acabado: tuple[NotaTocada, ...] = ()
         # El ultimo instante del reloj del ANALISIS que vimos, solo para sacar
         # el delta de la cuenta atras cuando el tiempo viene en cuadros.
         self._ultimo_analisis: float | None = None
@@ -424,9 +437,49 @@ class SesionDeEstudio:
     def plan(self) -> PlanDePasada:
         return self._plan
 
+    def _tocadas_al_acabar_el_tramo(
+        self, en_vuelo: tuple[NotaTocada, ...]
+    ) -> tuple[NotaTocada, ...]:
+        """Lo tocado que el estado publica con el tramo ya acabado SIN bucle.
+
+        **ES EL ARREGLO DE UN DEFECTO QUE SE VEIA EN PANTALLA Y NO LO VIO NINGUNA
+        PRUEBA.** Al terminar la pieza el resumen decia «0 de 48 notas acertadas»
+        tres centimetros por encima de un informe por compases que sumaba 31: las
+        dos cifras salen de dos acumuladores distintos, y el que alimenta el numero
+        grande -`estado.carril.tocadas`, que es el registro VIVO del seguidor- se
+        vacia justo al terminar. Quien lo vacia es el cierre del tramo
+        (`cerrar_repeticion` -> `olvidar_tramo` sobre la pieza entera), y lo hace
+        en el mismo cuadro en que `completado` se enciende, asi que el usuario
+        nunca llegaba a ver un estado con las notas dentro.
+
+        Que el cierre vacie el seguidor es correcto y no se toca: el informe suma
+        lo acumulado MAS lo que el seguidor tenga, y sin vaciarlo contaria dos
+        veces. Lo que se arregla es la OTRA mitad: las notas de la pasada se
+        guardan al acabar el tramo y se siguen publicando, que es la misma solucion
+        -y por el mismo motivo- que `tocadas_de_la_ultima_vuelta` ya daba para la
+        vuelta del bucle.
+
+        Lo que el seguidor adjudique DESPUES se añade, sin repetir indices: el
+        detector firma un onset hasta `VENTANA_ATAQUE_COMO_ONSET_S` despues de que
+        ocurriera, asi que la ultima nota del tramo se resuelve con el tramo ya
+        acabado y tiene que salir en el resumen igual que sale en el informe.
+
+        Solo manda con `_tramo_terminado`, que es el final de un tramo SIN bucle:
+        con bucle no se enciende nunca, y publicar ahi las notas de una vuelta
+        cerrada seria pintar marcas sobre notas que la vuelta nueva no ha tocado.
+        """
+        ya = {tocada.indice for tocada in self._tocadas_del_tramo_acabado}
+        return self._tocadas_del_tramo_acabado + tuple(
+            tocada for tocada in en_vuelo if tocada.indice not in ya
+        )
+
     @property
     def estado(self) -> EstadoEstudio:
         carril = self._seguidor.estado
+        if self._tramo_terminado:
+            carril = replace(
+                carril, tocadas=self._tocadas_al_acabar_el_tramo(carril.tocadas)
+            )
         pulsos = self._pulsos(carril.instante_s)
         # El compas se acota al ultimo del tramo, y no es cosmetica: los pulsos
         # del compas son un intervalo MEDIO ABIERTO, asi que el reloj parado en
@@ -782,6 +835,13 @@ class SesionDeEstudio:
             if not self._tramo_terminado:
                 self._tramo_terminado = True
                 self._analisis_al_acabar = self._ultimo_analisis
+                # Lo tocado se guarda AQUI, en la transicion, y no cuando alguien
+                # cierra el tramo: el seguidor todavia lo tiene, y asi esto no
+                # depende de que quien conduzca llame a `cerrar_repeticion` ni de
+                # cuando lo llame. Ver `_tocadas_al_acabar_el_tramo`.
+                self._tocadas_del_tramo_acabado = tuple(
+                    self._seguidor.estado.tocadas
+                )
             if not con_audio:
                 # Un aviso SIN cuadros cierra la ventana, y no solo en la
                 # transicion: esta linea es el tope del aplazamiento y sin ella el

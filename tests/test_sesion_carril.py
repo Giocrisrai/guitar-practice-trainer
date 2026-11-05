@@ -937,3 +937,72 @@ def test_el_oyente_del_click_toma_el_candado_del_carril():
     finally:
         sesion_carril.detener()
         sesion.detener()
+
+
+# -- el resumen de fin de pieza no se contradice con su propio informe -------
+
+
+def terminar_la_pasada(sesion_carril, reloj, tope_s=30.0):
+    """Mira hasta que el carril publica `completado`. Devuelve el estado.
+
+    Mirando y no tocando el nucleo por detras: el final del tramo lo decide el
+    reloj de la pasada, y el reloj de la pasada lo mueve la mirada. Despues del
+    ultimo cuadro de audio el conductor no mueve nada hasta que pasan
+    `ESPERA_SIN_CUADROS_S` (es su invariante: con cuadros recientes, mover el
+    reloj a mano le costaria pulsaciones al seguidor), asi que el tope es generoso
+    a proposito; ninguna de esas esperas es real, las da el reloj falso.
+    """
+    mirado = 0.0
+    while mirado < tope_s:
+        estado = avanzar_mirando(sesion_carril, reloj, 0.5)
+        mirado += 0.5
+        if estado["completado"]:
+            return estado
+    raise AssertionError("la pasada no llego a completarse")
+
+
+def test_al_acabar_la_pieza_el_estado_sigue_diciendo_lo_que_se_toco():
+    """El numero grande de «Pieza terminada» y la tabla del informe, de acuerdo.
+
+    Era el defecto: el estado publicado salia con `tocadas` VACIA en cuanto la
+    pasada se completaba, asi que la pantalla titulaba «0 de 48 notas acertadas»
+    tres centimetros por encima de un informe por compases que sumaba 31. La causa
+    es que las dos cifras salian de dos acumuladores distintos y el que alimenta el
+    numero grande se vacia justo al terminar: el conductor cierra el tramo con
+    `cerrar_repeticion`, cuyo ultimo acto es `olvidar_tramo` sobre la pieza entera,
+    y eso poda las `NotaTocada` del seguidor en el MISMO cuadro en que
+    `completado` se enciende.
+
+    Se mide la concordancia y no una cifra suelta: «0 de 48» junto a una tabla con
+    31 aciertos es una contradiccion en pantalla, y lo que hay que vigilar es que
+    los dos numeros digan lo mismo.
+    """
+    reloj = RelojFalso()
+    sesion_carril, sesion = carril(reloj)
+    # Las cuatro notas LLENAN el compas, y eso es parte del caso: con una pieza
+    # mas corta que su compas el reloj llega al final de la PIEZA antes que al del
+    # TRAMO, y entonces no hay cierre de tramo que vacie nada. Lo que el usuario
+    # vio en pantalla es una pieza de doce compases con sus cuatro notas cada uno.
+    sesion_carril.iniciar(
+        pieza_de([40, 45, 50, 55]), PlanDePasada(compases_de_cuenta_atras=0)
+    )
+    publicar(sesion, reloj, suena("E2"), cuadros=12)
+    assert len(sesion_carril.estado()["tocadas"]) == 1
+
+    terminar_la_pasada(sesion_carril, reloj)
+    # Y se mira OTRA VEZ, que es lo que hace la pantalla: el WebSocket sigue
+    # pidiendo el estado 30 veces por segundo despues del final. El cuadro en que
+    # `completado` se enciende se publica ANTES de que el conductor cierre el tramo
+    # (`ConductorDeEstudio.mirar` devuelve el estado leido antes del cierre), asi
+    # que el que el usuario tiene delante es cualquiera de los siguientes.
+    estado = sesion_carril.estado()
+    assert estado["completado"] is True
+
+    en_pantalla = sum(1 for t in estado["tocadas"] if t["acertada"])
+    en_el_informe = sum(
+        c["acertadas"] for c in sesion_carril.informe()["informe"]["compases"]
+    )
+    assert en_el_informe == 1, "la tabla por compases es la que ya decia la verdad"
+    assert en_pantalla == en_el_informe
+    sesion_carril.detener()
+    sesion.detener()
