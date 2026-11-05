@@ -19,7 +19,7 @@ que intermedio en todos los campos) y que `CAOS` sea lo bastante bruto para
 provocar los fantasmas del solape que la spec §10 quiere medir.
 """
 
-from dataclasses import dataclass, fields
+from dataclasses import dataclass
 
 # Campos que son probabilidades o fracciones y por tanto viven en [0, 1].
 _CAMPOS_EN_LA_UNIDAD = (
@@ -89,10 +89,6 @@ class PerfilDeDestreza:
                 f"El perfil '{self.nombre}' tiene fuerza_media={self.fuerza_media}: "
                 "tiene que estar entre 0 (excluido) y 1"
             )
-
-    def a_dict(self) -> dict:
-        """Para el escaparate y el CLI, que ensenan el perfil que estan usando."""
-        return {campo.name: getattr(self, campo.name) for campo in fields(self)}
 
 
 PERFECTO = PerfilDeDestreza(

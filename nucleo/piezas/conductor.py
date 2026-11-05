@@ -143,10 +143,18 @@ class ConductorDeEstudio:
     guardarlo fuera y pasarlo: esta clase no lo hace por nadie (el servidor lleva
     uno por NOMBRE de pieza).
 
-    `techo_tramo_s` y `espera_sin_cuadros_s` se inyectan para poder conducir el
-    reloj con otra cadencia -el gemelo no va a 47 cuadros por segundo- sin tocar
-    las constantes, que son las de produccion y siguen siendo el valor por
-    defecto.
+    **EL TECHO Y LA ESPERA NO SE INYECTAN, y antes si.** Llevaban firma propia
+    -`techo_tramo_s` y `espera_sin_cuadros_s`- «para poder conducir el reloj con
+    otra cadencia, que el gemelo no va a 47 cuadros por segundo», y esa frase era
+    falsa por los dos lados: el gemelo digital no inyecta nada -`nucleo/gemelo/
+    cadena.py` no menciona ninguna de las dos en una sola linea de codigo- y corre
+    a 21 ms, muy por debajo del techo de 100, asi que el techo no le muerde nunca.
+    Medido por el revisor: ignorar los dos valores inyectados en los tres sitios
+    que los leian y usar las constantes del modulo no mataba NINGUNA prueba.
+
+    No sobraba el techo, que es el invariante del reloj y sigue entero: sobraban
+    los parametros. El dia que alguien necesite otra cadencia, la firma se vuelve
+    a abrir con la prueba que le pase otro valor, que es lo que nunca existio.
     """
 
     def __init__(
@@ -154,14 +162,10 @@ class ConductorDeEstudio:
         estudio: SesionDeEstudio,
         historial: HistorialDeEstudio | None = None,
         al_cambiar_repeticion: Callable[[EstadoEstudio], None] | None = None,
-        techo_tramo_s: float = TECHO_TRAMO_S,
-        espera_sin_cuadros_s: float = ESPERA_SIN_CUADROS_S,
     ) -> None:
         self._estudio = estudio
         self._historial = historial if historial is not None else HistorialDeEstudio()
         self._al_cambiar_repeticion = al_cambiar_repeticion
-        self._techo_tramo_s = techo_tramo_s
-        self._espera_sin_cuadros_s = espera_sin_cuadros_s
         self._candado = threading.RLock()
         # El espejo del reloj del estudio. Arranca donde el estudio diga y NO en
         # cero: con un plan que empieza en el compas 5 el cabezal arranca donde
@@ -404,7 +408,7 @@ class ConductorDeEstudio:
                 # lo mueve `procesar` (ver ESPERA_SIN_CUADROS_S: colocarlo con
                 # audio entrando cuesta las pulsaciones en vuelo).
                 if self._sin_cuadros(ahora):
-                    estudio.avanzar(min(transcurrido, self._techo_tramo_s))
+                    estudio.avanzar(min(transcurrido, TECHO_TRAMO_S))
             elif not self._congelado:
                 self._congelado = True
                 estudio.congelar_en(self._instante)
@@ -433,7 +437,7 @@ class ConductorDeEstudio:
         """
         return (
             self._ultimo_analisis is None
-            or instante_analisis - self._ultimo_analisis >= self._espera_sin_cuadros_s
+            or instante_analisis - self._ultimo_analisis >= ESPERA_SIN_CUADROS_S
         )
 
     def _sin_cuadros(self, ahora: float) -> bool:
@@ -441,7 +445,7 @@ class ConductorDeEstudio:
         reloj a mano sin costarle una pulsacion. Ver `ESPERA_SIN_CUADROS_S`."""
         return (
             self._ultimo_cuadro is None
-            or ahora - self._ultimo_cuadro >= self._espera_sin_cuadros_s
+            or ahora - self._ultimo_cuadro >= ESPERA_SIN_CUADROS_S
         )
 
     def cerrar_lo_que_termino(self, estado: EstadoEstudio) -> None:
