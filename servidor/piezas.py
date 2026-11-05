@@ -66,6 +66,12 @@ from servidor.configuracion import Configuracion
 # hecha, para no tener dos respuestas distintas a la misma pregunta.
 PERFIL_POR_DEFECTO = Configuracion().perfil
 
+# El umbral de ruido que se da por bueno cuando la sesion de audio no lleva
+# configuracion (un doble de prueba, u otro flujo de audio). Mismo motivo y misma
+# fuente que `PERFIL_POR_DEFECTO`: la configuracion no es parte de la frontera de
+# tres miembros que esta clase le exige a su sesion de audio.
+UMBRAL_DE_RUIDO_POR_DEFECTO_DBFS = Configuracion().umbral_ruido_dbfs
+
 # Lo que publica un carril sin pieza: las mismas claves que con pieza, para que el
 # WebSocket y la interfaz no tengan que distinguir dos formas de estado.
 #
@@ -103,6 +109,56 @@ _ESTUDIO_APAGADO = EstadoEstudio(
 # en 1, asi que el cero no es el de ninguna pieza y nadie puede confundirlo con
 # una: es justo lo que se quiere, porque este estado no describe ninguna.
 ARRANQUE_NINGUNO = 0
+
+
+def se_esperan_notas(
+    estado: EstadoEstudio | None, sin_senal: bool, hubo_senal_en_la_pasada: bool
+) -> bool:
+    """**LA REGLA DEL AVISO DEL CABLE, DECIDIDA UNA VEZ Y EN UN SOLO SITIO.**
+
+    Contesta una sola pregunta: *si el silencio de ahora mismo puede ser una
+    averia del montaje*. De ella cuelgan las DOS mitades del mismo aviso -el
+    `sin_senal` de `/api/diagnostico` y la linea naranja del carril en la
+    pantalla-, y por eso vive aqui y viaja PUBLICADA en el estado
+    (`esperando_notas`): estaba escrita dos veces, en dos idiomas, las dos no eran
+    la misma, y un comentario del JSX afirmaba que si. Cada mitad tenia su mutante
+    y cada mutante moria en su propio idioma, lo que daba la sensacion de estar
+    cubierto.
+
+    Los cuatro casos:
+
+    - **Sin pasada en marcha, SI se esperan notas.** El usuario puede estar en el
+      afinador peleandose con el jack, y ahi callarse esconderia el unico aviso
+      que le explicaria por que no ve nada.
+    - **Con la pieza o el tramo terminados, no.** El silencio es el final: el
+      usuario acabo y dejo de tocar. Es el defecto que se arreglo primero -«sube
+      el volumen de la guitarra» en cuanto la pasada acababa-.
+    - **Con el carril congelado por falta de señal DESPUES de haber recibido señal
+      en esta pasada, no.** Es el defecto que el revisor midio en `--bucle 2-2
+      --repeticiones 2`: un tramo en bucle no publica `completado` ni
+      `tramo_terminado` NUNCA -el bucle no se acaba, es su proposito-, asi que la
+      regla anterior no mordia y la pantalla acusaba al cable de que el usuario
+      descansara la mano entre repeticiones, que es como se practica un compas.
+      Si el cable entrego señal hace un momento, «sube el volumen de la guitarra»
+      es falso, y un aviso falso justo cuando mas se ve es un aviso que el usuario
+      deja de leer.
+    - **En cualquier otro caso, si**, y ahi esta el caso legitimo entero: la pasada
+      corriendo y el cable sin entregar una sola muestra -volumen a cero, jack
+      flojo- sigue avisando, en marcha o en pausa.
+
+    **LA PAUSA DEL USUARIO NO CALLA NADA**, y callarla era el otro defecto: quien
+    pausa porque no le marca nada es exactamente quien necesita leer que no llega
+    señal. Es el mismo argumento del afinador, y la linea naranja del carril ya
+    salia en pausa, asi que las dos mitades decian lo contrario a la vez.
+
+    Se distingue por ESTADO y no por un temporizador: «lleva un rato callado» es
+    verdad en todos los casos, asi que el tiempo no los separa.
+    """
+    if estado is None:
+        return True
+    if estado.tramo_terminado or estado.carril.completado:
+        return False
+    return not (sin_senal and hubo_senal_en_la_pasada)
 
 
 class SesionCarril:
@@ -226,6 +282,11 @@ class SesionCarril:
         # congelado. `pausado` es lo que la interfaz dibuja como "sin señal".
         self._instante = 0.0
         self._pausado = False
+        # Si el cable ha entregado señal en ALGUN momento de esta pasada. Lo pone
+        # el mismo sitio que `_pausado` y se borra al arrancar y al parar, porque
+        # es un hecho DE LA PASADA: lo que dice es si acusar al cable del silencio
+        # de ahora mismo sigue siendo creible. Ver `se_esperan_notas`.
+        self._hubo_senal = False
 
     @property
     def activa(self) -> bool:
@@ -310,6 +371,7 @@ class SesionCarril:
                 # pasada, y no desde un reloj monotonico que lleva horas andando.
                 self._conductor.fijar_la_mirada(ahora)
                 self._pausado = False
+                self._hubo_senal = False
             # (`detener()` de arriba ya paro el click de la pieza anterior.)
             # El observador se registra AL FINAL, con el estudio ya en su sitio:
             # si se registrara antes, el primer cuadro podria entrar con
@@ -348,6 +410,7 @@ class SesionCarril:
                 self._pieza = None
                 self._instante = 0.0
                 self._pausado = False
+                self._hubo_senal = False
 
     def estado(self) -> dict:
         """Instantanea para la interfaz: el `EstadoEstudio` mas `pausado`.
@@ -381,25 +444,13 @@ class SesionCarril:
 
     @property
     def esperando_notas(self) -> bool:
-        """Si la sesion espera que el usuario toque AHORA MISMO.
+        """Si el silencio de ahora mismo puede ser una averia del cable.
 
-        Lo lee `/api/diagnostico` para no acusar al cable del silencio que la
-        propia sesion esta pidiendo: la regla, el defecto que arregla y por que se
-        decide por estado y no por un temporizador estan en
-        `servidor/diagnostico.diagnosticar`.
-
-        Los tres casos, y el primero es el que mas importa:
-
-        - **Sin pasada en marcha se espera que toque.** El usuario puede estar en
-          el afinador peleandose con el jack, y ahi el aviso es justo lo que le
-          falta por leer. Callarse seria esconder el unico aviso que le explicaria
-          por que no ve nada.
-        - Con la pasada corriendo tambien: el silencio del cable es un problema de
-          verdad, y es el caso legitimo del aviso.
-        - Con la pieza (o el tramo) terminada, o en pausa del usuario, NO: el
-          silencio es lo que se espera. Es el defecto que esto arregla -«sube el
-          volumen de la guitarra» en cuanto se acababa la pasada- y las dos son la
-          misma situacion: la sesion no esta pidiendo notas a nadie.
+        **LA REGLA NO ESTA AQUI: esta en `se_esperan_notas`**, de donde la leen
+        las dos mitades del aviso -esta propiedad, que es lo que mira
+        `/api/diagnostico`, y el campo `esperando_notas` del estado publicado, que
+        es lo que mira la linea naranja del carril-. Que estuviera escrita dos
+        veces, en dos idiomas y distinta en cada uno es el defecto que esto cierra.
 
         NO mira el reloj ni mueve nada: lee el estado que el estudio ya tiene, sin
         pasar por `estado()`, que MIRA antes de publicar. Esto lo llama el hilo
@@ -409,11 +460,11 @@ class SesionCarril:
         """
         with self._candado:
             estudio = self._estudio
-            if estudio is None:
-                return True
-            estado = estudio.estado
-            terminada = estado.tramo_terminado or estado.carril.completado
-            return not terminada and not estado.en_pausa
+            return se_esperan_notas(
+                None if estudio is None else estudio.estado,
+                self._pausado,
+                self._hubo_senal,
+            )
 
     def _sin_senal(self) -> bool:
         """Si el carril debe tratarse como sin señal: no hay audio que oir.
@@ -429,6 +480,28 @@ class SesionCarril:
         """
         activa = getattr(self._sesion_audio, "activa", True)
         return bool(self._sesion_audio.senal_ausente) or not activa
+
+    def _cuadro_con_senal(self, resultado) -> bool:
+        """Si este cuadro de audio trae señal de verdad, no silencio.
+
+        Es el hecho que `_hubo_senal` acumula, y la pregunta se le hace AL CUADRO
+        porque es la unica forma de saber que el cable entrego algo: el
+        `senal_ausente` de la sesion es «cinco segundos seguidos por debajo del
+        umbral», asi que es falso durante los cinco primeros segundos de cualquier
+        pasada, tambien de una en la que nunca llegue nada.
+
+        El umbral es el de la configuracion de la sesion de audio -el mismo con el
+        que ella decide la falta de señal, para no tener dos respuestas a la misma
+        pregunta- y el de fabrica cuando esa sesion no lleva configuracion, igual
+        que en `_perfil_activo`.
+        """
+        configuracion = getattr(self._sesion_audio, "configuracion", None)
+        umbral = (
+            UMBRAL_DE_RUIDO_POR_DEFECTO_DBFS
+            if configuracion is None
+            else configuracion.umbral_ruido_dbfs
+        )
+        return resultado.nivel_db is not None and resultado.nivel_db > umbral
 
     def _perfil_activo(self) -> str:
         """La afinacion con la que el usuario esta tocando ahora mismo.
@@ -495,6 +568,13 @@ class SesionCarril:
             # hasta un segundo aqui cegaria la deteccion de ataques.
             conductor.mover_el_reloj(ahora, ausente)
             self._pausado = ausente
+            # **DEL CUADRO Y NO DE `ausente`**: `senal_ausente` solo se enciende
+            # tras cinco segundos por debajo del umbral, asi que al arrancar la
+            # pasada es falso sin que haya llegado una sola muestra y el hecho se
+            # daria por cierto antes de ser cierto. Lo que cuenta es un cuadro con
+            # nivel por encima del umbral de ruido: eso es el cable entregando.
+            if self._cuadro_con_senal(resultado):
+                self._hubo_senal = True
             self._instante = conductor.instante
         conductor.observar(resultado, instante_analisis)
 
@@ -554,6 +634,9 @@ class SesionCarril:
             return {
                 **_ESTUDIO_APAGADO.a_dict(),
                 "pausado": False,
+                # Sin pasada SI se esperan notas: el afinador. Ver
+                # `se_esperan_notas`, que es quien lo decide tambien aqui.
+                "esperando_notas": se_esperan_notas(None, False, False),
                 "click_sonando": False,
                 "factor_sugerido": None,
                 "arranque": ARRANQUE_NINGUNO,
@@ -566,6 +649,12 @@ class SesionCarril:
         return {
             **estado.a_dict(),
             "pausado": self._pausado,
+            # La MISMA llamada que contesta a `/api/diagnostico` por la propiedad
+            # `esperando_notas`: las dos mitades del aviso del cable no pueden
+            # discrepar porque leen el mismo dato. Ver `se_esperan_notas`.
+            "esperando_notas": se_esperan_notas(
+                estado, self._pausado, self._hubo_senal
+            ),
             # Lo que SUENA y no lo que se pidio: sin salida de audio, o con un
             # tempo que el metronomo rechaza, el plan dice con_click y esto dice
             # False, para que la interfaz escriba "sin click" en vez de mostrar un

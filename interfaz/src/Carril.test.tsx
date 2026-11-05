@@ -90,7 +90,7 @@ const ESTUDIO_BASE = {
   tempo_efectivo: 60, en_bucle: false, con_click: false, tempo_automatico: false,
   en_pausa: false, compas_variable: false,
   ritmo_aproximado: false, tramo_terminado: false, click_sonando: false,
-  factor_sugerido: null,
+  factor_sugerido: null, esperando_notas: true,
 };
 
 /** El carril apagado: las mismas claves que con pieza (`_CARRIL_APAGADO`). */
@@ -1099,9 +1099,14 @@ describe("Carril: los controles de la pasada", () => {
   /**
    * El aviso del carril acusa al CABLE («no llega señal del cable»), y con la
    * pieza terminada eso es falso: el usuario acabó la pasada y dejó de tocar, que
-   * es lo que se espera que haga. El servidor deja de acusar al cable en el
-   * diagnóstico por la misma razón y con la misma regla; aquí se calla la línea
-   * del carril, que es la otra mitad de lo mismo en la misma pantalla.
+   * es lo que se espera que haga.
+   *
+   * **Y la regla la decide el servidor, no esta pantalla.** Aquí se LEE
+   * `esperando_notas`, que es el mismo dato con el que el servidor deja de acusar
+   * al cable en `/api/diagnostico` (`se_esperan_notas`, en `servidor/piezas.py`).
+   * Antes esta línea tenía su propia condición (`!completado`) y un comentario que
+   * afirmaba que era la misma regla; no lo era, y por eso en la pausa del usuario
+   * las dos mitades decían lo contrario a la vez.
    */
   it("con la pieza terminada el carril no acusa al cable de su silencio", async () => {
     await montarEnMarcha(fetchConOrdenes());
@@ -1109,12 +1114,40 @@ describe("Carril: los controles de la pasada", () => {
       enCurso({
         completado: true,
         pausado: true,
+        esperando_notas: false,
         total_de_compases: 4,
         primer_compas: 1,
         ultimo_compas: 4,
       }),
     );
     expect(await screen.findByText(/Pieza terminada/i)).toBeTruthy();
+    expect(screen.queryByText(/no llega señal del cable/)).toBeNull();
+  });
+
+  /**
+   * **El defecto que el revisor midió en el uso central de la etapa 3c.** Un tramo
+   * en bucle no publica `completado` ni `tramo_terminado` nunca —el bucle no se
+   * acaba—, así que la condición vieja de esta línea (`!completado`) era verdadera
+   * para siempre y el carril acusaba al cable de que el usuario descansara la mano
+   * entre repeticiones. Medido con `--bucle 2-2 --repeticiones 2`: a los 12,2 s
+   * `pausado=true` y el diagnóstico decía `sin_senal`.
+   *
+   * Lo que lo cierra es leer la regla del servidor: ahí `esperando_notas` ya es
+   * falso porque el cable entregó señal hace un momento. Con la condición vieja
+   * esta prueba no podía pasar, que es lo que la hace la prueba de la costura por
+   * el lado de TypeScript.
+   */
+  it("descansando en un bucle el carril no acusa al cable, aunque nada esté completado", async () => {
+    await montarEnMarcha(fetchConOrdenes());
+    enviarEstado(
+      enCurso({
+        completado: false,
+        tramo_terminado: false,
+        en_bucle: true,
+        pausado: true,
+        esperando_notas: false,
+      }),
+    );
     expect(screen.queryByText(/no llega señal del cable/)).toBeNull();
   });
 

@@ -60,18 +60,23 @@ def diagnosticar(
     en uso; se usa solo para distinguir "otro_dispositivo" de una elección
     deliberada sin el cable presente.
 
-    **esperando_notas en False SILENCIA "sin_senal", y nada más.** Es si la sesión
-    está esperando que alguien toque ahora mismo. Con la pieza terminada -o en
-    pausa del usuario- el silencio es lo que se espera, no una avería, y el aviso
-    salía igual: el usuario acababa la pasada, dejaba de tocar unos segundos y la
-    pantalla le decía que subiera el volumen de una guitarra que estaba
-    perfectamente bien. Un aviso que es falso justo cuando más se ve es un aviso
-    que el usuario deja de leer, y el caso legítimo -está intentando tocar y no
-    llega señal- es el que no se puede perder.
+    **esperando_notas en False SILENCIA "sin_senal", y nada más.** Es si el
+    silencio de ahora mismo puede ser una avería del montaje. Con la pieza
+    terminada, o con el cable habiendo entregado señal hace un momento, no lo es:
+    el usuario acababa la pasada —o descansaba la mano entre dos vueltas del
+    bucle—, dejaba de tocar unos segundos y la pantalla le decía que subiera el
+    volumen de una guitarra que estaba perfectamente bien. Un aviso que es falso
+    justo cuando más se ve es un aviso que el usuario deja de leer, y el caso
+    legítimo —está intentando tocar y no llega señal— es el que no se puede perder.
 
-    Se distingue por ESTADO DE LA SESIÓN y no por un temporizador: "lleva un rato
-    callado" es verdad en los dos casos, así que el tiempo no los separa. Quien
-    pregunta es quien sabe si espera notas, y eso es toda la regla.
+    **LA REGLA ENTERA, con sus cuatro casos y los dos defectos medidos que la
+    fijaron, está en `se_esperan_notas` (`servidor/piezas.py`)**, que es su único
+    sitio: de ahí la leen las dos mitades del mismo aviso, este endpoint y la línea
+    naranja del carril. Aquí no se decide nada; aquí se obedece.
+
+    Se distingue por ESTADO y no por un temporizador: "lleva un rato callado" es
+    verdad en todos los casos, así que el tiempo no los separa. Quien pregunta es
+    quien sabe si espera notas, y eso es toda la regla.
 
     Los demás estados NO dependen de esto: que no haya permiso, que el cable no
     aparezca o que el dispositivo en uso no sea el cable son hechos del montaje, y

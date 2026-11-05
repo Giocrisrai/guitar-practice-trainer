@@ -5,6 +5,7 @@ a mano. Tampoco se abre ningun dispositivo de audio: la sesion de audio es un
 doble con las tres cosas que `SesionCarril` le pide.
 """
 
+import pathlib
 import threading
 
 import pytest
@@ -1042,19 +1043,159 @@ def test_con_la_pieza_en_marcha_se_esperan_notas_y_al_acabar_ya_no():
     sesion.detener()
 
 
-def test_en_la_pausa_del_usuario_tampoco_se_esperan_notas():
-    """La pausa la pidio el usuario: el silencio es lo que pidio, no una averia."""
+def test_en_la_pausa_del_usuario_se_siguen_esperando_notas_si_nunca_llego_senal():
+    """**La pausa NO calla el aviso, y callarla era un defecto medido.**
+
+    Esta prueba afirmaba lo contrario -«la pausa la pidio el usuario, el silencio
+    es lo que pidio»- y es el argumento equivocado: el usuario que pausa porque no
+    le marca nada es exactamente quien necesita leer que no llega señal. Es el
+    mismo argumento con el que `esperando_notas` se queda en True sin pasada en
+    marcha («puede estar en el afinador peleandose con el jack»), y la otra mitad
+    del aviso -la linea naranja del carril- SI salia en pausa, asi que las dos
+    mitades decian lo contrario a la vez.
+
+    Lo que calla el aviso no es quien pidio el silencio: es que el cable ya haya
+    demostrado en esta pasada que funciona. Ver `se_esperan_notas`.
+    """
     reloj = RelojFalso()
     sesion_carril, sesion = carril(reloj)
     sesion_carril.iniciar(
         pieza_de([40, 45, 50, 55]), PlanDePasada(compases_de_cuenta_atras=0)
     )
     sesion_carril.pausa(True)
-    assert sesion_carril.esperando_notas is False
-    sesion_carril.pausa(False)
-    assert sesion_carril.esperando_notas is True
+    sesion.senal_ausente = True
+    avanzar_mirando(sesion_carril, reloj, 1.0)
+
+    assert sesion_carril.estado()["pausado"] is True
+    assert sesion_carril.esperando_notas is True, (
+        "nunca llego señal en esta pasada: el aviso es el unico que le explica "
+        "por que no ve nada, y es justo lo que fue a investigar pausando"
+    )
+    assert sesion_carril.estado()["esperando_notas"] is True
+
     sesion_carril.detener()
     sesion.detener()
+
+
+def test_en_un_bucle_el_descanso_entre_vueltas_no_acusa_al_cable():
+    """**EL DEFECTO QUE EL REVISOR MIDIO EN EL USO CENTRAL DE LA ETAPA 3C.**
+
+    Medido con el escaparate en `--bucle 2-2 --repeticiones 2`: a los 12,2 s
+    `pausado=True` y el diagnostico decia `sin_senal`, o sea «sube el volumen de
+    la guitarra» de una guitarra que estaba perfectamente bien. La causa: un tramo
+    en bucle NO publica nunca `completado` ni `tramo_terminado` -el bucle no se
+    acaba, es su proposito-, asi que la regla de «con la pieza terminada no se
+    esperan notas» no muerde nunca y el aviso volvia entero. El commit que
+    arreglo el caso sin bucle lo dejo intacto en el caso con bucle, que es como el
+    usuario practica: machacar el compas que falla, y descansar la mano entre
+    repeticiones.
+
+    La regla que lo cierra no mira si la pasada acabo, que en un bucle no acaba
+    nunca: mira si **el cable ya entrego señal en esta pasada**. Si entrego,
+    «sube el volumen» es falso y el aviso calla; si no entrego nunca, el aviso es
+    el caso legitimo y sigue saliendo (prueba de arriba).
+    """
+    reloj = RelojFalso()
+    sesion_carril, sesion = carril(reloj)
+    sesion_carril.iniciar(
+        pieza_de([40, 45, 50, 55]),
+        PlanDePasada(en_bucle=True, compases_de_cuenta_atras=0),
+    )
+    # Toca de verdad un par de segundos: el cable entrega señal.
+    publicar(sesion, reloj, suena("E2"), cuadros=20)
+    avanzar_mirando(sesion_carril, reloj, 0.5)
+    assert sesion_carril.esperando_notas is True, "tocando si se esperan notas"
+
+    # Y descansa la mano. A los 5 s sin señal el carril se congela.
+    sesion.senal_ausente = True
+    estado = avanzar_mirando(sesion_carril, reloj, 7.0)
+
+    assert estado["en_bucle"] is True
+    assert estado["completado"] is False, "un bucle no se acaba: es su proposito"
+    assert estado["tramo_terminado"] is False
+    assert estado["pausado"] is True, "el carril si esta congelado, y lo dice"
+    assert sesion_carril.esperando_notas is False, (
+        "el cable entrego señal hace un momento: acusarlo ahora es decirle que "
+        "suba el volumen de una guitarra que esta bien"
+    )
+    assert estado["esperando_notas"] is False
+
+    sesion_carril.detener()
+    sesion.detener()
+
+
+def test_la_regla_del_aviso_se_decide_una_vez_y_las_dos_mitades_la_leen():
+    """**LA COSTURA: el panel de diagnostico y el carril leen el MISMO dato.**
+
+    La regla vivia escrita dos veces -tres clausulas en Python
+    (`tramo_terminado`, `carril.completado`, `en_pausa`) y una en TypeScript
+    (`!completado`)-, no eran la misma, y un comentario del JSX afirmaba que si.
+    Cada mitad tenia su mutante y cada mutante moria en su propio idioma, lo que
+    daba la sensacion de estar cubierto. El resultado medible era que en la pausa
+    del usuario el diagnostico callaba y el carril acusaba al cable.
+
+    Ahora la regla se decide en `se_esperan_notas` y viaja PUBLICADA en el estado,
+    asi que las dos mitades no pueden discrepar: la propiedad que lee
+    `/api/diagnostico` y el campo que lee el carril salen de la misma llamada.
+    Esto cruza la costura por el lado de Python; por el de TypeScript la cruza
+    `Carril.test.tsx`, que dibuja la linea naranja solo con el campo publicado, y
+    `test_la_interfaz_no_recalcula_la_regla_del_aviso`, que comprueba que el JSX no
+    se la vuelve a inventar.
+    """
+    reloj = RelojFalso()
+    sesion_carril, sesion = carril(reloj)
+
+    # Sin pasada: el afinador. Las dos mitades dicen que si.
+    assert sesion_carril.esperando_notas is True
+    assert sesion_carril.estado()["esperando_notas"] is True
+
+    sesion_carril.iniciar(
+        pieza_de([40, 45, 50, 55]), PlanDePasada(compases_de_cuenta_atras=0)
+    )
+    for paso in ("recien empezada", "en pausa", "sin señal tras tocar", "terminada"):
+        if paso == "en pausa":
+            sesion_carril.pausa(True)
+            sesion_carril.pausa(False)
+        elif paso == "sin señal tras tocar":
+            publicar(sesion, reloj, suena("E2"), cuadros=20)
+            sesion.senal_ausente = True
+            avanzar_mirando(sesion_carril, reloj, 7.0)
+        elif paso == "terminada":
+            sesion.senal_ausente = False
+            terminar_la_pasada(sesion_carril, reloj)
+        estado = sesion_carril.estado()
+        assert estado["esperando_notas"] is sesion_carril.esperando_notas, (
+            f"las dos mitades discrepan con la pasada {paso}: el panel de "
+            "diagnostico y el carril tienen que leer la misma regla"
+        )
+
+    sesion_carril.detener()
+    sesion.detener()
+
+
+def test_la_interfaz_no_recalcula_la_regla_del_aviso():
+    """El JSX LEE `esperando_notas`; no se vuelve a inventar la regla.
+
+    Es la otra mitad de la costura, afirmada desde aqui porque es el unico sitio
+    donde se puede comparar con la regla de Python. Un comentario que dijera «es la
+    misma regla» es exactamente lo que habia antes, y era falso.
+    """
+    jsx = (
+        pathlib.Path(__file__).resolve().parents[1] / "interfaz" / "src" / "Carril.tsx"
+    ).read_text(encoding="utf-8")
+    # La condicion de la linea naranja: lo que hay entre la llave que la abre y el
+    # parrafo que la dibuja.
+    corte = jsx.index("Carril pausado")
+    condicion = jsx[jsx.rindex("{estado", 0, corte) : corte]
+
+    assert "esperando_notas" in condicion, (
+        "la linea del cable tiene que decidirse con el campo PUBLICADO: "
+        f"la condicion de hoy es {condicion!r}"
+    )
+    assert "completado" not in condicion, (
+        "y no recalculando la regla aqui, que es lo que hacia que las dos mitades "
+        "no fueran la misma"
+    )
 
 
 def test_una_pieza_que_acaba_antes_de_su_barra_de_compas_tampoco_espera_notas():

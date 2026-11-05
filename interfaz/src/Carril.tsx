@@ -551,13 +551,22 @@ export function Carril({ peticion = null }: PropiedadesCarril) {
       {/* La pausa se dice, no se disimula: el carril está quieto porque no llega
           señal del cable, y eso se arregla volviendo a tocar.
 
-          Pero NO con la pieza ya terminada: ahí el carril no está esperando
-          ninguna nota, el usuario dejó de tocar porque acabó, y acusar al cable
-          de ese silencio es decirle que algo va mal cuando todo fue bien. Es la
-          misma regla con la que el servidor deja de acusar al cable en
-          `/api/diagnostico` (ver `SesionCarril.esperando_notas`), aplicada a la
-          otra mitad del mismo aviso en la misma pantalla. */}
-      {estado?.pausado === true && !completado && (
+          **PERO LA REGLA DE CUÁNDO SE ACUSA AL CABLE NO SE DECIDE AQUÍ**: viene
+          decidida y publicada en `esperando_notas` (`se_esperan_notas`, en
+          `servidor/piezas.py`), y esta línea la LEE. Aquí había una condición
+          propia (`!completado`) y un comentario que afirmaba que era «la misma
+          regla» del servidor; no lo era —al servidor le faltaba la pausa del
+          usuario y a esta línea le faltaba todo lo demás—, así que en la pausa el
+          panel de diagnóstico callaba y esta línea acusaba, y en un bucle las dos
+          acusaban a quien descansaba la mano entre repeticiones. Dos mitades del
+          mismo aviso con dos reglas distintas y un comentario diciendo que eran
+          una.
+
+          El precio, dicho: descansando en medio de un bucle esta línea ya no sale,
+          y el carril se queda quieto sin decir nada. Es exactamente el silencio
+          que la sesión ya no trata como avería —el usuario dejó de tocar y lo
+          sabe—, y la alternativa medida era llamarle avería a su descanso. */}
+      {estado?.pausado === true && estado.esperando_notas === true && (
         <p className="aviso-carril pausado">
           Carril pausado: no llega señal del cable. Se reanuda en cuanto vuelvas a tocar.
         </p>

@@ -14,7 +14,7 @@ const ESTADO: EstadoEstudio = {
   en_bucle: false, con_click: false, tempo_automatico: false,
   en_pausa: false, compas_variable: false,
   ritmo_aproximado: false, tramo_terminado: false, click_sonando: false,
-  factor_sugerido: null,
+  factor_sugerido: null, esperando_notas: true,
 };
 
 const SECCIONES: SeccionEnCompases[] = [
