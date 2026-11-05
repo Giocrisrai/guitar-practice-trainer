@@ -45,6 +45,24 @@ MUESTRAS_DE_AUDIO = BLOQUES_DE_AUDIO * TAMANO_BLOQUE
 # como un fallo y no como una suite que no acaba.
 LIMITE_DE_ESPERA_S = 1.0
 
+# Cuanto se pasa de largo la espera inyectada en
+# `test_el_audio_no_se_ralentiza_cuando_las_esperas_se_pasan_de_largo`. El triple de
+# lo que se le pide, que es mas de lo que macOS se pasa de verdad (`Event.wait` de
+# 10,67 ms mide 12,98) y por tanto una prueba mas dura que la realidad.
+VECES_QUE_SE_PASA_LA_ESPERA = 3.0
+
+# Lo que el retraso del stream puede CRECER entre dos medidas separadas, en bloques.
+#
+# Sale de la espera inyectada y no de una medida en reposo: una espera que tarda el
+# triple cubre tres periodos, asi que un lazo correcto puede estar hasta tres
+# bloques por detras en un instante cualquiera, y entre dos instantes el retraso
+# puede moverse esos tres mas uno de redondeo. Cuatro es esa cota.
+#
+# Medido, para que se vea que no es un colchon: el lazo bueno crece -1, +2 y 0 con
+# cero, cuatro y ocho hilos quemando CPU; el lazo roto crece +17, +21 y +24. La
+# tabla esta en el docstring de la prueba.
+CRECIMIENTO_DEL_RETRASO_TOLERADO = 4
+
 
 def _audio_de_juguete(muestras: int = MUESTRAS_DE_AUDIO) -> np.ndarray:
     """Una rampa de valores distintos y positivos. Ver la cabecera del modulo."""
@@ -237,15 +255,41 @@ def test_el_audio_no_se_ralentiza_cuando_las_esperas_se_pasan_de_largo():
     Asi que la espera se inyecta y se hace tardar el triple a proposito. Con el
     lazo que se pone al dia, el audio sigue al reloj: lo que se pierde en una
     espera se recupera en la vuelta siguiente, igual que un dispositivo de verdad,
-    cuyo reloj es el del hardware. Con cualquiera de las dos versiones rotas, el
-    audio sale a un tercio y esta prueba se pone roja.
+    cuyo reloj es el del hardware.
+
+    **LO QUE SE AFIRMA ES QUE EL RETRASO NO CRECE, y no una fraccion del audio.**
+    La primera version exigia `entregados >= 0,9 * debidos`, un suelo medido en
+    reposo, y era INTERMITENTE: fallo una de cada cuatro pasadas de la suite en
+    `e24935d` y otra en la octava de veinte de la ronda 3. La razon esta medida: con
+    cuatro hilos quemando CPU el lazo BUENO entrega el 0,86 del audio -por debajo
+    del 0,9- aunque no haya perdido ni un bloque de deuda, porque al hilo le robaron
+    el turno. Un suelo fijo sobre una fraccion no distingue «el lazo pierde la
+    deuda» de «el hilo se quedo sin CPU».
+
+    Lo que si los distingue, y es lo que el lazo controla: **el lazo roto entrega
+    una FRACCION del audio, asi que su retraso crece con el tiempo; un hilo sin CPU
+    tiene un retraso acotado por lo que le robaron.** Medido, retraso en bloques
+    entre t=0,2 s y t=0,6 s:
+
+        carga     lazo bueno      lazo roto
+          0       3 -> 2  (-1)    9 -> 26  (+17)
+          4       6 -> 8  (+2)   14 -> 35  (+21)
+          8       4 -> 4  ( 0)   18 -> 42  (+24)
+
+    El crecimiento del lazo bueno no pasa de +2 con la maquina a ocho hilos de
+    carga; el del roto no baja de +17. El techo inscrito es
+    `CRECIMIENTO_DEL_RETRASO_TOLERADO`, y sale de la propia espera inyectada: ver su
+    comentario.
+
+    El techo de arriba (`entregados <= debidos + 1`) se queda tal cual: es exacto y
+    no depende de la carga, porque el lazo no puede entregar mas audio del que cabe
+    en el tiempo transcurrido.
     """
-    retraso = 3.0
     esperas: list[float] = []
 
     def esperar_pasandose(segundos: float) -> bool:
         esperas.append(segundos)
-        time.sleep(retraso * segundos)
+        time.sleep(VECES_QUE_SE_PASA_LA_ESPERA * segundos)
         return False
 
     bloques: list[int] = []
@@ -257,22 +301,35 @@ def test_el_audio_no_se_ralentiza_cuando_las_esperas_se_pasan_de_largo():
         esperar=esperar_pasandose,
     )
 
+    def retraso_ahora() -> tuple[float, int, int]:
+        """El reloj, los bloques que ya deberia haber entregado y los que faltan."""
+        transcurrido = time.monotonic() - arranque
+        debidos = int(transcurrido / (TAMANO_BLOQUE / FS))
+        return transcurrido, debidos, debidos - len(bloques)
+
     arranque = time.monotonic()
     stream.start()
-    time.sleep(0.3)
-    entregados = len(bloques)
-    transcurrido = time.monotonic() - arranque
-    stream.stop()
+    try:
+        medidas = []
+        for objetivo in (0.2, 0.6):
+            while time.monotonic() - arranque < objetivo:
+                time.sleep(0.005)
+            medidas.append(retraso_ahora())
+        transcurrido, debidos, _ = medidas[-1]
+        entregados = len(bloques)
+    finally:
+        stream.stop()
 
     assert esperas, "la espera inyectada no se uso: el seam no esta enganchado"
-    debidos = transcurrido / (TAMANO_BLOQUE / FS)
-    assert entregados >= 0.9 * debidos, (
-        f"con las esperas tardando {retraso:.0f} veces lo pedido, el stream entrego "
-        f"{entregados} bloques en {transcurrido:.3f} s y debia entregar "
-        f"{debidos:.0f}: el audio se ralentiza con el temporizador"
+    crecimiento = medidas[-1][2] - medidas[0][2]
+    assert crecimiento <= CRECIMIENTO_DEL_RETRASO_TOLERADO, (
+        f"con las esperas tardando {VECES_QUE_SE_PASA_LA_ESPERA:.0f} veces lo "
+        f"pedido, el retraso del stream crecio de {medidas[0][2]} a {medidas[-1][2]} "
+        f"bloques entre {medidas[0][0]:.2f} s y {medidas[-1][0]:.2f} s: el audio se "
+        "esta ralentizando con el temporizador en vez de ponerse al dia"
     )
     assert entregados <= debidos + 1, (
-        f"entrego {entregados} bloques y solo caben {debidos:.0f} en "
+        f"entrego {entregados} bloques y solo caben {debidos} en "
         f"{transcurrido:.3f} s"
     )
 
