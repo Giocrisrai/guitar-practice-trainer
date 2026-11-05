@@ -184,15 +184,25 @@ class EventoTocado:
     indice_pretendido: int | None  # la nota de la pieza a la que apuntaba
     midi: int                      # lo que sonó de verdad
     instante_s: float              # cuándo empezó a sonar
+    duracion_s: float              # cuánto sonó: la prosa del §3.9 la pedía
     cents: float
     trasteada: bool
 
 @dataclass(frozen=True)
 class Interpretacion:
+    pieza: Pieza                   # la pieza DE la que esto es interpretación
     muestras: np.ndarray
     eventos: tuple[EventoTocado, ...]
     frecuencia_muestreo: int
     duracion_s: float
+    silencio_de_cabecera_s: float
+    # Los argumentos con que se tocó, porque sin ellos `juzgar` no puede
+    # traducir del eje del audio al del cabezal (ver abajo).
+    primer_compas: int = 1
+    ultimo_compas: int | None = None
+    factor_tempo: float = 1.0
+    repeticiones: int = 1
+    segundos_de_cuenta_atras: float = 0.0
 
 def interpretar(
     pieza: Pieza,
@@ -214,6 +224,25 @@ de la pasada describe, y traducir compases a pulsos en dos sitios distintos es
 cómo se desalinean. `repeticiones` existe para poder interpretar **un bucle**, que
 es donde la 3c sabe que se pierden notas, y `segundos_de_cuenta_atras` mete el
 silencio de la cuenta atrás, porque ahí murió la cuenta atrás en la 3c.
+
+**`Interpretacion` LLEVA LA PIEZA Y LOS ARGUMENTOS DENTRO, y la primera versión
+de esta spec no se los daba.** (Corregido tras medirlo en la etapa: el bloque de
+arriba decía `Interpretacion` con cuatro campos.) Los seis son load-bearing:
+
+- `pieza`, porque `juzgar` tiene que excluir los acordes y las notas repetidas
+  consecutivas, y esas exclusiones se determinan DESDE LA PIEZA y no desde lo que
+  la cadena hizo. Una interpretación es la interpretación DE una pieza.
+- el tramo, el factor de tempo, las vueltas y la cuenta atrás, porque el cabezal
+  de una pasada que estudia del compás 2 al 2 NO arranca en cero: arranca en el
+  instante escrito de ese compás. Medido con el tramo 2-2 de la escala: los
+  reportes de la vuelta 1 caen en 2,6 s mientras los ataques están a 0,128 s del
+  audio, y un veredicto que no supiera el tramo daba las cuatro notas por
+  perdidas sin poder decir por qué.
+- `silencio_de_cabecera_s`, porque es el eje: lo que se mide es desde dónde.
+
+`EventoTocado.duracion_s` existe por lo que la prosa del §3.9 ya pedía (el solape
+se provoca con notas largas) y porque el veredicto no puede deducir del sonido
+cuánto sonó una nota.
 
 Reglas:
 
@@ -250,10 +279,17 @@ class StreamSimulado:
 def dispositivo_simulado(
     interpretacion: Interpretacion,
     tamano_bloque: int = 512,
-    en_bucle: bool = False,
+    nombre: str = NOMBRE_DEL_GEMELO,
 ) -> tuple[Callable, Callable]:
     """Devuelve (abrir_stream, listar) listos para Sesion y CapturaAudio."""
 ```
+
+**NO HAY `en_bucle`, y esta spec lo pedía.** (Corregido tras construirlo.) El
+bucle no se hace aquí: el intérprete ya genera las vueltas DENTRO del audio
+(`repeticiones` en el §3.2), así que un dispositivo que repitiera el buffer
+estaría tocando vueltas que la verdad de la interpretación no conoce, y el
+veredicto no podría adjudicar ni una. Lo que el dispositivo gana en su lugar es
+`nombre`, para que el diagnóstico pueda decir en voz alta con quién habla.
 
 `listar` anuncia un `DispositivoAudio` con un nombre que contiene
 `"Rocksmith"` para que `buscar_rocksmith` lo encuentre, y
@@ -320,9 +356,13 @@ cualquier aserción de desfase habría estado corrupta. La primera versión de e
 spec decía «el centro»; la sonda la corrigió antes de escribir una línea de
 código, que es para lo que sirven las sondas.
 
-Una canción de tres minutos a 48 kHz son unos 8600 análisis; a 48000/512 ≈ 94 Hz
-la cadena directa los hace en menos de un segundo. Eso la hace viable en la
-suite, que es la condición para que se corra.
+Una canción de tres minutos a 48 kHz son unos 8600 análisis, y la cadena directa
+los hace en segundos sin dormir ni abrir hilos. Eso la hace viable en la suite,
+que es la condición para que se corra. (Esta frase decía «a 48000/512 ≈ 94 Hz»,
+que es el salto de la SONDA de este diseño y no el de producción: dos párrafos
+más arriba esta misma sección declara que el salto es de 21 ms y que los números
+de la sonda a 512 son indicativos. La cuenta de los 8600 análisis sale de los
+21 ms y es la que se sostiene.)
 
 **(mía)** Esta separación en dos niveles es la decisión arquitectónica de la
 etapa. La alternativa —un solo gemelo en tiempo real— habría obligado a que cada
@@ -350,8 +390,10 @@ class RegistroDeLaCadena:
 
 @dataclass(frozen=True)
 class Veredicto:
-    notas_de_la_pieza: int
-    notas_tocadas: int             # eventos que el interprete genero
+    notas_de_la_pieza: int         # la pieza ENTERA
+    notas_tocadas: int             # eventos que el interprete genero: tramo x vueltas
+    notas_del_tramo: int           # las escritas en el tramo interpretado
+    vueltas: int                   # las repeticiones de ese tramo
     perdidas: tuple[tuple[int, int], ...]   # (vuelta, indice) no reportados
     inventadas: int                # reportadas que nadie toco
     mal_adjudicadas: tuple[tuple[int, int, int], ...]  # (vuelta, pretendido, reportado)
@@ -362,9 +404,17 @@ class Veredicto:
 def juzgar(
     interpretacion: Interpretacion,
     registro: RegistroDeLaCadena,
-    tolerancia_de_emparejamiento_ms: float = 120.0,
+    tolerancia_de_emparejamiento_ms: float = TOLERANCIA_DE_EMPAREJAMIENTO_MS,
 ) -> Veredicto
 ```
+
+**LAS CUATRO CANTIDADES DE ARRIBA NO SE COMPARAN ENTRE SÍ A LA LIGERA**, y el
+escaparate lo hizo: comparar `notas_tocadas` con `notas_de_la_pieza` por igualdad
+es comparar tramo x vueltas con la pieza entera, y con un tramo de 24 notas a dos
+vueltas la igualdad se cumple sobre una pasada que tocó la mitad dos veces. De ahí
+`notas_del_tramo`, `vueltas` y la propiedad `toco_la_pieza_entera_una_vez`, que es
+la pregunta que se quería hacer. No decide nada del veredicto: `limpio` sigue
+siendo lo único que juzga a la cadena.
 
 **Por qué un registro y no un `EstadoCarril`.** `EstadoCarril.tocadas` solo trae
 lo que el seguidor lleva sin volcar, y `cerrar_repeticion` lo vacía en cada
@@ -373,13 +423,20 @@ los índices se repiten vuelta a vuelta, así que «se perdió la nota 11» no
 distingue «en la vuelta 3» de «en todas». El registro lo recoge la cadena directa
 mientras pasa, que es el único momento en que esa información existe.
 
-**`tolerancia_de_emparejamiento_ms = 120`, no 15.** Es holgura de
-EMPAREJAMIENTO, no de calidad: su trabajo es decidir si el reporte X habla del
-ataque Y, y el detector firma un onset hasta 250 ms después del ataque, con la
-mediana de 5 del `Suavizador`, `ESPERA_ESTABILIZACION_S = 0,060` y tres cuadros
-de racha estable por delante. Con 15 ms casi toda nota saldría «perdida» y el
-oráculo sería rojo por construcción: la prueba habría medido la tolerancia, no la
-cadena.
+**`tolerancia_de_emparejamiento_ms` ES EL TECHO DEL PROPIO DETECTOR: 250 ms, y no
+un número de aquí.** Es holgura de EMPAREJAMIENTO, no de calidad: su trabajo es
+decidir si el reporte X habla del ataque Y, y el detector firma un onset hasta
+`VENTANA_ATAQUE_COMO_ONSET_S` (250 ms) después del ataque, con la mediana de 5 del
+`Suavizador`, `ESPERA_ESTABILIZACION_S = 0,060` y tres cuadros de racha estable
+por delante. Con 15 ms casi toda nota saldría «perdida» y el oráculo sería rojo
+por construcción: la prueba habría medido la tolerancia, no la cadena.
+
+**Esta spec decía 120 ms y defendía el 120 en un párrafo entero. Es falso, y lo
+corrige una medición de la etapa:** con 120 ms salían **5 de 8 notas perdidas** en
+una interpretación perfecta, porque el retraso que la cadena introduce de verdad
+llega a +249 ms en la sesión completa. La constante se deriva ahora de
+`VENTANA_ATAQUE_COMO_ONSET_S` y no se escribe suelta, para que mover el techo del
+detector mueva la holgura con él en vez de desacoplarlas en silencio.
 
 **El oráculo NO afirma `desfase_introducido_ms == 0`.** Hay un suelo real y no
 nulo que ningún perfil puede anular, el de los retardos de arriba. La primera
@@ -707,10 +764,24 @@ empieza a dar valor en cuanto existan esas grabaciones.
   completa, con sus pocas pruebas lentas, existe justamente para detectar esa
   divergencia.
 - **Las notas que se solapan generan ataques fantasma, y eso es de la cadena, no
-  del gemelo.** Medido con una sonda: ocho notas sintéticas que suenan el 95 %
-  del pulso -o sea, cada cola sigue sonando cuando entra la siguiente- producen
-  **doce** pulsaciones, con parejas separadas 32 ms (`B2` a 2,432 s y `D3` a
-  2,464 s). Al 60 % del pulso salen ocho exactas. En una guitarra de verdad las
+  del gemelo.** Medido en la etapa, a la cadencia de PRODUCCIÓN y sobre nueve
+  semillas (`tests/test_gemelo_sonido_sucio.py`): ocho notas que siguen sonando
+  cuando entra la siguiente —`sustain=1.0`, 180 ms de cola encima de cada nota
+  nueva— le hacen firmar al detector de **9 a 12** pulsaciones de ocho notas, y el
+  veredicto cuenta de **1 a 5** invenciones; cada invención cuesta además una nota
+  de verdad, porque el reporte inventado ocupa el puesto del emparejamiento. Con
+  `sustain=0.0`, el mismo intérprete sobre la misma pieza, no hay ni un fantasma:
+  la causa es el solape.
+
+  (**Las dos cifras que esta spec traía eran de una sonda y no son reproducibles.**
+  El «doce» sale solo con dos de las nueve semillas, y era además otra pieza —`B2`
+  y `D3`— en otro régimen —95 % del pulso—. Y los «32 ms» no son un dato del
+  detector: son `CUADROS_PARA_NOTA_ESTABLE` (3) por el salto de 512 muestras de
+  aquella sonda (10,67 ms). A la cadencia de producción toda separación es
+  múltiplo de 21 ms, así que 32 ms es **imposible por construcción**; el número
+  estructuralmente análogo es el suelo de tres cuadros, **63 ms**, y con
+  `sustain=1.0` y la semilla 0 las separaciones estrechas medidas son dos, de
+  **105 y 126 ms**.) Al 60 % del pulso salen ocho exactas. En una guitarra de verdad las
   cuerdas SÍ siguen sonando unas sobre otras, así que esto no es un artefacto de
   laboratorio: es un acierto fantasma esperando a pasar, y en la etapa 3e -donde
   un acierto fantasma rompe una racha o la regala- importa el doble. El gemelo
