@@ -619,8 +619,10 @@ def _correr_la_demostracion(
     """Levanta el servidor, mete el audio por el cable y devuelve lo que salio.
 
     Devuelve `(veredicto, completada)`, o `None` cuando la demostracion no se pudo
-    montar -el servidor no contesta, el cable no entrega audio-, que es otra cosa
-    que un veredicto sucio y `main` lo traduce a otro codigo de salida.
+    montar -el servidor no contesta, el cable no entrega audio, o el usuario la
+    interrumpio antes de que hubiera veredicto-, que es otra cosa que un veredicto
+    sucio y `main` lo traduce a otro codigo de salida. Un `Ctrl+C` DESPUES del
+    veredicto devuelve el veredicto: ver el `except KeyboardInterrupt`.
 
     **`al_acabar` SE LLAMA DENTRO DEL `try`, CON EL SERVIDOR TODAVIA EN PIE, y ese
     es el contrato entero de este parametro.** Sin el, el defecto que la Task 16
@@ -644,6 +646,10 @@ def _correr_la_demostracion(
     app, sesion, carril, capturas = _construir(pieza, interpretacion)
     base = f"http://127.0.0.1:{puerto}"
     servidor = _levantar_el_servidor(app, puerto)
+    # Lo que haya que devolver, puesto en cuanto existe: el `Ctrl+C` con que el
+    # usuario cierra el escaparate llega DESPUES del veredicto y no es «la
+    # demostracion no se pudo montar». Ver el `except`.
+    firmado: tuple[Veredicto, bool] | None = None
     try:
         if not _esperar_al_servidor(base):
             print(
@@ -672,12 +678,26 @@ def _correr_la_demostracion(
             base, interpretacion.duracion_s, interpretacion.repeticiones
         )
         veredicto = juzgar(interpretacion, recolector.registro)
+        firmado = (veredicto, completada)
         # DENTRO del try, con el servidor todavia contestando: ver el docstring.
         al_acabar(veredicto, completada)
-        return veredicto, completada
+        return firmado
     except KeyboardInterrupt:
         print()
-        return None
+        # **EL `Ctrl+C` DEL CAMINO POR OMISION ENTRA AQUI, Y NO ES UN FALLO.**
+        # Sin `--salir-al-acabar`, `al_acabar` llama a `_quedarse_vivo()`, que no
+        # vuelve nunca: sale con el `Ctrl+C` del usuario, que es como se cierra el
+        # escaparate. Y `al_acabar` corre dentro de este `try` a proposito (ver
+        # arriba), asi que esa interrupcion llega hasta aqui con el veredicto ya
+        # firmado e impreso. Devolver `None` ahi hacia que `main` tradujera a 2
+        # -«la demostracion no llego a montarse»- una pasada completada con su
+        # veredicto en pantalla: medido en una pasada real, y era el camino por
+        # omision, el documentado en el README.
+        #
+        # Con `firmado` todavia en `None` si significa eso, y se devuelve: una
+        # interrupcion antes del veredicto es una demostracion que no llego a
+        # darse.
+        return firmado
     finally:
         carril.detener()
         sesion.detener()
@@ -691,6 +711,13 @@ def main(argv: list[str] | None = None) -> int:
     la cadena tiene hallazgos (o la pasada no se completo), y 2 si la demostracion
     no llego a montarse. Un script tiene que poder diferenciar «la cadena tiene
     hallazgos» de «esto no corrio».
+
+    **Y LOS TRES VALEN CON Y SIN `--salir-al-acabar`.** Sin la bandera el codigo
+    era siempre 2: el `Ctrl+C` con que se cierra el escaparate subia por el
+    `except KeyboardInterrupt` de `_correr_la_demostracion` y tiraba el veredicto
+    que ya estaba impreso en pantalla. Medido en pasada real. Era el camino por
+    omision y el que el README documenta, asi que de los tres codigos quedaban
+    dos y el tercero mentia.
     """
     argumentos = _analizador_de_argumentos().parse_args(argv)
 

@@ -1434,3 +1434,77 @@ def test_las_vueltas_pedidas_llegan_a_quien_sigue_la_pasada(monkeypatch):
     )
     assert seguimientos[0]["base"] == "http://127.0.0.1:8420"
     assert servidor.should_exit is True
+
+
+def test_el_ctrl_c_con_el_veredicto_firmado_devuelve_el_codigo_del_veredicto(
+    monkeypatch, capsys
+):
+    """**EL DEFECTO DEL CAMINO POR OMISION: el proceso salia siempre con 2.**
+
+    Medido por el revisor en una pasada real (puerto 8431): pasada completada,
+    veredicto impreso con 13 perdidas, `Ctrl+C`, y el proceso devolvia **2**, que
+    el docstring de `main` define como «la demostracion no llego a montarse».
+    Con `--salir-al-acabar` el mismo caso devolvia 1. O sea que los tres codigos
+    que `main` distingue a proposito se reducian a dos y el tercero mentia, justo
+    en el modo por omision -el que existe para mirar- y el que el README
+    documenta.
+
+    La causa: el arreglo de la Task 16 metio `al_acabar` -y con el
+    `_quedarse_vivo()`- DENTRO del `try` de `_correr_la_demostracion`, que es
+    correcto y hace falta para que el servidor siga en pie. El efecto lateral es
+    que el `Ctrl+C` con que el usuario cierra el escaparate entra por el
+    `except KeyboardInterrupt` de esa funcion, que devolvia `None` sin mirar si ya
+    habia un veredicto firmado.
+
+    **Y NINGUNA PRUEBA PODIA VERLO**, que es la otra mitad del hallazgo: todas
+    sustituian `_quedarse_vivo` por un `lambda` que VUELVE, y la funcion de verdad
+    no vuelve nunca: espera un `Ctrl+C`. El doble que hacia la prueba posible era
+    lo que escondia el defecto. Aqui el doble LANZA, que es lo que la de verdad
+    hace.
+    """
+    servidor, carril, sesion, _ = _demostracion_sin_red(monkeypatch)
+
+    def ctrl_c_del_usuario() -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("herramientas.gemelo._quedarse_vivo", ctrl_c_del_usuario)
+
+    codigo = main(["--bucle", "1"])
+
+    salida = capsys.readouterr().out
+    assert "GEMELO" in salida, "el veredicto se imprimio antes del Ctrl+C"
+    assert "CON HALLAZGOS" in salida, "y es un veredicto sucio: el registro va vacio"
+    assert codigo == 1, (
+        "con el veredicto ya firmado el codigo tiene que ser el del veredicto (1), "
+        "no el 2 de «la demostracion no llego a montarse»"
+    )
+    # Y el escaparate se cierra limpio igual que con la bandera.
+    assert servidor.should_exit is True
+    assert carril.detenido == 1
+    assert sesion.detenida == 1
+
+
+def test_el_ctrl_c_antes_del_veredicto_sigue_valiendo_dos(monkeypatch, capsys):
+    """La otra mitad: interrumpir ANTES del veredicto sigue siendo «no se monto».
+
+    Es la condicion que mantiene al codigo 2 significando algo. Sin ella el
+    arreglo de arriba se convertiria en «el 2 no sale nunca», que es el mismo
+    defecto con el signo cambiado.
+    """
+    _demostracion_sin_red(monkeypatch)
+
+    def ctrl_c_a_media_pasada(base, duracion_s, repeticiones=1):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(
+        "herramientas.gemelo._seguir_la_pasada", ctrl_c_a_media_pasada
+    )
+    monkeypatch.setattr(
+        "herramientas.gemelo._quedarse_vivo",
+        lambda: pytest.fail("sin veredicto no hay nada que mirar"),
+    )
+
+    codigo = main(["--bucle", "1"])
+
+    assert codigo == 2
+    assert "GEMELO" not in capsys.readouterr().out
