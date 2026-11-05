@@ -618,6 +618,63 @@ def test_una_pasada_imposible_se_rechaza_antes_de_levantar_nada(linea):
         armar_la_pasada(argumentos)
 
 
+@pytest.mark.parametrize(
+    ("linea", "opcion", "recibido"),
+    [
+        (["--semilla", "-7"], "--semilla", "-7"),
+        (["--puerto", "99999"], "--puerto", "99999"),
+        (["--puerto", "0"], "--puerto", "0"),
+        (["--puerto", "-1"], "--puerto", "-1"),
+    ],
+)
+def test_un_numero_imposible_se_rechaza_nombrando_su_opcion(linea, opcion, recibido):
+    """El mensaje NOMBRA la opcion y el valor recibido, como todo el resto del modulo.
+
+    Los dos defectos que esto cierra los midio el revisor por el camino del
+    usuario:
+
+    - `--semilla -7` salia con «No se puede montar la demostracion: expected
+      non-negative integer», que es el texto crudo de
+      `numpy.random.default_rng` y no nombra la opcion. Quien lo lee no sabe cual
+      de los seis numeros de su linea de ordenes es el malo.
+    - `--puerto 99999` no se rechazaba: `uvicorn` fallaba DENTRO del hilo demonio,
+      `_esperar_al_servidor` agotaba sus 15 s y el escaparate aconsejaba «si el
+      puerto esta ocupado, prueba con --puerto», que es justo lo que el usuario
+      acababa de hacer. El error de verdad (`[Errno 8]`) salia por el logger de
+      uvicorn, mezclado con lo demas.
+
+    El modelo es `leer_bucle`, que mete el texto recibido en el mensaje para que
+    quien escribio un guion largo pueda ver la diferencia.
+    """
+    argumentos = _analizador_de_argumentos().parse_args(linea)
+
+    with pytest.raises(ValueError) as fallo:
+        armar_la_pasada(argumentos)
+
+    mensaje = str(fallo.value)
+    assert opcion in mensaje, f"el mensaje no nombra la opcion: {mensaje!r}"
+    assert recibido in mensaje, f"el mensaje no trae el valor recibido: {mensaje!r}"
+    assert "non-negative" not in mensaje, "ni una palabra en ingles de numpy"
+
+
+def test_el_puerto_imposible_se_rechaza_sin_esperar_al_servidor(monkeypatch):
+    """Y se rechaza ANTES de los 15 s: ese era la mitad del coste del defecto.
+
+    `armar_la_pasada` corre antes de que `main` levante nada, asi que la
+    comprobacion del puerto ahorra el arranque entero del servidor y la espera.
+    """
+    monkeypatch.setattr(
+        "herramientas.gemelo._correr_la_demostracion",
+        lambda *argumentos, **nombrados: pytest.fail(
+            "con un puerto imposible no se levanta nada"
+        ),
+    )
+
+    codigo = main(["--puerto", "99999"])
+
+    assert codigo == 2
+
+
 def test_los_valores_de_fabrica_de_la_linea_de_ordenes():
     """Lo que sale sin pasar ni un argumento: la demostracion, perfecta, en 8420.
 

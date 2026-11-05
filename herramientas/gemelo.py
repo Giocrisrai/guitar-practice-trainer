@@ -510,8 +510,14 @@ def _analizador_de_argumentos() -> argparse.ArgumentParser:
         "--cuenta-atras", type=int, default=0, metavar="COMPASES",
         help="Compases de cuenta atras antes de cada vuelta",
     )
-    analizador.add_argument("--semilla", type=int, default=0, metavar="N")
-    analizador.add_argument("--puerto", type=int, default=PUERTO_POR_DEFECTO)
+    analizador.add_argument(
+        "--semilla", type=int, default=0, metavar="N",
+        help="Semilla del sorteo del interprete; entero no negativo",
+    )
+    analizador.add_argument(
+        "--puerto", type=int, default=PUERTO_POR_DEFECTO, metavar="PUERTO",
+        help="Puerto del servidor del escaparate, entre 1 y 65535",
+    )
     analizador.add_argument(
         "--salir-al-acabar",
         action="store_true",
@@ -543,7 +549,34 @@ def armar_la_pasada(
 
     Lanza `ValueError` (tramo, perfil o numeros imposibles) u `OSError` (el archivo
     de `--pieza` no se puede leer).
+
+    **LOS DOS NUMEROS QUE SE COMPRUEBAN AQUI Y NO LOS COMPRUEBA NADIE MAS.** El
+    resto -tempo, repeticiones, cuenta atras, tramo- los rechazan el plan, el
+    interprete o `leer_bucle`, cada uno nombrando su campo. Estos dos no tenian
+    quien los rechazara:
+
+    * `--semilla` negativa llegaba hasta `numpy.random.default_rng`, que la
+      rechaza con «expected non-negative integer»: un mensaje crudo, en ingles y
+      sin nombrar la opcion, de modo que quien tiene seis numeros en su linea de
+      ordenes no sabe cual es el malo.
+    * `--puerto` fuera de rango no lo rechazaba nadie: `uvicorn` fallaba dentro
+      del hilo demonio, `_esperar_al_servidor` agotaba sus 15 s y el escaparate
+      acababa aconsejando «prueba con --puerto», que es lo que el usuario acababa
+      de hacer. Comprobarlo aqui ahorra los 15 s y el consejo circular.
+
+    El mensaje trae la opcion y el valor RECIBIDO, que es lo que hace el resto del
+    modulo (ver `leer_bucle` y `perfil_de_destreza`).
     """
+    if argumentos.semilla < 0:
+        raise ValueError(
+            f"La semilla {argumentos.semilla} no sirve: `--semilla` tiene que ser "
+            "un entero no negativo (0 es la de por omision)"
+        )
+    if not 1 <= argumentos.puerto <= 65535:
+        raise ValueError(
+            f"El puerto {argumentos.puerto} no sirve: `--puerto` tiene que estar "
+            "entre 1 y 65535"
+        )
     perfil = perfil_de_destreza(argumentos.perfil)
     primer_compas, ultimo_compas = (
         leer_bucle(argumentos.bucle) if argumentos.bucle else (1, None)
