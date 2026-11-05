@@ -1096,6 +1096,28 @@ describe("Carril: los controles de la pasada", () => {
     expect(screen.queryByText(/En pausa/)).toBeNull();
   });
 
+  /**
+   * El aviso del carril acusa al CABLE («no llega señal del cable»), y con la
+   * pieza terminada eso es falso: el usuario acabó la pasada y dejó de tocar, que
+   * es lo que se espera que haga. El servidor deja de acusar al cable en el
+   * diagnóstico por la misma razón y con la misma regla; aquí se calla la línea
+   * del carril, que es la otra mitad de lo mismo en la misma pantalla.
+   */
+  it("con la pieza terminada el carril no acusa al cable de su silencio", async () => {
+    await montarEnMarcha(fetchConOrdenes());
+    enviarEstado(
+      enCurso({
+        completado: true,
+        pausado: true,
+        total_de_compases: 4,
+        primer_compas: 1,
+        ultimo_compas: 4,
+      }),
+    );
+    expect(await screen.findByText(/Pieza terminada/i)).toBeTruthy();
+    expect(screen.queryByText(/no llega señal del cable/)).toBeNull();
+  });
+
   it("la pausa del usuario NO es falta de señal: no sale el aviso del cable", async () => {
     await montarEnMarcha(fetchConOrdenes());
     enviarEstado(enCurso({ pausado: false, en_pausa: true }));

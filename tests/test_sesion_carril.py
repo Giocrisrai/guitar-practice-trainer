@@ -1006,3 +1006,78 @@ def test_al_acabar_la_pieza_el_estado_sigue_diciendo_lo_que_se_toco():
     assert en_pantalla == en_el_informe
     sesion_carril.detener()
     sesion.detener()
+
+# -- no se acusa al cable cuando la sesion no espera notas -------------------
+
+
+def test_sin_pasada_en_marcha_se_espera_que_el_usuario_toque():
+    """El caso legitimo del aviso: nadie esta tocando una pieza, pero el usuario
+    puede estar en el afinador intentando que suene algo. Ahi callarse seria
+    esconder el unico aviso que le explicaria por que no ve nada."""
+    reloj = RelojFalso()
+    sesion_carril, sesion = carril(reloj)
+    assert sesion_carril.esperando_notas is True
+    sesion.detener()
+
+
+def test_con_la_pieza_en_marcha_se_esperan_notas_y_al_acabar_ya_no():
+    """La distincion es por ESTADO DE LA SESION y no por un temporizador.
+
+    Mientras la pasada corre, el silencio del cable es un problema y el aviso es
+    cierto. En cuanto la pieza termina, la sesion no espera que nadie toque: el
+    usuario acaba la pasada, deja de tocar, y acusar entonces al cable es decirle
+    que suba el volumen de una guitarra que esta perfectamente bien.
+    """
+    reloj = RelojFalso()
+    sesion_carril, sesion = carril(reloj)
+    sesion_carril.iniciar(
+        pieza_de([40, 45, 50, 55]), PlanDePasada(compases_de_cuenta_atras=0)
+    )
+    assert sesion_carril.esperando_notas is True
+
+    terminar_la_pasada(sesion_carril, reloj)
+    assert sesion_carril.esperando_notas is False
+
+    sesion_carril.detener()
+    sesion.detener()
+
+
+def test_en_la_pausa_del_usuario_tampoco_se_esperan_notas():
+    """La pausa la pidio el usuario: el silencio es lo que pidio, no una averia."""
+    reloj = RelojFalso()
+    sesion_carril, sesion = carril(reloj)
+    sesion_carril.iniciar(
+        pieza_de([40, 45, 50, 55]), PlanDePasada(compases_de_cuenta_atras=0)
+    )
+    sesion_carril.pausa(True)
+    assert sesion_carril.esperando_notas is False
+    sesion_carril.pausa(False)
+    assert sesion_carril.esperando_notas is True
+    sesion_carril.detener()
+    sesion.detener()
+
+
+def test_una_pieza_que_acaba_antes_de_su_barra_de_compas_tampoco_espera_notas():
+    """`completado` tiene DOS motivos, y los dos valen para callar el aviso.
+
+    Lo delato un mutante que sobrevivio: mirando solo `tramo_terminado` la prueba
+    de arriba pasaba igual, porque su pieza llena el compas y los dos motivos se
+    encienden a la vez. Una pieza cuyas notas se acaban ANTES de la barra -dos
+    notas en un compas de 4/4- termina por el otro: el reloj pasa el final de la
+    PIEZA (`carril.completado`) y se sigue moviendo hasta el final del TRAMO. En
+    esos segundos la pantalla ya dice «Pieza terminada» -lo publicado es
+    `tramo_terminado or carril.completado`- y el aviso naranja volvia a acusar al
+    cable de un silencio que nadie podia evitar.
+    """
+    reloj = RelojFalso()
+    sesion_carril, sesion = carril(reloj)
+    # Dos notas en un compas de 4/4 a 60 ppm: la pieza dura 2 s y el tramo, 4.
+    sesion_carril.iniciar(pieza_de([40, 45]), PlanDePasada(compases_de_cuenta_atras=0))
+    estado = avanzar_mirando(sesion_carril, reloj, 2.5)
+
+    assert estado["completado"] is True, "la pieza se acabo"
+    assert estado["tramo_terminado"] is False, "el tramo todavia no"
+    assert sesion_carril.esperando_notas is False
+
+    sesion_carril.detener()
+    sesion.detener()

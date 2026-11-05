@@ -183,12 +183,18 @@ class Sesion:
         """
         return self._falta_senal_confirmada()
 
-    def diagnostico(self, nivel_db: float | None = None) -> Diagnostico:
+    def diagnostico(
+        self, nivel_db: float | None = None, esperando_notas: bool = True
+    ) -> Diagnostico:
         """Estado actual del montaje.
 
         Nunca devuelve "ok" si la sesión no está capturando: decir que todo está
         bien con la captura cerrada es justo la mentira que dejaba al usuario
         mirando una pantalla muerta con un mensaje tranquilizador.
+
+        `esperando_notas` viaja tal cual hasta `diagnosticar`, que es donde la
+        regla vive y está explicada: esta sesión no sabe si hay una pieza en marcha
+        -eso es del carril- y no es quien para decidirlo.
         """
         self._anotar_nivel(nivel_db)
         # Solo se acusa de falta de señal cuando lleva más de 5 s seguidos por
@@ -233,6 +239,7 @@ class Sesion:
             nivel_efectivo,
             self.configuracion.umbral_ruido_dbfs,
             rocksmith,
+            esperando_notas,
         )
         if sustituido:
             # Usar otro dispositivo que el elegido no se hace en silencio.

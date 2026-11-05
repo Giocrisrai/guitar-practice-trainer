@@ -429,10 +429,19 @@ def crear_app(
 
     @app.get("/api/diagnostico")
     def leer_diagnostico() -> dict:
-        """Estado del montaje: permiso, dispositivo, señal."""
+        """Estado del montaje: permiso, dispositivo, señal.
+
+        Le pregunta al carril si la sesión está esperando notas, porque el aviso
+        de «sube el volumen de la guitarra» solo es cierto si el usuario está
+        intentando tocar: terminada la pasada, el silencio es lo normal (la regla
+        y su medida están en `servidor/diagnostico.diagnosticar`). El carril es
+        quien lo sabe; esta función solo le pasa el recado.
+        """
         ultimo = sesion.ultimo_resultado()
         nivel = ultimo.nivel_db if ultimo is not None else None
-        return sesion.diagnostico(nivel).a_dict()
+        return sesion.diagnostico(
+            nivel, app.state.carril.esperando_notas
+        ).a_dict()
 
     @app.get("/api/config")
     def leer_config() -> dict:

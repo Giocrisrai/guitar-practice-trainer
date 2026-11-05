@@ -379,6 +379,42 @@ class SesionCarril:
         with self._candado:
             return self._instantanea(self._mirar(ahora, ausente))
 
+    @property
+    def esperando_notas(self) -> bool:
+        """Si la sesion espera que el usuario toque AHORA MISMO.
+
+        Lo lee `/api/diagnostico` para no acusar al cable del silencio que la
+        propia sesion esta pidiendo: la regla, el defecto que arregla y por que se
+        decide por estado y no por un temporizador estan en
+        `servidor/diagnostico.diagnosticar`.
+
+        Los tres casos, y el primero es el que mas importa:
+
+        - **Sin pasada en marcha se espera que toque.** El usuario puede estar en
+          el afinador peleandose con el jack, y ahi el aviso es justo lo que le
+          falta por leer. Callarse seria esconder el unico aviso que le explicaria
+          por que no ve nada.
+        - Con la pasada corriendo tambien: el silencio del cable es un problema de
+          verdad, y es el caso legitimo del aviso.
+        - Con la pieza (o el tramo) terminada, o en pausa del usuario, NO: el
+          silencio es lo que se espera. Es el defecto que esto arregla -«sube el
+          volumen de la guitarra» en cuanto se acababa la pasada- y las dos son la
+          misma situacion: la sesion no esta pidiendo notas a nadie.
+
+        NO mira el reloj ni mueve nada: lee el estado que el estudio ya tiene, sin
+        pasar por `estado()`, que MIRA antes de publicar. Esto lo llama el hilo
+        HTTP cada pocos segundos y mover el reloj de la pasada desde el endpoint
+        del diagnostico seria darle de comer tiempo por una puerta que no es la
+        suya.
+        """
+        with self._candado:
+            estudio = self._estudio
+            if estudio is None:
+                return True
+            estado = estudio.estado
+            terminada = estado.tramo_terminado or estado.carril.completado
+            return not terminada and not estado.en_pausa
+
     def _sin_senal(self) -> bool:
         """Si el carril debe tratarse como sin señal: no hay audio que oir.
 

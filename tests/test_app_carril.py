@@ -191,3 +191,39 @@ def test_cambiar_otra_cosa_de_la_configuracion_no_detiene_el_carril(cliente):
     assert estado["total"] > 0
     assert estado["arranque"] == arranque
     cliente.post("/api/piezas/detener")
+
+
+class CarrilQueNoEsperaNotas:
+    """Doble con lo UNICO que `/api/diagnostico` le pregunta al carril.
+
+    Un doble y no una pasada de verdad porque lo que se vigila aqui es el cable
+    entre las dos piezas: que el endpoint le pregunte al carril si la sesion
+    espera notas y se lo pase al diagnostico. Que el carril contesta bien lo
+    vigila `tests/test_sesion_carril.py`, y que el diagnostico hace lo correcto
+    con la respuesta, `tests/test_diagnostico.py`.
+    """
+
+    esperando_notas = False
+
+
+def test_el_endpoint_del_diagnostico_le_pasa_si_la_sesion_espera_notas(cliente):
+    """Sin esto, el aviso naranja «sube el volumen de la guitarra» seguia saliendo
+    con la pasada ya terminada: la regla existia y nadie se la contaba."""
+    visto = {}
+    sesion = cliente.app.state.sesion
+    original = sesion.diagnostico
+
+    def espia(nivel_db=None, esperando_notas=True):
+        visto["esperando_notas"] = esperando_notas
+        return original(nivel_db, esperando_notas)
+
+    sesion.diagnostico = espia
+    try:
+        assert cliente.get("/api/diagnostico").status_code == 200
+        assert visto["esperando_notas"] is True, "sin pieza, el usuario puede estar tocando"
+
+        cliente.app.state.carril = CarrilQueNoEsperaNotas()
+        assert cliente.get("/api/diagnostico").status_code == 200
+        assert visto["esperando_notas"] is False
+    finally:
+        del sesion.diagnostico

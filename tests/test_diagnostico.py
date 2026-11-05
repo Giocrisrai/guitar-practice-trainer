@@ -58,3 +58,50 @@ def test_usar_el_microfono_sin_el_rocksmith_presente_respeta_la_eleccion():
     )
     assert resultado.estado == "ok"
     assert resultado.mensaje == "Dispositivo activo: MacBook Pro Microphone"
+
+
+def test_si_la_sesion_no_espera_notas_el_silencio_no_acusa_al_cable():
+    """El defecto: una alarma falsa en cuanto el usuario deja de tocar.
+
+    Al terminar la pasada el usuario deja de tocar, el nivel se cae y la pantalla
+    le decia que subiera el volumen de una guitarra que esta perfectamente bien.
+    El silencio de una sesion que no espera notas es lo normal, no una averia, y
+    acusar al cable ahi es gastar el aviso justo cuando es falso.
+
+    La distincion es por ESTADO DE LA SESION y no por un temporizador: quien
+    pregunta dice si esta esperando que alguien toque, y esa es toda la regla.
+    """
+    resultado = diagnosticar(
+        dispositivos=[CABLE], cable=CABLE, nivel_db=-95.0, esperando_notas=False
+    )
+    assert resultado.estado == "ok"
+    assert "volumen" not in resultado.accion.lower()
+
+
+def test_el_aviso_del_cable_sigue_saliendo_cuando_si_se_esperan_notas():
+    """La positiva de la de arriba, que es el caso legitimo del aviso y el que no
+    se puede perder: el usuario SI esta intentando tocar y no llega señal."""
+    resultado = diagnosticar(
+        dispositivos=[CABLE], cable=CABLE, nivel_db=-95.0, esperando_notas=True
+    )
+    assert resultado.estado == "sin_senal"
+
+
+def test_sin_esperar_notas_los_demas_fallos_se_siguen_diciendo():
+    """Solo se calla la falta de señal. Que el cable no aparezca, que no haya
+    permiso o que el dispositivo en uso no sea el cable son hechos del montaje y
+    no dependen de que nadie este tocando."""
+    sin_permiso = diagnosticar(dispositivos=[], cable=None, esperando_notas=False)
+    assert sin_permiso.estado == "sin_permiso"
+    sin_cable = diagnosticar(
+        dispositivos=[MICROFONO], cable=None, esperando_notas=False
+    )
+    assert sin_cable.estado == "sin_dispositivo"
+    otro = diagnosticar(
+        dispositivos=[MICROFONO, CABLE],
+        cable=MICROFONO,
+        nivel_db=-95.0,
+        rocksmith=CABLE,
+        esperando_notas=False,
+    )
+    assert otro.estado == "otro_dispositivo"
