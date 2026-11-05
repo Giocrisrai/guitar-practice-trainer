@@ -25,7 +25,9 @@ from dataclasses import replace
 import pytest
 
 from herramientas.gemelo import (
+    COLA_TRAS_COMPLETAR_S,
     _analizador_de_argumentos,
+    _correr_la_demostracion,
     _esperar_al_servidor,
     _seguir_la_pasada,
     al_borde_del_techo_del_detector,
@@ -45,10 +47,13 @@ from nucleo.gemelo.perfiles import (
     PERFILES_DE_DESTREZA,
     PRINCIPIANTE,
 )
+from nucleo.gemelo.dispositivo import RecolectorDeLaSesion
+from nucleo.gemelo.interprete import interpretar
 from nucleo.gemelo.piezas_de_prueba import escala_de_ocho_notas, pieza_de_demostracion
 from nucleo.gemelo.veredicto import Veredicto
 from nucleo.piezas.compases import pulsos_por_compas
 from nucleo.piezas.estudio import PlanDePasada, SesionDeEstudio
+from servidor.diagnostico import Diagnostico
 
 RAIZ = pathlib.Path(__file__).resolve().parent.parent
 
@@ -917,7 +922,7 @@ class DemostracionDeMentira:
         self.veces = 0
         self.recibido: list[dict] = []
 
-    def __call__(self, pieza, interpretacion, plan, puerto):
+    def __call__(self, pieza, interpretacion, plan, puerto, al_acabar):
         self.veces += 1
         self.recibido.append(
             {
@@ -925,10 +930,16 @@ class DemostracionDeMentira:
                 "interpretacion": interpretacion,
                 "plan": plan,
                 "puerto": puerto,
+                "al_acabar": al_acabar,
             }
         )
         if self.veredicto is None:
             return None
+        # LLAMA A `al_acabar`, como la de verdad y en el mismo sitio: es ahi donde
+        # el escaparate imprime el resumen y espera a que el usuario mire, con el
+        # servidor todavia en pie. Un doble que no lo llamara haria pasar un `main`
+        # que nunca imprimiera nada.
+        al_acabar(self.veredicto, self.completada)
         return self.veredicto, self.completada
 
     @property
@@ -1100,3 +1111,278 @@ def test_el_resumen_que_main_imprime_dice_si_la_pasada_se_completo(monkeypatch, 
     assert "pasada  : completada" not in salida_cortada
     assert codigo_entero == 0 and "pasada  : completada" in salida_entera
     assert "SIN COMPLETAR" not in salida_entera
+
+
+# ---------------------------------------------------------------------------
+# Los dos defectos que la Task 16 encontro corriendo las ordenes del README como
+# las corre el usuario, y que ni la revision, ni la re-revision, ni treinta y un
+# mutantes vieron. Los dos son del contrato de `_correr_la_demostracion`.
+# ---------------------------------------------------------------------------
+
+
+class ServidorDeMentira:
+    """Un doble del `uvicorn.Server`: solo lleva la cuenta de si se le apago.
+
+    `should_exit` es el unico miembro que el escaparate le toca, y es por donde se
+    observa el defecto: el servidor no puede estar apagado mientras el usuario
+    todavia tiene algo que mirar.
+    """
+
+    def __init__(self) -> None:
+        self.should_exit = False
+
+
+class CarrilDeMentira:
+    def __init__(self) -> None:
+        self.iniciado = []
+        self.detenido = 0
+
+    def iniciar(self, pieza, plan) -> dict:
+        self.iniciado.append((pieza, plan))
+        return {}
+
+    def detener(self) -> None:
+        self.detenido += 1
+
+
+class SesionDeMentira:
+    def __init__(self) -> None:
+        self.detenida = 0
+
+    def iniciar(self):
+        return Diagnostico(
+            estado="ok",
+            mensaje="Dispositivo activo: Rocksmith USB Guitar Adapter (gemelo)",
+            accion="",
+            dispositivos=[],
+        )
+
+    def detener(self) -> None:
+        self.detenida += 1
+
+
+class CapturaDeMentira:
+    total_capturado = 10**9
+
+
+def _demostracion_sin_red(monkeypatch, completada=True):
+    """Deja `_correr_la_demostracion` corriendo sin puerto, sin audio y sin esperas.
+
+    Se sustituyen sus cinco colaboradores y se devuelve el `ServidorDeMentira`, que
+    es lo que las dos pruebas del defecto miran. No se sustituye
+    `_correr_la_demostracion`: es justo la funcion que se quiere ejercitar.
+    """
+    servidor = ServidorDeMentira()
+    carril = CarrilDeMentira()
+    sesion = SesionDeMentira()
+    monkeypatch.setattr(
+        "herramientas.gemelo._construir",
+        lambda pieza, interpretacion: (object(), sesion, carril, [CapturaDeMentira()]),
+    )
+    monkeypatch.setattr(
+        "herramientas.gemelo._levantar_el_servidor",
+        lambda app, puerto: servidor,
+    )
+    monkeypatch.setattr("herramientas.gemelo._esperar_al_servidor", lambda base: True)
+    monkeypatch.setattr(
+        "herramientas.gemelo.esperar_la_cabecera",
+        lambda captura, interpretacion, ventana: True,
+    )
+    seguimientos = []
+
+    def seguir(base, duracion_s, repeticiones=1):
+        seguimientos.append(
+            {"base": base, "duracion_s": duracion_s, "repeticiones": repeticiones}
+        )
+        return RecolectorDeLaSesion(), completada
+
+    monkeypatch.setattr("herramientas.gemelo._seguir_la_pasada", seguir)
+    return servidor, carril, sesion, seguimientos
+
+
+def test_el_servidor_sigue_contestando_mientras_el_usuario_mira(monkeypatch, capsys):
+    """**EL DEFECTO: el servidor moria en el instante del veredicto.**
+
+    Medido por la Task 16 con un sondeo cada medio segundo sobre el escaparate de
+    verdad: contestaba desde el segundo 0 y **dejaba de contestar a los 27,7 s**, el
+    mismo instante en que se imprime el veredicto y el mensaje «la pantalla se queda
+    donde esta para que puedas mirarla». Despues, «Connection refused» en `/`, en
+    `/api/diagnostico` y en `/api/piezas/estado`.
+
+    O sea que el usuario corria la orden, leia «abre esa direccion en el navegador»,
+    abria el navegador cuando la pasada acababa -que es lo natural, porque el resumen
+    acaba de aparecer- y no encontraba nada. La tarea 12 existe para que el usuario
+    se vea tocar sin tocar: un escaparate cuyo servidor muere al imprimir el
+    veredicto no cumple su unico proposito.
+
+    La causa era de ORDEN: `_quedarse_vivo()` lo llamaba `main` DESPUES de que el
+    `finally` de `_correr_la_demostracion` hubiera apagado uvicorn. Lo que se afirma
+    aqui es ese orden: todo lo que el usuario tiene que leer y mirar ocurre mientras
+    el servidor sigue contestando.
+    """
+    servidor, carril, sesion, _ = _demostracion_sin_red(monkeypatch)
+    apagado_al_informar = []
+
+    def informar(veredicto, completada) -> None:
+        apagado_al_informar.append(servidor.should_exit)
+
+    resultado = _correr_la_demostracion(
+        pieza_de_demostracion(),
+        interpretar(pieza_de_demostracion(), PERFECTO, ultimo_compas=1),
+        PlanDePasada(),
+        8420,
+        al_acabar=informar,
+    )
+
+    assert resultado is not None
+    assert apagado_al_informar == [False], (
+        "el servidor ya estaba apagado cuando se le dijo al usuario que mirara: "
+        "esto es el defecto que la Task 16 midio"
+    )
+    # Y al salir de la funcion si se apaga, con el carril y la sesion detenidos.
+    assert servidor.should_exit is True
+    assert carril.detenido == 1
+    assert sesion.detenida == 1
+
+
+def test_con_salir_al_acabar_el_servidor_se_apaga_y_no_se_espera_a_nadie(
+    monkeypatch, capsys
+):
+    """La otra mitad: con la bandera no se mira nada, asi que se apaga todo.
+
+    Es lo que convierte la orden en algo usable desde un script, y lo que distingue
+    el arreglo de «dejar el servidor abierto siempre»: la bandera sigue apagandolo
+    limpio.
+    """
+    servidor, carril, sesion, _ = _demostracion_sin_red(monkeypatch)
+    miradas = []
+    monkeypatch.setattr(
+        "herramientas.gemelo._quedarse_vivo", lambda: miradas.append(True)
+    )
+
+    codigo = main(["--salir-al-acabar", "--bucle", "1"])
+
+    assert miradas == [], "con --salir-al-acabar no se espera a nadie"
+    assert servidor.should_exit is True, "con la bandera el servidor tiene que apagarse"
+    assert carril.detenido == 1
+    assert sesion.detenida == 1
+    assert codigo in (0, 1)
+    assert "GEMELO" in capsys.readouterr().out
+
+
+def test_sin_la_bandera_se_espera_con_el_servidor_todavia_en_pie(monkeypatch, capsys):
+    """Y sin la bandera, `_quedarse_vivo` corre ANTES de apagar el servidor.
+
+    Es la misma afirmacion que la prueba de arriba vista desde `main`, que es donde
+    vive la decision de esperar: asi el orden queda afirmado en los dos sitios que
+    lo pueden romper.
+    """
+    servidor, _, _, _ = _demostracion_sin_red(monkeypatch)
+    apagado_al_esperar = []
+    monkeypatch.setattr(
+        "herramientas.gemelo._quedarse_vivo",
+        lambda: apagado_al_esperar.append(servidor.should_exit),
+    )
+
+    main(["--bucle", "1"])
+
+    assert apagado_al_esperar == [False], (
+        "se dejo al usuario mirando una direccion que ya no contesta"
+    )
+    assert servidor.should_exit is True, "al salir del todo si se apaga"
+
+
+def test_un_bucle_de_varias_vueltas_se_da_por_completado(monkeypatch):
+    """**EL SEGUNDO DEFECTO: `--repeticiones > 1` nunca completaba.**
+
+    Medido dos veces por la Task 16: `--bucle 2-3 --repeticiones 2` tardaba 23 s,
+    sacaba `tocadas 16 de 48`, `SIN COMPLETAR` y codigo 1 aunque todo hubiera ido
+    bien; la misma orden sin `--repeticiones` salia `completada` y `LIMPIO`.
+
+    La causa: `armar_la_pasada` enciende `en_bucle` con varias vueltas, y un tramo en
+    bucle **no publica `completado` nunca** -da la vuelta y sigue-, asi que
+    `_seguir_la_pasada` esperaba hasta agotar `MARGEN_DE_LA_PASADA_S`.
+
+    Lo que se afirma: con varias vueltas la pasada se da por acabada cuando el
+    carril pasa de la ultima vuelta pedida, que es el unico momento en que se sabe
+    que el bucle ya recorrio todo lo que el gemelo toco.
+    """
+    vueltas = []
+
+    def carril_en_bucle(url: str, limite_s: float = 5.0) -> dict:
+        # Un tramo en bucle: `completado` SIEMPRE False, y la vuelta subiendo.
+        vueltas.append(len(vueltas))
+        repeticion = 1 + len(vueltas) // 3
+        return {
+            "repeticion": repeticion,
+            "instante_s": 0.1 * len(vueltas),
+            "tocadas": [],
+            "completado": False,
+        }
+
+    monkeypatch.setattr("herramientas.gemelo._leer_json", carril_en_bucle)
+    monkeypatch.setattr("herramientas.gemelo.COLA_TRAS_COMPLETAR_S", 0.0)
+
+    _, completada = _seguir_la_pasada(
+        "http://127.0.0.1:0", duracion_s=0.2, repeticiones=2
+    )
+
+    assert completada is True, (
+        "con --repeticiones 2 la pasada acaba al pasar de la vuelta 2, no al agotar "
+        "la espera"
+    )
+
+
+def test_una_pasada_derecha_sigue_acabando_por_completado(monkeypatch):
+    """Y con una sola vuelta nada cambia: se acaba por `completado`, como siempre.
+
+    Es la mitad que impide que el arreglo del bucle se coma el camino normal: con
+    `repeticiones=1` el estado publica `completado` y es eso lo que manda, sin
+    esperar a que la vuelta cambie (que en una pasada derecha no cambia nunca).
+    """
+    estados = [
+        {"repeticion": 1, "instante_s": 0.0, "tocadas": [], "completado": False},
+        {"repeticion": 1, "instante_s": 0.1, "tocadas": [], "completado": True},
+    ]
+    leidos = []
+
+    def por_turnos(url: str, limite_s: float = 5.0) -> dict:
+        estado = estados[min(len(leidos), len(estados) - 1)]
+        leidos.append(estado)
+        return estado
+
+    monkeypatch.setattr("herramientas.gemelo._leer_json", por_turnos)
+    monkeypatch.setattr("herramientas.gemelo.COLA_TRAS_COMPLETAR_S", 0.0)
+
+    _, completada = _seguir_la_pasada(
+        "http://127.0.0.1:0", duracion_s=0.5, repeticiones=1
+    )
+
+    assert completada is True
+    assert len(leidos) == 2, (
+        "se acabo por `completado` en la segunda lectura, no por la cuenta de vueltas"
+    )
+
+
+def test_las_vueltas_pedidas_llegan_a_quien_sigue_la_pasada(monkeypatch):
+    """`--repeticiones` tiene que llegar hasta `_seguir_la_pasada`, y no llegaba.
+
+    **La escribi porque un mutante sobrevivio:** con las repeticiones clavadas al
+    valor por omision, `_seguir_la_pasada` no sabria cuando se acabo el bucle y
+    volveria el defecto que esta misma ronda arregla -«SIN COMPLETAR» con codigo 1
+    sobre una pasada que fue bien-. Que el numero salga de la INTERPRETACION y no de
+    los argumentos es a proposito: es la interpretacion la que sabe cuantas vueltas
+    de audio se generaron, y es contra eso contra lo que hay que contar.
+    """
+    servidor, _, _, seguimientos = _demostracion_sin_red(monkeypatch)
+    monkeypatch.setattr("herramientas.gemelo._quedarse_vivo", lambda: None)
+
+    main(["--repeticiones", "3", "--bucle", "1", "--salir-al-acabar"])
+
+    assert len(seguimientos) == 1
+    assert seguimientos[0]["repeticiones"] == 3, (
+        "las vueltas pedidas no llegaron a quien sigue la pasada: el bucle no sabria "
+        "cuando acaba"
+    )
+    assert seguimientos[0]["base"] == "http://127.0.0.1:8420"
+    assert servidor.should_exit is True

@@ -56,6 +56,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from pathlib import Path
 
 from nucleo.afinaciones import PERFILES
@@ -414,11 +415,33 @@ def _construir(
     return app, sesion, carril, capturas
 
 
-def _seguir_la_pasada(base: str, duracion_s: float) -> tuple[RecolectorDeLaSesion, bool]:
+def _seguir_la_pasada(
+    base: str, duracion_s: float, repeticiones: int = 1
+) -> tuple[RecolectorDeLaSesion, bool]:
     """Sigue la pasada por HTTP, recogiendo lo que el servidor publica.
 
     Exactamente lo que mira el navegador, por el mismo endpoint y al mismo ritmo.
     Devuelve lo recogido y si la pasada llego a completarse.
+
+    **UN BUCLE NO PUBLICA `completado` NUNCA, y de ahi venia el segundo defecto que
+    la Task 16 midio.** `armar_la_pasada` enciende `en_bucle` en cuanto se piden
+    varias vueltas, y un tramo en bucle da la vuelta y sigue: `completado` no llega,
+    la espera se agotaba contra `MARGEN_DE_LA_PASADA_S` y el resumen decia «SIN
+    COMPLETAR» con codigo 1 aunque todo hubiera ido bien (medido:
+    `--bucle 2-3 --repeticiones 2` tardaba 23 s y sacaba 16 notas de 48).
+
+    Asi que con varias vueltas la pasada se da por acabada cuando el carril PASA de
+    la ultima vuelta pedida -`repeticion > repeticiones`-, que es el unico instante
+    en que se sabe que el bucle ya recorrio todo lo que el gemelo toco. Con una sola
+    vuelta manda `completado`, como siempre: en una pasada derecha la vuelta no
+    cambia nunca, asi que la cuenta de vueltas sola no serviria.
+
+    Lo que el bucle se deja por el camino y esto NO arregla: la ultima nota de la
+    ultima vuelta puede quedarse sin emparejar, porque la cadena tarda ~190 ms en
+    publicar un ataque y al dar la vuelta el seguidor olvida el tramo
+    (`olvidar_tramo`). Es la propiedad del bucle que `nucleo/gemelo/veredicto.py` y
+    `tests/test_gemelo_bucle.py` ya declaran, no algo que el escaparate pueda
+    arreglar desde fuera.
     """
     recolector = RecolectorDeLaSesion()
     paso = 1.0 / LECTURAS_POR_SEGUNDO
@@ -427,7 +450,7 @@ def _seguir_la_pasada(base: str, duracion_s: float) -> tuple[RecolectorDeLaSesio
     while time.monotonic() < limite:
         estado = _leer_json(f"{base}/api/piezas/estado")
         recolector.recoger(estado)
-        if estado["completado"]:
+        if estado["completado"] or int(estado["repeticion"]) > repeticiones:
             completada = True
             break
         time.sleep(paso)
@@ -561,8 +584,30 @@ def _quedarse_vivo() -> None:
         time.sleep(0.5)
 
 
+def _levantar_el_servidor(app, puerto: int):
+    """Arranca `uvicorn` en un hilo demonio y devuelve el servidor para apagarlo.
+
+    Esta aparte por una razon y es poder probar el ORDEN: lo que una prueba tiene
+    que poder mirar es si el servidor estaba apagado cuando el escaparate le dijo al
+    usuario que mirara, y eso se mira en `should_exit` de un doble de tres lineas,
+    sin abrir ningun puerto. Ver
+    `test_el_servidor_sigue_contestando_mientras_el_usuario_mira`.
+    """
+    import uvicorn
+
+    servidor = uvicorn.Server(
+        uvicorn.Config(app, host="127.0.0.1", port=puerto, log_level="warning")
+    )
+    threading.Thread(target=servidor.run, daemon=True).start()
+    return servidor
+
+
 def _correr_la_demostracion(
-    pieza: Pieza, interpretacion: Interpretacion, plan: PlanDePasada, puerto: int
+    pieza: Pieza,
+    interpretacion: Interpretacion,
+    plan: PlanDePasada,
+    puerto: int,
+    al_acabar: Callable[[Veredicto, bool], None],
 ) -> tuple[Veredicto, bool] | None:
     """Levanta el servidor, mete el audio por el cable y devuelve lo que salio.
 
@@ -570,20 +615,28 @@ def _correr_la_demostracion(
     montar -el servidor no contesta, el cable no entrega audio-, que es otra cosa
     que un veredicto sucio y `main` lo traduce a otro codigo de salida.
 
+    **`al_acabar` SE LLAMA DENTRO DEL `try`, CON EL SERVIDOR TODAVIA EN PIE, y ese
+    es el contrato entero de este parametro.** Sin el, el defecto que la Task 16
+    midio: el `finally` de aqui apagaba uvicorn y solo DESPUES `main` llamaba a
+    `_quedarse_vivo()`, asi que el escaparate imprimia «la pantalla se queda donde
+    esta para que puedas mirarla» sobre una direccion que ya daba «Connection
+    refused». Medido con un sondeo cada medio segundo: contestaba desde el segundo 0
+    y dejaba de contestar a los 27,7 s, el instante del veredicto. El usuario abria
+    el navegador justo cuando el resumen aparecia -que es lo natural- y no
+    encontraba nada.
+
+    Asi que todo lo que el usuario tiene que leer y mirar -el resumen y la espera-
+    se lo pasa quien llama en esta funcion, y se hace antes de apagar nada. Con
+    `--salir-al-acabar`, `al_acabar` imprime y vuelve en seguida, y el `finally`
+    apaga el servidor igual de limpio que antes.
+
     Esta aparte de `main` para que las decisiones de `main` -el codigo de salida y
     el quedarse vivo- se puedan probar sin levantar `uvicorn`, sin abrir un puerto
-    y sin pagar los 31 s de la pieza de demostracion. Lo que queda aqui es
-    exactamente lo que no se puede probar sin red: la unica parte del escaparate
-    que la ejecucion real del paso 5 del brief verifica.
+    y sin pagar los 31 s de la pieza de demostracion.
     """
-    import uvicorn
-
     app, sesion, carril, capturas = _construir(pieza, interpretacion)
     base = f"http://127.0.0.1:{puerto}"
-    servidor = uvicorn.Server(
-        uvicorn.Config(app, host="127.0.0.1", port=puerto, log_level="warning")
-    )
-    threading.Thread(target=servidor.run, daemon=True).start()
+    servidor = _levantar_el_servidor(app, puerto)
     try:
         if not _esperar_al_servidor(base):
             print(
@@ -608,8 +661,13 @@ def _correr_la_demostracion(
             print("El cable del gemelo no entrego audio: no hay pasada que mirar.")
             return None
         carril.iniciar(pieza, plan)
-        recolector, completada = _seguir_la_pasada(base, interpretacion.duracion_s)
-        return juzgar(interpretacion, recolector.registro), completada
+        recolector, completada = _seguir_la_pasada(
+            base, interpretacion.duracion_s, interpretacion.repeticiones
+        )
+        veredicto = juzgar(interpretacion, recolector.registro)
+        # DENTRO del try, con el servidor todavia contestando: ver el docstring.
+        al_acabar(veredicto, completada)
+        return veredicto, completada
     except KeyboardInterrupt:
         print()
         return None
@@ -635,22 +693,29 @@ def main(argv: list[str] | None = None) -> int:
         print(f"No se puede montar la demostracion: {error}")
         return 2
 
+    def al_acabar(veredicto: Veredicto, completada: bool) -> None:
+        """Lo que el usuario lee y mira, CON EL SERVIDOR TODAVIA EN PIE.
+
+        Se le pasa a `_correr_la_demostracion` para que corra dentro de su `try`:
+        imprimir el resumen y quedarse esperando despues de que el `finally`
+        hubiera apagado uvicorn dejaba al usuario mirando una direccion que ya no
+        contestaba. Ver el docstring de `_correr_la_demostracion`.
+        """
+        print()
+        print(resumen(veredicto, pieza, perfil, completada))
+        if not argumentos.salir_al_acabar:
+            _quedarse_vivo()
+
     resultado = _correr_la_demostracion(
-        pieza, interpretacion, plan, argumentos.puerto
+        pieza, interpretacion, plan, argumentos.puerto, al_acabar
     )
     if resultado is None:
         return 2
     veredicto, completada = resultado
 
-    print()
-    print(resumen(veredicto, pieza, perfil, completada))
     # Una pasada que no se completo devuelve distinto de cero aunque el veredicto
     # salga limpio: un veredicto sobre media pasada no dice nada de la cadena.
-    codigo = codigo_de_salida(veredicto) if completada else 1
-
-    if not argumentos.salir_al_acabar:
-        _quedarse_vivo()
-    return codigo
+    return codigo_de_salida(veredicto) if completada else 1
 
 
 if __name__ == "__main__":

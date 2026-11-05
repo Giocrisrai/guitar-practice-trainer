@@ -529,10 +529,12 @@ guitarra enchufada y sin tocar una nota. Nadie toca: todo lo que suena lo genera
 el gemelo, y el dispositivo se anuncia como «(gemelo)» en el diagnóstico para
 que ningún informe se pueda leer como una pasada real.
 
-Abre `http://127.0.0.1:8420` **en cuanto el escaparate imprima la dirección**: la
+Abre `http://127.0.0.1:8420` en cuanto el escaparate imprima la dirección: la
 pasada de la pieza de demostración dura unos 30 segundos y es lo que hay que
-mirar (ver el límite de abajo). La pieza por omisión **se construye en código**:
-no hay ni habrá archivos de terceros en el repositorio.
+mirar. Si llegas tarde no pasa nada —el servidor sigue contestando mientras el
+proceso viva—, pero la pasada solo se ve moverse una vez. La pieza por omisión
+**se construye en código**: no hay ni habrá archivos de terceros en el
+repositorio.
 
 Opciones:
 
@@ -542,7 +544,8 @@ Opciones:
   lento.
 - `--bucle PRIMERO-ULTIMO`: tramo de compases a estudiar; un solo número es ese
   compás (`--bucle 17`).
-- `--repeticiones N`: vueltas al tramo (ver el límite de abajo).
+- `--repeticiones N`: vueltas al tramo. La pasada se da por acabada cuando el
+  carril pasa de la última vuelta pedida.
 - `--cuenta-atras COMPASES`: compases de cuenta atrás antes de cada vuelta.
 - `--semilla N`: la semilla del azar del intérprete, para repetir una pasada.
 - `--pieza RUTA`: toca un archivo tuyo (Guitar Pro, MIDI, MusicXML, tablatura de
@@ -551,7 +554,9 @@ Opciones:
 - `--puerto`: el puerto del servidor (por omisión 8420).
 - `--salir-al-acabar`: terminar al acabar la pasada y devolver el código de
   salida, que es la forma de usarlo desde un script. Sin esta bandera el proceso
-  se queda en primer plano (Ctrl+C para salir).
+  se queda en primer plano **con el servidor todavía contestando**, así que el
+  navegador se puede abrir también después de que el resumen aparezca (Ctrl+C
+  para salir).
 
 ### Que salga con código 1 y el perfil perfecto NO es un fallo
 
@@ -591,20 +596,34 @@ pasos del 5 % son finos o bastos, si la digitación sale cómoda, si engancha—
 **sigue entera y pendiente**. El diseño lo dice en sus no-objetivos:
 [`docs/superpowers/specs/2026-11-02-gemelo-digital-design.md`](docs/superpowers/specs/2026-11-02-gemelo-digital-design.md).
 
-### Límites del escaparate, medidos aquí
+### Dos cosas que el escaparate hacía mal y ya no
 
-- **Cuando la pasada acaba, el servidor se cierra aunque el proceso siga vivo.**
-  Medido: el servidor deja de contestar en el mismo instante en que se imprime el
-  veredicto (a los 27,7 s de una pasada de la pieza de demostración), y el
-  navegador que se abra después recibe «conexión rechazada». El mensaje que
-  imprime el escaparate —«la pantalla se queda donde está para que puedas
-  mirarla»— promete más de lo que hace: la pantalla hay que tenerla abierta
-  **mientras** la pasada corre. Es un defecto del escaparate, no del navegador.
-- **Con `--repeticiones` mayor que 1 la pasada nunca se da por completada.** El
-  escaparate espera a que el estado publique `completado`, y un tramo en bucle no
-  lo publica: la pasada se corta al agotarse el margen, el resumen dice «SIN
-  COMPLETAR» y el proceso devuelve 1 aunque todo haya ido bien. `--bucle` con una
-  sola vuelta sí se completa (y puede salir LIMPIO).
+Las dos las encontró la verificación del README corriendo las órdenes como las
+corre el usuario, y las dos están arregladas. Se cuentan aquí porque el
+comportamiento de antes era desconcertante y alguien puede recordarlo.
+
+- **El servidor sigue contestando mientras el proceso vive.** Antes se cerraba en
+  el mismo instante en que se imprimía el veredicto (medido: a los 27,7 s de una
+  pasada de la pieza de demostración), así que el navegador que se abriera después
+  recibía «conexión rechazada» —justo lo natural de hacer, porque el resumen acaba
+  de aparecer— y el mensaje «la pantalla se queda donde está para que puedas
+  mirarla» prometía más de lo que hacía. Ahora el resumen y la espera ocurren con
+  el servidor en pie: remedido con un sondeo cada segundo, el veredicto se imprime
+  a los 7 s y el puerto sigue contestando a los 33 s, hasta que se corta el
+  proceso. Con `--salir-al-acabar` se apaga limpio, como siempre.
+- **`--repeticiones` mayor que 1 se da por completada.** Antes el escaparate
+  esperaba a que el estado publicase `completado`, y un tramo en bucle no lo
+  publica nunca: la pasada se cortaba al agotarse el margen, el resumen decía «SIN
+  COMPLETAR» y el proceso devolvía 1 aunque todo hubiera ido bien. Ahora la pasada
+  acaba cuando el carril pasa de la última vuelta pedida. Remedido con
+  `--bucle 2-3 --repeticiones 2`: «pasada: completada», 16 notas tocadas (las 8 del
+  tramo, dos veces).
+
+  Lo que sigue siendo así, y es del bucle y no del escaparate: **la última nota de
+  cada vuelta puede quedarse sin emparejar**. La cadena tarda unos 190 ms en
+  publicar un ataque y al dar la vuelta el seguidor olvida el tramo, así que ese
+  reporte llega cuando su nota ya no se puede reclamar. Está declarado en
+  `nucleo/gemelo/veredicto.py` y medido en `tests/test_gemelo_bucle.py`.
 
 ## Verificar el cable
 
