@@ -371,7 +371,6 @@ class SesionCarril:
                 # pasada, y no desde un reloj monotonico que lleva horas andando.
                 self._conductor.fijar_la_mirada(ahora)
                 self._pausado = False
-                self._hubo_senal = False
             # (`detener()` de arriba ya paro el click de la pieza anterior.)
             # El observador se registra AL FINAL, con el estudio ya en su sitio:
             # si se registrara antes, el primer cuadro podria entrar con
@@ -410,6 +409,11 @@ class SesionCarril:
                 self._pieza = None
                 self._instante = 0.0
                 self._pausado = False
+                # Se borra SOLO aqui, y `iniciar` detiene antes de arrancar: la
+                # copia en `iniciar` era un mutante equivalente -quitarla no
+                # mataba ninguna prueba- y este modulo ya aprendio que reponer lo
+                # mismo en dos sitios son dos lineas que hay que acordarse de
+                # repetir.
                 self._hubo_senal = False
 
     def estado(self) -> dict:

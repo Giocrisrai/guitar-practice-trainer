@@ -1124,6 +1124,84 @@ def test_en_un_bucle_el_descanso_entre_vueltas_no_acusa_al_cable():
     sesion.detener()
 
 
+def test_los_cuadros_de_silencio_no_cuentan_como_cable_que_entrego():
+    """**UN MUTANTE SUPERVIVIENTE, y era el defecto que mas cerca estuvo de colarse.**
+
+    Lo que calla el aviso es que el cable haya entregado señal en esta pasada, y
+    ese hecho se deduce DEL CUADRO: un cuadro con nivel por encima del umbral de
+    ruido. La tentacion es deducirlo de `senal_ausente` -«no falta señal, luego
+    hay señal»- y es falso, porque `senal_ausente` es «cinco segundos seguidos por
+    debajo del umbral»: durante los cinco primeros segundos de CUALQUIER pasada es
+    falso, tambien de una en la que no llegue nunca nada. Con esa version, el
+    aviso se callaba justo en el caso legitimo.
+
+    Aqui los cuadros SI llegan -el cable esta abierto y publicando- pero traen
+    silencio a -90 dBFS, muy por debajo del umbral. Eso no es el cable
+    entregando: es el cable callado, que es el caso que el aviso existe para
+    nombrar.
+
+    El mutante que esto mata: `_cuadro_con_senal` devolviendo `True` siempre.
+    Sobrevivia a la suite entera.
+    """
+    reloj = RelojFalso()
+    sesion_carril, sesion = carril(reloj)
+    sesion_carril.iniciar(
+        pieza_de([40, 45, 50, 55]), PlanDePasada(compases_de_cuenta_atras=0)
+    )
+
+    publicar(sesion, reloj, SILENCIO, cuadros=60)
+    sesion.senal_ausente = True
+    estado = avanzar_mirando(sesion_carril, reloj, 7.0)
+
+    assert estado["pausado"] is True
+    assert sesion_carril.esperando_notas is True, (
+        "llegaron sesenta cuadros y ninguno traia señal: el cable no ha entregado "
+        "nada en esta pasada y el aviso es el caso legitimo"
+    )
+    assert estado["esperando_notas"] is True
+
+    sesion_carril.detener()
+    sesion.detener()
+
+
+def test_lo_que_entrego_el_cable_en_la_pasada_anterior_no_calla_la_nueva():
+    """**OTRO MUTANTE SUPERVIVIENTE: el hecho es DE LA PASADA, no de la sesion.**
+
+    Si «el cable entrego señal» se quedara puesto de una pasada para la siguiente,
+    el usuario que toca una pieza, la termina, desenchufa y empieza otra se
+    quedaria sin el aviso justo cuando lo necesita, porque su pasada anterior
+    habia ido bien. Se borra al arrancar y al parar.
+
+    El mutante que esto mata: quitar `self._hubo_senal = False` de `iniciar`.
+    Sobrevivia a la suite entera.
+    """
+    reloj = RelojFalso()
+    sesion_carril, sesion = carril(reloj)
+
+    # Primera pasada: se toca de verdad y el aviso se calla al descansar.
+    sesion_carril.iniciar(
+        pieza_de([40, 45, 50, 55]), PlanDePasada(compases_de_cuenta_atras=0)
+    )
+    publicar(sesion, reloj, suena("E2"), cuadros=20)
+    sesion.senal_ausente = True
+    avanzar_mirando(sesion_carril, reloj, 7.0)
+    assert sesion_carril.esperando_notas is False
+
+    # Segunda pasada, sin una sola muestra: el aviso vuelve.
+    sesion_carril.iniciar(
+        pieza_de([40, 45, 50, 55]), PlanDePasada(compases_de_cuenta_atras=0)
+    )
+    estado = avanzar_mirando(sesion_carril, reloj, 7.0)
+
+    assert estado["pausado"] is True
+    assert sesion_carril.esperando_notas is True, (
+        "lo que el cable entrego en la pasada anterior no dice nada de esta"
+    )
+
+    sesion_carril.detener()
+    sesion.detener()
+
+
 def test_la_regla_del_aviso_se_decide_una_vez_y_las_dos_mitades_la_leen():
     """**LA COSTURA: el panel de diagnostico y el carril leen el MISMO dato.**
 
