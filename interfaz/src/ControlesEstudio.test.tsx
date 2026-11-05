@@ -1,4 +1,5 @@
 import { fireEvent, render, screen } from "@testing-library/react";
+import type { ReactElement } from "react";
 import { describe, expect, it, vi } from "vitest";
 
 import { ControlesEstudio } from "./ControlesEstudio";
@@ -44,6 +45,27 @@ function pintar(
 const casilla = (nombre: string) => screen.getByLabelText(nombre) as HTMLInputElement;
 const deslizador = () => casilla("Tempo");
 const compas = (n: number) => screen.getByRole("button", { name: `Compás ${n}` });
+
+/** Repinta los controles con otro estado, conservando el componente montado. */
+function repintar(
+  rerender: (nodo: ReactElement) => void,
+  estado: Partial<EstadoEstudio>,
+  manejadores: {
+    alCambiarPlan: (plan: Plan) => Promise<boolean> | void;
+    alPausar: (activa: boolean) => void;
+    alSaltar: (compas: number) => void;
+  },
+) {
+  rerender(
+    <ControlesEstudio
+      estado={{ ...ESTADO, ...estado }}
+      secciones={[]}
+      alCambiarPlan={manejadores.alCambiarPlan}
+      alPausar={manejadores.alPausar}
+      alSaltar={manejadores.alSaltar}
+    />,
+  );
+}
 
 /** Arrastra el deslizador por esos porcentajes y lo suelta. */
 function arrastrarTempo(...porcentajes: number[]) {
@@ -139,7 +161,9 @@ describe("el tempo", () => {
     fireEvent.change(deslizador(), { target: { value: "65" } });
     fireEvent.blur(deslizador());
     expect(alCambiarPlan.mock.calls).toEqual([[{ factor_tempo: 0.65 }]]);
-    expect(deslizador().value).toBe("100");
+    // Confirmado es confirmado: tampoco aqui se vuelve al valor del servidor
+    // antes de que llegue el estado nuevo.
+    expect(deslizador().value).toBe("65");
   });
 
   it("perder el foco después de soltar no repite la orden", () => {
@@ -163,10 +187,70 @@ describe("el tempo", () => {
     expect(alCambiarPlan).not.toHaveBeenCalled();
   });
 
-  it("después de soltar, el deslizador vuelve a seguir al estado", () => {
-    pintar({ factor_tempo: 0.8 });
+  it("después de soltar, el deslizador vuelve a seguir al estado EN CUANTO el estado cambia", () => {
+    // Antes volvia al valor del servidor en el mismo instante de soltar, que es
+    // el parpadeo: el 60 que el usuario puso se veia un momento como 80.
+    const { rerender, ...manejadores } = pintar({ factor_tempo: 0.8 });
     arrastrarTempo(60);
+    expect(deslizador().value).toBe("60");
+    repintar(rerender, { factor_tempo: 0.6 }, manejadores);
+    expect(deslizador().value).toBe("60");
+    // Y a partir de ahi manda el estado, aunque lo mueva otro (el tempo automatico).
+    repintar(rerender, { factor_tempo: 0.65 }, manejadores);
+    expect(deslizador().value).toBe("65");
+  });
+
+  it("el deslizador de tempo no parpadea al soltar", () => {
+    // Durante el arrastre se ve el valor local; al soltar se manda y se SIGUE
+    // viendo, sin volver al del servidor, hasta que llega el estado nuevo. Lo
+    // que se comprueba es que el valor mostrado nunca retrocede.
+    const { rerender, alCambiarPlan, ...resto } = pintar({ factor_tempo: 0.5 });
+    const manejadores = { alCambiarPlan, ...resto };
+    const vistos = [Number(deslizador().value)];
+    for (const valor of [60, 70, 80]) {
+      fireEvent.change(deslizador(), { target: { value: String(valor) } });
+      vistos.push(Number(deslizador().value));
+    }
+    fireEvent.pointerUp(deslizador());
+    vistos.push(Number(deslizador().value));
+    // El estado nuevo todavia no ha llegado: el servidor sigue diciendo 50 %.
+    repintar(rerender, { factor_tempo: 0.5 }, manejadores);
+    vistos.push(Number(deslizador().value));
+    // Y cuando llega, el deslizador ya estaba en su sitio.
+    repintar(rerender, { factor_tempo: 0.8 }, manejadores);
+    vistos.push(Number(deslizador().value));
+
+    expect(vistos).toEqual([50, 60, 70, 80, 80, 80, 80]);
+    for (let i = 1; i < vistos.length; i += 1) {
+      expect(vistos[i]).toBeGreaterThanOrEqual(vistos[i - 1]);
+    }
+    expect(screen.getByText(/80 %/)).toBeDefined();
+    expect(alCambiarPlan.mock.calls).toEqual([[{ factor_tempo: 0.8 }]]);
+  });
+
+  it("si el servidor rechaza el tempo, el deslizador vuelve al valor vigente", () => {
+    const { rerender, alCambiarPlan, ...resto } = pintar(
+      { factor_tempo: 0.5 },
+      [],
+      Promise.resolve(false),
+    );
+    arrastrarTempo(80);
     expect(deslizador().value).toBe("80");
+    return vi.waitFor(() => expect(deslizador().value).toBe("50")).then(() => {
+      repintar(rerender, { factor_tempo: 0.5 }, { alCambiarPlan, ...resto });
+      expect(deslizador().value).toBe("50");
+    });
+  });
+
+  it("el valor mandado no resucita si el servidor vuelve al factor de antes", () => {
+    // El tempo automatico mueve el factor solo: una vez que el estado se movio,
+    // el valor del gesto caduca y no puede volver a pintarse mas tarde.
+    const { rerender, ...manejadores } = pintar({ factor_tempo: 0.5 });
+    arrastrarTempo(80);
+    repintar(rerender, { factor_tempo: 0.75 }, manejadores);
+    expect(deslizador().value).toBe("75");
+    repintar(rerender, { factor_tempo: 0.5 }, manejadores);
+    expect(deslizador().value).toBe("50");
   });
 
   it("los pulsos por minuto se redondean al entero", () => {

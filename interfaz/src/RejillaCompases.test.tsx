@@ -81,6 +81,70 @@ describe("la rejilla de compases", () => {
     expect(alMarcarRango).not.toHaveBeenCalled();
   });
 
+  // Los dos defectos del dedo. En tactil el navegador le da al elemento del
+  // `pointerdown` la CAPTURA IMPLICITA del puntero: todos los `pointermove` y el
+  // `pointerup` siguen llegando a ese mismo compas, aunque el dedo ya este sobre
+  // otro. Por eso el arrastre funcionaba con raton (que no captura y si manda
+  // `pointerenter` a los vecinos) y no con el dedo.
+  it("el arrastre de la rejilla funciona con el dedo", () => {
+    const { alMarcarRango } = pintar();
+    const ocho = screen.getByRole("button", { name: "Compás 8" });
+    const liberados: number[] = [];
+    ocho.hasPointerCapture = () => true;
+    ocho.releasePointerCapture = (identificador: number) => {
+      liberados.push(identificador);
+    };
+
+    fireEvent.pointerDown(ocho, { pointerType: "touch", pointerId: 7 });
+    // Si la captura no se suelta, las dos lineas de abajo no pasan en un telefono
+    // (irian al compas 8) aunque en la prueba parezcan pasar.
+    expect(liberados).toEqual([7]);
+
+    fireEvent.pointerMove(screen.getByRole("button", { name: "Compás 5" }), {
+      pointerType: "touch",
+      pointerId: 7,
+    });
+    // El dedo no manda `pointerenter` a los vecinos: si el `pointermove` no se
+    // escucha, el arrastre no se ve crecer por debajo del dedo.
+    expect(
+      screen
+        .getAllByRole("button")
+        .filter((boton) => boton.classList.contains("marcando"))
+        .map((boton) => boton.textContent),
+    ).toEqual(["5", "6", "7", "8"]);
+
+    fireEvent.pointerUp(screen.getByRole("button", { name: "Compás 5" }), {
+      pointerType: "touch",
+      pointerId: 7,
+    });
+    expect(alMarcarRango).toHaveBeenCalledWith(5, 8);
+  });
+
+  it("el arrastre con el dedo no hace scroll de la página", () => {
+    // `touch-action` no se hereda, asi que tiene que estar en el elemento que el
+    // dedo toca: cada compas. Sin esto el navegador se queda el gesto para hacer
+    // scroll, y el arrastre tactil "funciona" en la prueba y no en el telefono.
+    pintar();
+    const acciones = screen.getAllByRole("button").map((boton) => boton.style.touchAction);
+    expect(acciones).toEqual(Array.from({ length: 12 }, () => "none"));
+  });
+
+  it("con el raton no se suelta ninguna captura, porque no hay ninguna", () => {
+    // Soltar una captura que no existe es un NotFoundError del navegador.
+    const { alMarcarRango } = pintar();
+    const dos = screen.getByRole("button", { name: "Compás 2" });
+    let sueltas = 0;
+    dos.hasPointerCapture = () => false;
+    dos.releasePointerCapture = () => {
+      sueltas += 1;
+    };
+    fireEvent.pointerDown(dos, { pointerType: "mouse", pointerId: 1 });
+    fireEvent.pointerEnter(screen.getByRole("button", { name: "Compás 4" }));
+    fireEvent.pointerUp(screen.getByRole("button", { name: "Compás 4" }));
+    expect(sueltas).toBe(0);
+    expect(alMarcarRango).toHaveBeenCalledWith(2, 4);
+  });
+
   it("avisa cuando la pieza cambia de compás, porque las barras caen mal", () => {
     pintar({ compasVariable: true });
     expect(screen.getByText(/cambia de compás/i)).toBeTruthy();

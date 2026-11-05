@@ -82,6 +82,34 @@ export function ControlesEstudio({
    */
   const [arrastre, setArrastre] = useState<number | null>(null);
 
+  /**
+   * El valor YA MANDADO que se sigue mostrando hasta que el servidor conteste.
+   *
+   * Sin esto el deslizador parpadeaba al soltar: `arrastre` se borraba en el acto
+   * y el deslizador volvia por un momento al `estado.factor_tempo` viejo -el
+   * valor retrocedia a la vista- hasta que llegaba el estado nuevo, un latido
+   * despues. Se guarda tambien el factor que el servidor decia al mandarlo
+   * (`factorPrevio`): el valor mandado deja de pintarse en cuanto el estado se
+   * mueve a CUALQUIER otra cosa, que es la senal de que el servidor ya contesto,
+   * sea con lo que pedimos o con otra cosa (el tempo automatico tambien lo mueve).
+   */
+  const [mandado, setMandado] = useState<{ porciento: number; factorPrevio: number } | null>(
+    null,
+  );
+
+  // El estado ya se movio: lo mandado caduca y no puede resucitar mas tarde (el
+  // tempo automatico puede devolver el factor al de antes un rato despues). Se
+  // ajusta EN EL RENDER y no en un efecto: es estado derivado de una propiedad
+  // nueva, no una sincronizacion con nada de fuera.
+  if (mandado !== null && estado.factor_tempo !== mandado.factorPrevio) setMandado(null);
+
+  /** Lo que se VE: el gesto en curso, si no lo ya mandado, si no el servidor. */
+  const tempoMostrado =
+    arrastre ??
+    (mandado !== null && estado.factor_tempo === mandado.factorPrevio
+      ? mandado.porciento
+      : porciento(estado.factor_tempo));
+
   /** Manda SOLO lo que cambia: el servidor conserva el resto del plan vigente. */
   const mandar = (cambios: Plan) => alCambiarPlan(cambios);
 
@@ -96,7 +124,13 @@ export function ControlesEstudio({
   const soltarTempo = () => {
     if (arrastre === null) return;
     setArrastre(null);
-    void mandar({ factor_tempo: arrastre / 100 });
+    setMandado({ porciento: arrastre, factorPrevio: estado.factor_tempo });
+    const respuesta = mandar({ factor_tempo: arrastre / 100 });
+    // Un rechazo no va a mover el estado nunca: el valor mandado se tira y el
+    // deslizador vuelve al vigente, que es la verdad.
+    void Promise.resolve(respuesta).then((aceptado) => {
+      if (aceptado === false) setMandado(null);
+    });
   };
 
   /** Pedir un salto: si el compás cae fuera del tramo, primero se mueve el rango. */
@@ -147,7 +181,7 @@ export function ControlesEstudio({
           min={TEMPO_MINIMO_PORCIENTO}
           max={TEMPO_MAXIMO_PORCIENTO}
           step={PASO_TEMPO_PORCIENTO}
-          value={arrastre ?? porciento(estado.factor_tempo)}
+          value={tempoMostrado}
           onChange={(evento) => setArrastre(Number(evento.target.value))}
           onPointerUp={soltarTempo}
           onKeyUp={soltarTempo}
@@ -159,7 +193,7 @@ export function ControlesEstudio({
         />
         {/* Un 70 % no le dice nada a nadie; «42 ppm» sí. */}
         <span className="lectura">
-          {arrastre ?? porciento(estado.factor_tempo)} % · {Math.round(estado.tempo_efectivo)} ppm
+          {tempoMostrado} % · {Math.round(estado.tempo_efectivo)} ppm
         </span>
         {sugerido !== null && (
           <button
