@@ -1070,7 +1070,7 @@ def test_el_tempo_automatico_con_bucle_aplica_el_factor_y_no_sugiere_nada():
         # El cabezal cae en el inicio del tramo MAS el exceso con que el reloj
         # cruzo el final, y el exceso de una mirada es como mucho un paso de
         # mirada (33 ms), que el cambio de factor divide por 0,95. La igualdad
-        # pelada con 4/0,95 que habia aqui medía el defecto que la T7 arreglo: el
+        # pelada con 4/0,95 que habia aqui media el defecto que la T7 arreglo: el
         # exceso se tiraba, y tirarlo es lo que arrastraba el reloj del bucle 36 ms
         # por vuelta. Lo que esta prueba vigila de verdad sigue vigilado: la
         # distancia a 4/0,95 es de una mirada, no de los 0,21 s que saldrian si el

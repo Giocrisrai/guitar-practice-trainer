@@ -420,13 +420,21 @@ def test_el_oraculo_de_un_tramo_que_no_empieza_en_el_compas_uno(
     parece a nada.
 
     Los dos numeros se afirman con su margen por los dos lados, no contra el techo
-    del detector: contra el techo quedaban 80 ms de holgura, que es suficiente para
-    tragarse un error de eje de 128 ms sin que nada se queje. Y se afirma que el
+    del detector: contra el techo la holgura es de **82,7 ms en el primer caso y
+    64,7 en el segundo** (250 - 167,3 y 250 - 185,3), que en los dos casos basta
+    para tragarse un error de eje de 128 ms sin que nada se queje. Aqui decia «80
+    ms» para los dos, que yerra a la BAJA en el caso del 50 % -la direccion
+    peligrosa- justo donde la holgura es la menor de las dos. Y se afirma que el
     maximo esta por encima de la mediana, porque son dos cantidades distintas.
 
-    Las CUATRO notas salen limpias, no siete de ocho como la pieza entera, y es
-    por una razon que conviene saber: la nota con el temblor gordo del onset
-    -89,3 ms, la nota 3- esta en el primer compas y este tramo no la toca.
+    Las CUATRO notas salen limpias en los dos casos. Al tempo escrito eso es
+    ademas un contraste con la pieza entera, que saca siete de ocho, y la razon se
+    puede nombrar: la nota con el temblor gordo del onset -89,3 ms, la nota 3-
+    esta en el primer compas y este tramo no la toca. Al 50 % NO es ningun
+    contraste, y decir «no siete de ocho como la pieza entera» era falso en ese
+    caso: con el factor la ventana de acierto se estira y la pieza entera tambien
+    sale entera (medido al 40 % en `test_el_oraculo_aguanta_el_tempo_minimo`: 8 de
+    8).
     """
     veredicto, _, informe = _pasada_del_oraculo(
         factor_tempo=factor_tempo,

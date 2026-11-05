@@ -552,7 +552,7 @@ def test_el_registro_guarda_las_notas_de_todas_las_vueltas():
     # Y por eso el estado final va por la vuelta CUATRO: el cabezal recorre los
     # tres tramos enteros, asi que la tercera vuelta TERMINA dentro del audio y el
     # bucle abre la cuarta -vacia, que por eso no hay ni un reporte en ella-. Este
-    # numero valia 3 hasta la T7 y lo que medía era el arrastre: el reloj perdia
+    # numero valia 3 hasta la T7 y lo que media era el arrastre: el reloj perdia
     # 36 ms en cada vuelta (el exceso tirado mas el cuadro que el re-anclaje
     # congelaba) y se quedaba a 72 ms de acabar la tercera. Tres tramos de audio
     # son tres vueltas acabadas, y un reloj que no llega al final del tercero esta
@@ -574,7 +574,7 @@ def test_el_registro_guarda_un_informe_por_vuelta_cerrada():
     un informe por vuelta CERRADA, y aqui coinciden porque el audio trae tres
     tramos JUSTOS y el cabezal los recorre enteros.
 
-    **Este numero valia 2 y lo que medía era el arrastre del reloj.** Hasta la T7
+    **Este numero valia 2 y lo que media era el arrastre del reloj.** Hasta la T7
     el bucle perdia 36 ms por vuelta -el exceso con que el reloj cruzaba el final,
     tirado, mas el cuadro que el re-anclaje de la correspondencia congelaba-, asi
     que tras dos vueltas el reloj iba 72 ms corto y no llegaba a terminar la
