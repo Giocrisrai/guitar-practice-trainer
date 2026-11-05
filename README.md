@@ -146,6 +146,16 @@ El carril se pausa por dos reglas distintas:
   sigue ahí, así que al desenchufar el carril se pausa en cosa de un segundo, no
   de cinco; al arrancar sin captura, desde el primer momento.
 
+**Pausarse no es acusarte del silencio.** El aviso «no llega señal del cable» —en
+la barra de diagnóstico y en el carril, que son dos mitades de lo mismo— sale
+cuando el silencio puede ser una avería: la pasada en marcha y el cable sin
+entregar una sola muestra, estés tocando o en pausa. **No** sale cuando el cable
+ya entregó señal en esta pasada y luego te callas, que es lo que hace quien
+descansa la mano entre dos vueltas de un bucle: ahí «sube el volumen de la
+guitarra» sería falso, y un aviso falso justo cuando más se ve es un aviso que se
+deja de leer. Tampoco sale con la pieza terminada. El carril se pausa igual en
+todos los casos y sigue donde estaba en cuanto vuelves a tocar.
+
 **Hay cuenta atrás desde el primer compás, y no hay metrónomo salvo que lo
 pidas.** El plan de fábrica trae **un compás de cuenta atrás** antes de la primera
 entrada —y antes de cada vuelta del bucle—, así que la primera nota, que está
@@ -311,6 +321,21 @@ pista, así que es su afinación la que decide: un `.gp5` con la pista 1 en est�
 la pista 2 en Drop C avisa al elegir la segunda y no al abrir la canción. Mientras no
 has elegido ninguna, el aviso es el de la primera pista usable, que es la que se
 importaría si no eliges otra.
+
+> **El bajo está en el selector y el carril no lo acompaña todavía.** `bajo_4` y
+> `bajo_5` son perfiles de fábrica, pero el carril se equivoca en casi cada nota
+> con ellos, y está medido en esta etapa (no es una sospecha): la ventana de
+> análisis de un bajo son 8192 muestras —**170,7 ms**— y con ella el margen de la
+> racha estable del detector se queda en **cero**, así que el ataque se sella con
+> la altura de la nota ANTERIOR; y esos mismos 170,7 ms empujan el retraso de la
+> cadena por encima de los 250 ms que el detector admite para seguir hablando del
+> mismo ataque, de modo que la pasada entera se desadjudica (**30 de 30** semillas
+> sucias en la medición). El afinador sí funciona: lo que no funciona es seguir
+> una pieza con el carril. Si tocas el bajo, afínalo y úsalo en el afinador, pero
+> cuenta con que el carril no te va a marcar bien hasta que esto se arregle. Está
+> declarado con todas las letras en `nucleo/ejercicios/pulsaciones.py`, y el
+> gemelo digital —la herramienta con la que se comprobaría— solo sabe de guitarra
+> estándar.
 
 **El aviso funciona también con una afinación que no es de fábrica**, y a la
 primera. De fábrica son estándar, Drop D y los dos bajos; una canción en Drop C no
@@ -550,13 +575,26 @@ Opciones:
 - `--semilla N`: la semilla del azar del intérprete, para repetir una pasada.
 - `--pieza RUTA`: toca un archivo tuyo (Guitar Pro, MIDI, MusicXML, tablatura de
   texto) en vez de la pieza de demostración. Se lee de donde esté; no se copia a
-  ninguna parte.
+  ninguna parte. **Toca siempre la PISTA 1 y no se puede elegir otra**: si la
+  primera pista de tu `.gp5` es la batería o el bajo, la demostración no tendrá
+  ningún sentido (el servidor sí deja elegir pista; el escaparate todavía no).
+  Y una canción de verdad trae acordes y notas repetidas, que el veredicto
+  **excluye** y cuenta aparte: con un archivo tuyo el número de `excluidas` deja
+  de ser cero y lo que el veredicto juzga es menos que lo que suena. La pieza de
+  demostración no tiene ni acordes ni repetidas, así que ese camino solo está
+  recorrido por las pruebas de unidad.
 - `--puerto`: el puerto del servidor (por omisión 8420).
-- `--salir-al-acabar`: terminar al acabar la pasada y devolver el código de
-  salida, que es la forma de usarlo desde un script. Sin esta bandera el proceso
-  se queda en primer plano **con el servidor todavía contestando**, así que el
-  navegador se puede abrir también después de que el resumen aparezca (Ctrl+C
-  para salir).
+- `--salir-al-acabar`: terminar en cuanto la pasada acaba, que es la forma de
+  usarlo desde un script. Sin esta bandera el proceso se queda en primer plano
+  **con el servidor todavía contestando**, así que el navegador se puede abrir
+  también después de que el resumen aparezca (Ctrl+C para salir).
+
+**Los tres códigos de salida valen en los dos modos**: `0` si el veredicto sale
+limpio, `1` si la cadena tiene hallazgos o la pasada no se completó, y `2` si la
+demostración no llegó a montarse. Sin la bandera, el `Ctrl+C` con que cierras el
+escaparate devuelve el código del veredicto que acabas de leer, no un error: antes
+devolvía siempre `2` —«no llegó a montarse»— sobre una pasada completada y con su
+veredicto impreso en pantalla.
 
 ### Que salga con código 1 y el perfil perfecto NO es un fallo
 
@@ -564,12 +602,34 @@ La sesión completa publica su peor ataque **entre 236 y 250 ms** después de qu
 la nota sonara, contra los **250 ms** que el detector admite para seguir
 hablando del mismo ataque: **margen cero**. De ahí salen una o dos notas sin
 emparejar en algunas pasadas, el veredicto sale «CON HALLAZGOS» y el proceso
-devuelve 1 aunque el gemelo haya tocado las 48 notas escritas. El escaparate
-**imprime un aviso** explicándolo junto al veredicto —solo con el perfil
-perfecto y solo si el gemelo tocó todo lo escrito—, y aquí se dice también para
-que nadie lea ese 1 como «el programa se equivocó de nota». La tolerancia **no**
-se afloja para que el código sea cero: la demostración dice lo que mide. Con
-cualquier otro perfil los hallazgos sí son del intérprete.
+devuelve 1 aunque el gemelo haya tocado las 48 notas escritas.
+
+> **Y dos ejecuciones idénticas pueden dar veredictos distintos: el veredicto del
+> escaparate NO es reproducible.** Con margen cero, lo que decide de qué lado cae
+> cada nota no es la cadena sino el planificador de hilos del sistema. Medido en
+> cuatro pasadas: tres planes distintos dieron peores desfases de **+249,7**,
+> **+249,9** y **+250,0 ms** contra el techo de 250 —con 1, 3 y 2 notas sin
+> emparejar—, y una cuarta pasada del **mismo plan** que la de +250,0 dio
+> **+230,1 ms** y 3 notas. Así que si corres el escaparate dos veces y ves 1
+> pérdida y luego 3, no ha cambiado nada: es este margen. Lo que el gemelo mide de
+> forma estable es lo que la suite afirma con sus rangos; el número de una pasada
+> suelta no es un dato del programa. (La semilla con `--semilla` fija el azar del
+> INTÉRPRETE —lo que se toca sale igual byte a byte—, no el reparto de hilos del
+> servidor, que es lo que varía.)
+
+El escaparate **imprime un aviso** explicándolo junto al veredicto —solo con el
+perfil perfecto, solo si la pasada fue la pieza **entera, una vez** y el gemelo
+tocó todo lo escrito—, y aquí se dice también para que nadie lea ese 1 como «el
+programa se equivocó de nota». La tolerancia **no** se afloja para que el código
+sea cero: la demostración dice lo que mide. Con cualquier otro perfil los
+hallazgos sí son del intérprete.
+
+**Con `--bucle` ese aviso no sale, y es a propósito.** En un bucle, perder la
+última nota de cada vuelta es un mecanismo propio del bucle con su propia causa
+—está más abajo—, así que el borde del detector no lo explica y el aviso callaría
+diciendo algo falso. Lo decía: con `--bucle 1-6 --repeticiones 2` sobre la pieza
+de demostración afirmaba «el gemelo tocó las 48 notas de las 48 escritas» de una
+pasada que tocó 24 dos veces.
 
 ### Los milisegundos de esta etapa son más benignos que el programa real
 
