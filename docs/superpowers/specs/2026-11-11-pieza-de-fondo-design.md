@@ -274,16 +274,19 @@ arriba, en el endpoint (`servidor/app.py:643-700, 748-771`). Eso es deliberado y
 no se rompe. Mi spec pedía que el carril supiera de qué archivo salió su pieza, y
 eso habría abierto una segunda puerta.
 
-**Decisión:** el acompañamiento se cablea **por encima** de `SesionCarril`, en
-`SesionPractica`, que es quien ya sabe de canciones y de pistas. El carril no se
-entera de que existe; solo publica su cabezal, que ya publica. Con eso:
+**Decisión:** el acompañamiento vive en `SesionCarril` —que es donde está el
+cabezal— pero **entra por una puerta propia**, no por `iniciar`. Así la puerta
+única de `iniciar(pieza, plan)` queda intacta y el carril nunca tiene que saber de
+qué archivo salió su pieza. Con eso:
 
-- `SesionPractica` gana `_acompanante` y `_ajustar_acompanamiento`, llamada desde
-  los dos sitios desde los que ya se llama `_ajustar_click` y con la misma forma
-  (misma pausa, mismo «sin salida de audio la pasada sigue en pie»).
+- `SesionCarril` gana `_acompanante`, `_ajustar_acompanamiento` —llamada desde los
+  dos sitios desde los que ya se llama `_ajustar_click`, con la misma forma: misma
+  pausa, mismo «sin salida de audio la pasada sigue en pie»— y un método nuevo
+  `cargar_acompanamiento(voces, volumen)`, que es la puerta.
 - Quien resuelve las voces de fondo es el endpoint que ya elige la pista, porque es
-  el único que tiene la ruta del archivo. Las pasa hechas; no se re-leen en cada
-  instantánea.
+  el único que tiene la ruta del archivo (`servidor/app.py:696-700`). Las pasa
+  hechas por esa puerta; no se re-leen en cada instantánea. Si nadie llama a la
+  puerta, no hay acompañamiento y nada cambia.
 - **Salida de audio propia, no la del click.** Compartirla no se puede:
   `_parar_click` llama a `self._salida.cerrar()` sin condiciones
   (`servidor/piezas.py:795-806`) y, con `con_click` falso, eso ocurre en cada
