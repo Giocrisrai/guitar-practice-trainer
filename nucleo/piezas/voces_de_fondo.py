@@ -18,12 +18,13 @@ por no caber en el mastil: nunca pregunta si cabe. Lo que si usa, formato por
 formato, es el MISMO parser que su lector hermano, para que las notas de fondo y las
 de la pista que se toca salgan del mismo sitio y no se desincronicen.
 
-Lo que si se excluye es lo que no tiene nada que sonar: la percusion -sin alturas- y
-las pistas vacias. Y se excluye DICIENDO POR QUE, con la frase que ya escribe el
-lector del formato (`desde_guitarpro._motivo_no_usable`,
+Lo que si se aparta es lo que no tiene nada que sonar: la percusion -sin alturas- y
+las pistas vacias. La percusion se aparta DICIENDO POR QUE, con la frase que ya
+escribe el lector del formato (`desde_guitarpro._motivo_no_usable`,
 `desde_midi._motivo_no_usable`, la descripcion de `desde_musicxml`), porque el
 usuario tiene que ver que su bateria esta ahi y por que no se le ofrece, igual que
-en el listado de pistas.
+en el listado de pistas. Las vacias se apartan EN SILENCIO, y la diferencia entre
+los dos casos la explica `_se_pierde_algo`.
 """
 
 from collections.abc import Callable
@@ -54,10 +55,6 @@ class NotaDeFondo:
     inicio_pulsos: float
     duracion_pulsos: float
 
-    @property
-    def fin_pulsos(self) -> float:
-        return self.inicio_pulsos + self.duracion_pulsos
-
 
 @dataclass(frozen=True)
 class VozDeFondo:
@@ -80,14 +77,35 @@ class FondoDisponible:
         el usuario toca.
     tempo: el del archivo, en negras por minuto. Es el mismo que trae la `Pieza` de
         la pista importada, porque sale del mismo sitio.
-    excluidas: (nombre, motivo) de las pistas que NO pueden sonar, con la frase
-        escrita para el usuario. La pista que el usuario toca no esta aqui: no esta
-        rechazada, simplemente la toca el.
+    excluidas: (nombre, motivo) de las pistas que TENIAN algo que sonar y aun asi no
+        pueden, con la frase escrita para el usuario. Lo que decide quien entra lo
+        explica `_se_pierde_algo`. La pista que el usuario toca no esta aqui: no
+        esta rechazada, simplemente la toca el.
     """
 
     voces: tuple[VozDeFondo, ...]
     tempo: int
     excluidas: tuple[tuple[str, str], ...]
+
+
+def _se_pierde_algo(notas: int, motivo: str | None) -> bool:
+    """Si no poder sonar esta pista le QUITA algo al usuario, y hay que decirselo.
+
+    `excluidas` no es la lista de las pistas que fallan: es la de lo que el usuario
+    se pierde del fondo. Y no son lo mismo. Una pista de percusion se echa de menos
+    -sin ella no hay groove- y tiene que aparecer. Una pista SIN UNA SOLA NOTA no
+    quita nada: anunciarla es decirle que le falta un trozo de la cancion cuando no
+    le falta ninguno.
+
+    No es un caso raro. Un MIDI de formato 1 -como los guarda cualquier
+    secuenciador- empieza por una pista que solo lleva el tempo y el compas, y
+    `desde_midi._motivo_no_usable` la rechaza, con razon, por «no tiene ninguna
+    nota». Esa frase es verdad y es ruido: el usuario leeria que le falta algo del
+    fondo por una pista que nunca iba a sonar.
+
+    La pregunta, entonces, no es si la pista sirve, sino si TENIA algo que sonar.
+    """
+    return motivo is not None and notas > 0
 
 
 def _voces_de_guitarpro(ruta: Path | str, pista_excluida: int) -> FondoDisponible:
@@ -124,9 +142,11 @@ def _voces_de_guitarpro(ruta: Path | str, pista_excluida: int) -> FondoDisponibl
         if numero == pista_excluida:
             continue
         nombre = pista.name.strip() or f"Pista {numero}"
-        motivo = _motivo_no_usable(pista, _contar_notas(pista))
+        notas_escritas = _contar_notas(pista)
+        motivo = _motivo_no_usable(pista, notas_escritas)
         if motivo is not None:
-            excluidas.append((nombre, motivo))
+            if _se_pierde_algo(notas_escritas, motivo):
+                excluidas.append((nombre, motivo))
             continue
         notas, _ = _convertir(
             pista, _orden_de_compases(pista.measures, normalizado)
@@ -160,10 +180,8 @@ def _voces_de_midi(ruta: Path | str, pista_excluida: int) -> FondoDisponible:
     import mido
 
     from nucleo.piezas.desde_midi import (
-        CANAL_PERCUSION,
         TEMPO_POR_DEFECTO,
         _abrir,
-        _canales,
         _contar_notas,
         _instrumento,
         _metas,
@@ -187,14 +205,15 @@ def _voces_de_midi(ruta: Path | str, pista_excluida: int) -> FondoDisponible:
         if numero == pista_excluida:
             continue
         nombre = (pista.name or "").strip() or f"Pista {numero}"
-        motivo = _motivo_no_usable(pista, _contar_notas(pista))
+        notas_escritas = _contar_notas(pista)
+        # La guarda del motivo es la que aparta la bateria, y es la unica: el canal
+        # 10 no se ve en `_notas_de`, que convierte cualquier `note_on` en una
+        # altura. Sin ella, un bombo -el 36- entraria como un Do2 de piano.
+        motivo = _motivo_no_usable(pista, notas_escritas)
         if motivo is not None:
-            excluidas.append((nombre, motivo))
+            if _se_pierde_algo(notas_escritas, motivo):
+                excluidas.append((nombre, motivo))
             continue
-        # Una pista de percusion ya se ha ido por el motivo de arriba; esta
-        # comprobacion no sobra, deja dicho que `_notas_de` no distingue canales y
-        # que la bateria no debe colarse por aqui si el motivo cambiara.
-        assert CANAL_PERCUSION not in _canales(pista)
         voces.append(
             VozDeFondo(
                 nombre=nombre,
@@ -248,8 +267,15 @@ def _voces_de_musicxml(ruta: Path | str, pista_excluida: int) -> FondoDisponible
     for descripcion, parte in zip(descripciones, partes, strict=True):
         if descripcion.numero == pista_excluida:
             continue
-        if descripcion.motivo_no_usable is not None:
-            excluidas.append((descripcion.nombre, descripcion.motivo_no_usable))
+        motivo = descripcion.motivo_no_usable
+        if motivo is not None:
+            # Hoy `_describir` solo da un motivo -«la parte no tiene ninguna nota»-
+            # y `_se_pierde_algo` dice que ese no se anuncia, asi que esta rama no
+            # llega nunca a `excluidas`. La condicion se escribe igual que en los
+            # otros dos caminos a proposito: el dia que `_describir` rechace una
+            # parte por otra cosa, el fondo lo contara en vez de callarsela.
+            if _se_pierde_algo(descripcion.notas, motivo):
+                excluidas.append((descripcion.nombre, motivo))
             continue
         voces.append(
             VozDeFondo(
