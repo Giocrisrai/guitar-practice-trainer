@@ -25,7 +25,7 @@ from dataclasses import replace
 import pytest
 
 from herramientas.gemelo import (
-    COLA_TRAS_COMPLETAR_S,
+    LECTURAS_POR_SEGUNDO,
     _analizador_de_argumentos,
     _correr_la_demostracion,
     _esperar_al_servidor,
@@ -774,12 +774,25 @@ PASO_DEL_GUION_S = 0.05
 #      30 Hz (el del WebSocket)   12,9 15,2 16,6  ms
 #       5 Hz (el mutante)         77,8 81,0 82,6  ms
 #
-# Quince milisegundos: cuatro veces la mediana medida -sitio para el temblor de los
-# hilos en una suite cargada- y cinco veces por debajo del regimen del mutante, que
-# muere siempre. Cae ademas en el borde inferior del regimen de 30 Hz, asi que una
-# vuelta al ritmo del WebSocket se detecta la mitad de las veces; no se afirma que
-# lo mate, porque 30 Hz no es el mutante que se quiere matar.
-RETRASO_DEL_MUESTREO_MS = 15.0
+# **ESTE TECHO YA NO SE AFIRMA, y la tabla de arriba explica por que se intento.**
+# Quince milisegundos eran cuatro veces la mediana medida, y aun asi la prueba fallo
+# una de cada pocas pasadas cuando la maquina estaba cargada -lo cazo el
+# implementador de la etapa 3e corriendo un arnes de mutantes al mismo tiempo-. Es
+# exactamente el defecto que el ruling 29 de la 3d prohibio y que aqui sobrevivio:
+# una asercion cuyo valor de referencia se midio en una maquina EN REPOSO. Un techo
+# generoso no arregla eso, solo lo hace mas raro, y una prueba que falla a veces
+# ensena a desconfiar de la suite entera.
+#
+# La prueba quedo partida en los dos trabajos que hacia a la vez (ver
+# `test_seguir_la_pasada_lee_mas_fino_de_lo_que_mide`):
+#   - el MECANISMO se afirma contra la cadencia que esa misma pasada logro;
+#   - el REGIMEN se afirma contra la constante, que no tiene sensibilidad temporal.
+# La tabla se queda porque es la medicion que justifica el suelo del regimen.
+#
+# El suelo de lecturas por segundo por debajo del cual el escaparate deja de medir
+# lo que cree medir. 60 Hz es el doble del ritmo del WebSocket (30 Hz) y doce veces
+# el regimen del mutante (5 Hz).
+LECTURAS_POR_SEGUNDO_MINIMAS = 60.0
 
 
 def _nota_publicada(indice: int, midi: int = 55) -> dict:
@@ -882,15 +895,38 @@ def test_seguir_la_pasada_lee_mas_fino_de_lo_que_mide(monkeypatch):
     recogidas y la mediana del desfase subiendo de +181,9 a +226,1 ms, a 24 ms del
     techo de 250 ms del detector.
 
-    Asi que lo que se afirma es LA MEDIANA del retraso que el muestreo introduce.
-    El techo inscrito esta medido y su tabla esta junto a `RETRASO_DEL_MUESTREO_MS`:
-    a 120 Hz la mediana sale en 2,8-4,1 ms y a 5 Hz en 77,8-82,6. No es una
-    tolerancia de calidad: es la cota que distingue los dos regimenes.
+    **Esta prueba hacia dos trabajos con una sola asercion, y por eso era
+    intermitente.** Afirmaba la mediana del retraso contra un techo de 15 ms medido
+    en una maquina en reposo, que es justo lo que el ruling 29 de la etapa 3d
+    prohibio: con la maquina cargada -un arnes de mutantes corriendo al lado- las
+    lecturas se retrasan, la mediana sube y la prueba se pone roja sin que nada se
+    haya roto. Ahora son dos aserciones y cada una hace un trabajo:
+
+    1. **El MECANISMO, independiente de la carga.** El recolector anota el instante
+       de la PRIMERA lectura que ve la nota, asi que el retraso esta acotado por UN
+       intervalo de lectura. Se mide el intervalo que esta misma pasada logro
+       -tiempo transcurrido entre las lecturas que de verdad se hicieron- y se exige
+       la mediana contra el. Si la maquina va lenta, las dos cifras crecen juntas y
+       la relacion aguanta; lo que no aguanta es que el recolector anote el instante
+       equivocado, que es el defecto que importa.
+    2. **El REGIMEN, sin sensibilidad temporal ninguna.** `LECTURAS_POR_SEGUNDO`
+       tiene que estar por encima de `LECTURAS_POR_SEGUNDO_MINIMAS`. Es una
+       asercion sobre una constante, asi que mata el mutante `= 5` **siempre**, con
+       la maquina a cero o a tope. La tabla medida que justifica ese suelo esta
+       junto a la constante.
     """
+    assert LECTURAS_POR_SEGUNDO >= LECTURAS_POR_SEGUNDO_MINIMAS, (
+        f"el escaparate lee a {LECTURAS_POR_SEGUNDO:.0f} Hz y por debajo de "
+        f"{LECTURAS_POR_SEGUNDO_MINIMAS:.0f} deja de medir lo que cree medir: el "
+        "instante que publica es el de la lectura, no el de la nota"
+    )
+
     guion = ServidorDeGuion(notas_antes=8, notas_tras_completar=0)
     monkeypatch.setattr("herramientas.gemelo._leer_json", guion)
 
+    comienzo = time.monotonic()
     recolector, completada = _seguir_la_pasada("http://127.0.0.1:0", duracion_s=0.5)
+    transcurrido_ms = 1000.0 * (time.monotonic() - comienzo)
 
     assert completada is True
     reportes = recolector.registro.reportes
@@ -907,14 +943,31 @@ def test_seguir_la_pasada_lee_mas_fino_de_lo_que_mide(monkeypatch):
         )
         for reporte in reportes
     ]
-    assert min(retrasos_ms) >= 0.0, (
-        "el instante anotado no puede ser anterior a que la nota apareciera"
+    # **Por que no se compara contra 0.0 pelado.** Los dos lados de la resta son
+    # flotantes calculados por caminos distintos -`instante_s` sale de
+    # `round(transcurrido, 4)` y el instante de la nota de `indice *
+    # PASO_DEL_GUION_S`-, asi que una nota mirada exactamente en el instante en que
+    # aparece da un retraso de -5,5e-14 ms en vez de cero. Medido: 2 de 25 pasadas.
+    # Eso no es que el recolector mire al pasado, es el ultimo bit de un float, y
+    # una prueba que se pone roja por el ultimo bit de un float ensena a desconfiar
+    # de la suite. La cota es ruido de coma flotante y nada mas: ocho ordenes de
+    # magnitud por debajo del cuanto de 0,1 ms con que el guion publica el reloj.
+    RUIDO_DE_COMA_FLOTANTE_MS = 1e-6
+    assert min(retrasos_ms) >= -RUIDO_DE_COMA_FLOTANTE_MS, (
+        f"el instante anotado no puede ser anterior a que la nota apareciera, y "
+        f"el minimo salio {min(retrasos_ms):.3e} ms"
     )
+    # El intervalo que ESTA pasada logro, no el que la constante pide: es lo que
+    # hace la asercion independiente de la carga. Con la maquina lenta crecen los
+    # dos lados a la vez.
+    intervalo_logrado_ms = transcurrido_ms / len(guion.peticiones)
     mediana_ms = statistics.median(retrasos_ms)
-    assert mediana_ms <= RETRASO_DEL_MUESTREO_MS, (
-        f"el muestreo añade {mediana_ms:.1f} ms de mediana al desfase que el "
-        f"veredicto publica, y lo medido a 120 Hz es menos de "
-        f"{RETRASO_DEL_MUESTREO_MS:.0f}: se esta leyendo demasiado despacio"
+    assert mediana_ms <= intervalo_logrado_ms, (
+        f"el recolector anota el instante de la PRIMERA lectura que ve la nota, "
+        f"asi que el retraso esta acotado por un intervalo de lectura: esta pasada "
+        f"logro {intervalo_logrado_ms:.1f} ms de intervalo "
+        f"({len(guion.peticiones)} lecturas en {transcurrido_ms:.0f} ms) y la "
+        f"mediana del retraso salio {mediana_ms:.1f} ms"
     )
 
     assert guion.peticiones, "no se llamo al endpoint"
