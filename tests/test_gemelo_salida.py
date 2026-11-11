@@ -32,6 +32,9 @@ def test_lo_escrito_se_guarda_en_orden_y_entero():
 def test_sin_escrituras_no_hay_muestras_ni_bloques():
     captura = SalidaCapturada()
     assert captura.muestras.shape == (0,)
+    # El vacio es float32 como todo lo demas: si no, al concatenarlo con bloques
+    # float32 promocionaria el resultado entero a float64.
+    assert captura.muestras.dtype == np.float32
     assert captura.bloques == ()
 
 
@@ -159,6 +162,17 @@ def test_sin_dispositivo_abrir_devuelve_false_y_deja_el_error():
     assert not captura.salida.activa
     assert captura.salida.ultimo_error
     assert captura.salida.reproducir(_bloque(2, 1.0)) is False
+    assert captura.bloques == ()
+
+
+def test_sin_dispositivo_sigue_sin_dispositivo_al_reintentar():
+    """El caso real: se arranca sin cable, el programa reintenta y sigue sin cable."""
+    captura = SalidaCapturada(fallar_al_abrir=True)
+    for _ in range(3):
+        assert captura.abrir() is False
+        assert not captura.salida.activa
+        assert captura.salida.ultimo_error
+    assert captura.arranques == 0
     assert captura.bloques == ()
 
 
