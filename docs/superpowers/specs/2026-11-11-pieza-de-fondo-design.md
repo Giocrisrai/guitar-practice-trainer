@@ -59,7 +59,10 @@ El marco que sí viene de él, de las etapas anteriores y sigue vigente:
   (~21 ms) y si el cabezal salta, el sonido salta — que es lo correcto: si saltas
   de compás, la música salta contigo.
 - **M3. Se renderiza la pieza entera por adelantado, una vez por (pieza, factor de
-  tempo).** Medido con el motor de la 3d en esta máquina: **200 notas en 55 ms**.
+  tempo).** Medido con el motor de la 3d en esta máquina: **200 notas de medio segundo en
+  55 ms**, y las mismas 200 notas de segundo y medio en **151 ms** — el coste
+  escala con la **duración sonando**, no con el número de notas, que es lo que
+  importa cuando el usuario baja el tempo al 50 % y cada nota dura el doble.
   Renderizar una canción entera cuesta décimas de segundo, así que volver a
   renderizarla cuando mueves el tempo es gratis y evita tener que resamplear (que
   cambiaría la afinación). *Precio:* memoria — tres minutos en mono float32 a
@@ -67,11 +70,20 @@ El marco que sí viene de él, de las etapas anteriores y sigue vigente:
   que hay que absorber sin cortar el sonido.
 - **M4. Suenan las OTRAS pistas del archivo, no la tuya.** Es la experiencia
   Rocksmith: tú eres el guitarrista que falta. `pistas_de()` ya enumera las pistas
-  de un Guitar Pro, y la 3b ya sabe importar cualquiera de ellas. Si la canción
-  **solo tiene una pista**, suena la tuya a volumen bajo, como guía — que es lo
-  que de verdad quiere quien está aprendiendo la pieza. *Precio:* en una canción
-  de una pista, el acompañamiento te sopla la respuesta; por eso va más bajo y se
-  puede apagar.
+  de un Guitar Pro. Si la canción **solo tiene una pista**, suena la tuya a
+  volumen bajo, como guía — que es lo que de verdad quiere quien está aprendiendo
+  la pieza. *Precio:* en una canción de una pista, el acompañamiento te sopla la
+  respuesta; por eso va más bajo y se puede apagar.
+- **M8. El acompañamiento NO pasa por `Pieza`.** Es la corrección más importante
+  que trajo la revisión de constructor. `Pieza` exige **cuerda y traste por nota**,
+  y los lectores de MIDI y MusicXML **lanzan `ValueError`** cuando una pista no
+  cabe en la afinación del usuario (`desde_midi.py:165-210`,
+  `desde_musicxml.py:186-226`): o sea, el caso normal de un piano, un bajo de
+  cinco cuerdas, unas cuerdas o una voz. Pero para **sonar** no hace falta
+  digitar nada: hacen falta alturas e instantes. Así que el fondo viaja en un tipo
+  propio, `VozDeFondo`, y el acompañamiento funciona en los cuatro formatos en vez
+  de solo en Guitar Pro. *Precio:* un tipo más y un camino de lectura más que
+  mantener, a cambio de que la etapa no quede reducida a un formato.
 - **M5. La percusión queda FUERA de esta etapa, y se dice en el README.**
   Karplus-Strong sintetiza una cuerda pulsada; una batería no es una cuerda. Una
   pista de percusión ni siquiera entra al modelo `Pieza` (no declara cuerdas, y
@@ -84,8 +96,13 @@ El marco que sí viene de él, de las etapas anteriores y sigue vigente:
   «Rocksmith» (otra interfaz de audio) tiene que encenderlo a mano una vez.
 - **M7. La salida de audio se inyecta, y el gemelo digital verifica la
   sincronía sin altavoces.** `SalidaAudio` ya admite un `abrir_stream`
-  sustituible. El gemelo de la 3d captura las muestras escritas y comprueba, con
-  números, que el audio que salió corresponde al cabezal que había. Es la lección
+  sustituible — eso es verdad y está comprobado (`nucleo/sintesis.py:142-146`).
+  Lo que **no** existe todavía, y mi primera versión de esta spec daba por hecho,
+  es el capturador: el gemelo de la 3d simula la **entrada**
+  (`nucleo/gemelo/dispositivo.py`), no la salida, y los capturadores de muestras
+  viven solo dentro de dos pruebas (`tests/test_sesion_practica.py:205`,
+  `tests/test_app_estudio.py:1213`). **Esta etapa lo construye**, en
+  `nucleo/gemelo/`, al lado del cable falso: es su hermano simétrico. Es la lección
   de la 3d hecha requisito: **si no se puede ver sin hardware, no se verifica**, y
   cuatro de los defectos reales de la 3d salieron de correr el programa y mirarlo,
   no de las pruebas.
@@ -132,8 +149,32 @@ El marco que sí viene de él, de las etapas anteriores y sigue vigente:
 
 ### 3.1 `nucleo/acompanamiento.py` — la pieza renderizada
 
-Función pura, sin hilos y sin audio: convierte una `Pieza` y un factor de tempo en
-un `bytearray` de muestras y el mapa para indexarlo.
+Función pura, sin hilos y sin audio: convierte unas **voces de fondo** y un factor
+de tempo en un buffer de muestras y el mapa para indexarlo.
+
+**Es un módulo nuevo, no un refactor de `interprete._generar`.** Ya existe ahí un
+render determinista que suma `cuerda_pulsada` sobre un buffer
+(`nucleo/gemelo/interprete.py:426-467`), y la revisión de constructor hizo bien en
+preguntar por qué no se reutiliza. Difieren en tres cosas que son decisiones, no
+detalles:
+
+1. **Acordes.** El intérprete reduce un acorde a su nota más grave, porque simula
+   a un guitarrista que va a ser juzgado por un detector monofónico. El
+   acompañamiento los **suma**: la limitación es del detector, no del sintetizador,
+   y un fondo sin acordes no es un fondo.
+2. **Normalización.** El intérprete recorta; el acompañamiento normaliza al pico
+   **una sola vez sobre la mezcla entera**, porque si normalizara nota a nota una
+   nota sola sonaría igual de fuerte que un acorde de seis.
+3. **El eje.** El intérprete mide el tramo con su silencio de cabecera (es una
+   *pasada*); el acompañamiento mide la **pieza entera** desde su pulso cero,
+   porque a él lo indexa el cabezal.
+
+Lo que **sí** se reutiliza, y no se copia: la guarda del mínimo
+(`interprete._duracion_minima_s`, `nucleo/gemelo/interprete.py:407-424`).
+`cuerda_pulsada` **lanza** si la nota no llega a un periodo
+(`nucleo/gemelo/cuerda.py:84-97`), así que esa guarda es obligatoria y tener dos
+copias de ella sería exactamente el defecto que la 3d persiguió toda la etapa.
+Se sube a un sitio común y los dos la importan.
 
 ```python
 @dataclass(frozen=True)
@@ -151,8 +192,24 @@ class PiezaRenderizada:
         puede quedarse parada mas alla del final de la pieza.
         """
 
+@dataclass(frozen=True)
+class VozDeFondo:
+    """Una pista que solo tiene que SONAR, y por eso no pasa por `Pieza`.
+
+    `Pieza` exige cuerda y traste por nota porque su destino es el carril, que
+    te dice donde poner los dedos. Un piano, una voz o un bajo de cinco cuerdas
+    no caben ahi -los lectores de MIDI y MusicXML lanzan `ValueError`- y no
+    tienen por que: para sonar bastan alturas e instantes.
+    """
+
+    nombre: str
+    instrumento: str                  # la familia General MIDI, informativa
+    notas: tuple[NotaDeFondo, ...]    # midi: float, inicio_pulsos, duracion_pulsos
+
+
 def renderizar(
-    pieza: Pieza,
+    voces: tuple[VozDeFondo, ...],
+    tempo: int,
     factor_tempo: float = 1.0,
     frecuencia_muestreo: int = 48000,
     ganancia: float = 1.0,
@@ -164,15 +221,13 @@ Reglas que esta función fija:
 
 - Cada nota se sintetiza con `cuerda_pulsada` a la altura de `midi`, con duración
   = su figura escrita (en segundos al tempo efectivo) **más una cola**, y se suma
-  en su sitio. Los acordes se suman: aquí **sí** se pueden tocar, porque sumar
-  ondas no requiere distinguirlas (es el detector monofónico quien no puede, no el
-  sintetizador).
+  en su sitio. Los acordes se suman (ver arriba).
 - La semilla por defecto es fija: la misma pieza al mismo tempo suena **idéntica**
   dos veces. Es lo que permite afirmar sobre muestras en una prueba.
 - Se normaliza al pico una sola vez, al final, sobre la mezcla entera. Normalizar
   nota a nota haría que una nota sola suene igual de fuerte que un acorde de seis.
-- Si la pieza no tiene notas, devuelve un buffer de un instante y duración 0.
-  Nadie debería tener que preguntar antes de llamar.
+- Sin voces, o con voces sin notas, devuelve un buffer de un instante y duración
+  0. Nadie debería tener que preguntar antes de llamar.
 
 ### 3.2 `nucleo/acompanante.py` — el que lo hace sonar
 
@@ -210,36 +265,63 @@ class Acompanante:
 - `ganancia()` también en caliente, y se aplica suavizada a lo largo del bloque:
   multiplicar de golpe es un chasquido audible.
 
-### 3.3 `servidor/piezas.py` — el cableado
+### 3.3 El cableado: POR ENCIMA del carril, no dentro
 
-`_ajustar_acompanamiento`, calcada de `_ajustar_click` (misma estructura, mismo
-tratamiento de la pausa, mismo «sin salida de audio la pasada sigue en pie»):
+La revisión de constructor encontró el agujero de mi primera versión: el carril
+tiene **una sola puerta** —`SesionCarril.iniciar(pieza, plan)` recibe una `Pieza`
+y nada más—, y el identificador de la canción y el número de pista se quedan
+arriba, en el endpoint (`servidor/app.py:643-700, 748-771`). Eso es deliberado y
+no se rompe. Mi spec pedía que el carril supiera de qué archivo salió su pieza, y
+eso habría abierto una segunda puerta.
 
-- Se llama desde los dos sitios desde los que ya se llama `_ajustar_click`.
-- Renderiza cuando cambia la pieza o el factor de tempo, y **solo** entonces. La
-  clave de caché es `(id de la pieza, factor_tempo, pista)`.
-- Pausa y reanuda con la pasada, incluida la pausa por falta de señal.
-- `PlanDePasada` gana dos campos: `con_acompanamiento: bool = False` y
-  `volumen_acompanamiento: float = 0.6`. El valor por defecto de lo primero es
-  **falso**, y quien lo enciende es la interfaz (§3.5) después de ver el aviso.
-- `EstadoEstudio` publica `acompanamiento_sonando: bool` y
-  `acompanamiento_posible: bool` — lo segundo es «la entrada es el cable», que es
-  lo que decide el aviso de la interfaz, y se decide **en un solo sitio** y viaja
-  publicado. Es literalmente la lección de E3 de la 3d: la regla del aviso del
-  cable estaba escrita dos veces, en dos idiomas, y las dos no eran la misma.
+**Decisión:** el acompañamiento se cablea **por encima** de `SesionCarril`, en
+`SesionPractica`, que es quien ya sabe de canciones y de pistas. El carril no se
+entera de que existe; solo publica su cabezal, que ya publica. Con eso:
 
-### 3.4 De dónde sale la pista que suena
+- `SesionPractica` gana `_acompanante` y `_ajustar_acompanamiento`, llamada desde
+  los dos sitios desde los que ya se llama `_ajustar_click` y con la misma forma
+  (misma pausa, mismo «sin salida de audio la pasada sigue en pie»).
+- Quien resuelve las voces de fondo es el endpoint que ya elige la pista, porque es
+  el único que tiene la ruta del archivo. Las pasa hechas; no se re-leen en cada
+  instantánea.
+- **Salida de audio propia, no la del click.** Compartirla no se puede:
+  `_parar_click` llama a `self._salida.cerrar()` sin condiciones
+  (`servidor/piezas.py:795-806`) y, con `con_click` falso, eso ocurre en cada
+  instantánea, treinta veces por segundo. Hoy es inocuo —el stream ya está en
+  `None` y `cerrar()` coge el candado y vuelve— pero con el acompañamiento
+  compartiendo esa salida sería cerrarle el stream treinta veces por segundo.
+  Dos `SalidaAudio` son dos streams de CoreAudio, que es lo que hace cualquier
+  programa con dos fuentes de sonido. *Esto corrige la frase falsa de mi §5.*
+- **Ni el interruptor ni el volumen van en `PlanDePasada`.** Todo cambio de plan
+  hace `cerrar_repeticion(cuenta_como_vuelta=False)`
+  (`nucleo/piezas/estudio.py:1001-1028`): un deslizador de volumen arrastrado
+  serían decenas de cierres de repetición, y encender el fondo a mitad de pasada
+  te cortaría la vuelta. Son controles **vivos** del acompañante, con su propio
+  endpoint, y no tocan el plan.
+- `EstadoEstudio` publica tres campos: `acompanamiento_sonando`,
+  `acompanamiento_posible` y `acompanamiento_es_tu_parte`. El segundo es «la
+  entrada es el cable», y se decide **en un solo sitio** y viaja publicado. Es
+  literalmente la lección de E3 de la 3d: la regla del aviso del cable estaba
+  escrita dos veces, en dos idiomas, y las dos no eran la misma.
 
-- `canciones.py` ya guarda el archivo original. Al elegir la pista para tocar, se
-  guardan también **las demás** como pistas de acompañamiento: se importan con el
-  lector de la 3b igual que la tuya, y se suman en un solo `PiezaRenderizada`.
-- Si no hay ninguna otra pista utilizable, se renderiza la tuya con la ganancia
-  por defecto reducida a la mitad, y el estado lo dice (`acompanamiento_es_tu_parte`)
-  para que la interfaz pueda llamarlo *guía* y no *acompañamiento*.
-- Las pistas que `_motivo_no_usable` rechaza (percusión, sin cuerdas, sin notas)
-  se descartan **en silencio para el audio pero no para el usuario**: la interfaz
-  dice cuántas pistas suenan y cuántas se quedaron fuera y por qué. Un fondo al que
-  le falta el bajo sin que nada lo diga es un fondo que parece roto.
+### 3.4 De dónde salen las voces de fondo
+
+Un módulo nuevo, `nucleo/piezas/voces_de_fondo.py`, con un camino por formato que
+**no digita nada** (M8):
+
+- `voces_de(ruta, pista_excluida) -> tuple[VozDeFondo, ...]`. Lee el archivo con el
+  mismo parser que ya usa el lector de ese formato y saca altura e instante de cada
+  nota. No construye `Pieza`, no llama a `digitacion.py`, no puede lanzar
+  `ValueError` por afinación.
+- Funciona en los cuatro formatos de la 3b, no solo en Guitar Pro.
+- `pista_excluida` es la tuya: lo que suena es el resto (M4).
+- Las pistas de **percusión** se descartan, y se dice cuántas y por qué (M5). El
+  resto de pistas sin notas también.
+- Si no queda ninguna voz, el llamante renderiza **tu propia pieza** con la
+  ganancia a la mitad y el estado lo marca con `acompanamiento_es_tu_parte`, para
+  que la interfaz lo llame *Guía* y no *Acompañamiento*.
+- La interfaz dice cuántas voces suenan y cuántas se quedaron fuera y por qué: un
+  fondo al que le falta el bajo sin que nada lo diga es un fondo que parece roto.
 
 ### 3.5 La interfaz
 
@@ -273,12 +355,26 @@ lo de abajo se verifica **sin altavoces y sin guitarra**, con la salida inyectad
 5. **El tempo en caliente**: `cargar()` durante la reproducción no produce ni un
    corte ni una muestra del buffer viejo después del cambio.
 6. **La pasada completa por el escaparate**: `herramientas/gemelo.py` gana
-   `--con-acompanamiento`, y el gemelo toca la pieza entera con el fondo puesto
-   mientras la sesión real corre. Es la única prueba que cruza las cuatro costuras
-   a la vez.
-7. **El anti-objetivo, medido**: una pasada con el acompañamiento sonando y la
-   entrada siendo el gemelo **no** cambia el veredicto respecto a la misma pasada
-   sin acompañamiento. Si cambia, el audio se está colando en la entrada.
+   `--con-acompanamiento`, que **captura** las muestras y no abre altavoces, y
+   `--altavoces`, que sí los abre. Por defecto captura, por dos razones: el
+   escaparate existe para poder correr sin hardware (hoy pone `con_click=False`
+   justo por eso, `herramientas/gemelo.py:546`) y además el sandbox de desarrollo
+   no deja abrir audio. Con `--altavoces` es el usuario quien lo oye, que es la
+   otra mitad de su razón de ser. El informe del escaparate dice cuántas muestras
+   escribió y con qué desfase máximo contra el cabezal.
+7. **El anti-objetivo, medido de verdad.** Mi primera versión decía «medido» y no
+   medía nada: la entrada del gemelo y la salida del acompañamiento son dos
+   streams sin ningún camino entre ellos (`nucleo/captura.py:112-116` y
+   `nucleo/sintesis.py:142-146`), así que esa prueba no podía fallar por
+   realimentación ni queriendo. La prueba real **construye el camino**: se suma el
+   render del acompañamiento al audio que el cable falso entrega por la entrada,
+   simulando el micrófono abierto, y se afirman las dos mitades:
+   - **con** la suma, el veredicto empeora (aparecen notas inventadas) — eso
+     demuestra que la contaminación es real y que el riesgo no es teórico;
+   - **sin** la suma, que es el caso del cable, el veredicto es idéntico al de la
+     misma pasada sin acompañamiento, muestra a muestra.
+   Las dos mitades juntas son lo único que convierte §5 en un hecho medido en vez
+   de en una precaución escrita.
 
 ## 5. Riesgos
 
@@ -294,11 +390,21 @@ lo de abajo se verifica **sin altavoces y sin guitarra**, con la salida inyectad
   pero una canción de 2000 notas son ~0,6 s, y hacerlo en el hilo del WebSocket
   congelaría la interfaz. Va en un hilo aparte, y hasta que esté el fondo no suena
   — nunca al revés, nunca a medias.
-- **Dos emisores sobre una salida.** El click y el acompañamiento escriben en el
-  mismo `SalidaAudio`, que serializa con candado. Un bloque de acompañamiento
-  (21 ms) puede retrasar un click y al revés. `Metronomo` ya absorbe eso
-  realineándose; el acompañante no tiene que absorber nada porque no lleva reloj.
-  Hay que medirlo, no suponerlo.
+- **El candado de la sesión, que sí hay que absorber.** Esta era la otra frase
+  falsa de mi primera versión: escribí que «el acompañante no tiene que absorber
+  nada porque no lleva reloj». Al contrario. Leer el cabezal exige el candado de
+  la sesión, y ese candado lo retiene el hilo HTTP mientras `_ajustar_click`
+  espera a un `stream.write()` en vuelo — un coste que el propio código ya tiene
+  medido y documentado (`servidor/piezas.py:707-721`). Si el hilo del
+  acompañamiento se queda esperando ese candado, se queda sin escribir su bloque y
+  eso **se oye**. Decisión: el hilo del acompañamiento **nunca espera** el candado.
+  Lo intenta sin bloquear y, si está ocupado, reutiliza el último cabezal conocido
+  para ese bloque, lo que como máximo repite 21 ms de audio en vez de abrir un
+  hueco de silencio. Hay que medir cuántas veces pasa, no suponerlo.
+- **Dos streams de salida.** El click y el acompañamiento tienen cada uno su
+  `SalidaAudio` (§3.3), así que son dos streams de CoreAudio abiertos a la vez. Es
+  lo normal, pero hay que comprobarlo en el equipo del usuario: dos streams con
+  tamaños de bloque distintos pueden pelearse por el dispositivo.
 - **Memoria.** Una canción larga al 50 % de tempo es el doble de muestras. Un
   tope, dicho en voz alta, y un fallo limpio por encima de él.
 
@@ -319,3 +425,35 @@ Lo que ninguna prueba puede juzgar y que él tiene que decir cuando conecte:
 - Y la que sigue abierta de la 3d: si la ventana de aceptación escalada se siente
   justa al 50 %, si un compás de cuenta atrás basta, si el click acentuado ayuda,
   y si «dos pasadas al 90 %» es el umbral correcto para subir.
+
+## 8. Lo que la revisión de constructor tumbó, y queda inscrito
+
+Esta spec se escribió y luego la leyó un constructor independiente **contra el
+código**, antes de planificar nada. Encontró **seis afirmaciones mías falsas**. Van
+aquí enteras porque la lección de la 3d fue que los defectos no los encuentra
+quien escribió el texto:
+
+1. «La 3b ya sabe importar cualquiera de las pistas» — **falso**: solo Guitar Pro.
+   MIDI y MusicXML lanzan `ValueError` si la pista no cabe en la afinación
+   (`desde_midi.py:165-210`, `desde_musicxml.py:186-226`). De aquí salió M8, que
+   es la mejor decisión de la etapa: el fondo no pasa por `Pieza`.
+2. «El gemelo de la 3d captura las muestras escritas» — **falso**: no existe. El
+   gemelo simula la entrada, no la salida. Esta etapa lo construye (M7).
+3. «La clave de caché es (id de la pieza, …)» — **falso**: `Pieza` no tiene id, y
+   el carril no recibe ni canción ni pista. De aquí salió §3.3 entera.
+4. «§4.7: el anti-objetivo, medido» — **falso**: no había camino entre la salida y
+   la entrada, así que esa prueba no podía fallar. Reescrita con las dos mitades.
+5. «El click y el acompañamiento escriben en el mismo `SalidaAudio`» —
+   **incompatible** con `_parar_click`, que cierra esa salida sin condiciones.
+   Salida propia.
+6. «El acompañante no tiene que absorber nada porque no lleva reloj» — **al
+   revés**: tiene que absorber el candado de la sesión. De aquí salió la regla de
+   no esperarlo nunca.
+
+Y una medición que corrigió un número mío: el coste de renderizar escala con la
+**duración sonando**, no con el número de notas (200 notas de 0,5 s = 55 ms;
+las mismas de 1,5 s = 151 ms). Importa porque bajar el tempo alarga las notas.
+
+Las siete preguntas que esa revisión dejó abiertas las decidí yo, no el usuario:
+él pidió expresamente saltarse las preguntas de diseño. Están resueltas en M8,
+§3.1, §3.3, §3.4, §4.6, §4.7 y §5, y cada una dice qué cuesta si me equivoqué.
