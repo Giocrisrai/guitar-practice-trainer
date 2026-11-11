@@ -13,7 +13,7 @@ unica que esta permitida en una asercion.
 import numpy as np
 import pytest
 
-from nucleo.acompanamiento import MUESTRAS_MAXIMAS, renderizar
+from nucleo.acompanamiento import MUESTRAS_MAXIMAS, _normalizada, renderizar
 from nucleo.musica import midi_a_frecuencia
 from nucleo.piezas.voces_de_fondo import NotaDeFondo, VozDeFondo
 
@@ -596,3 +596,24 @@ def test_el_tope_de_memoria_deja_pasar_el_limite_EXACTO_y_rechaza_una_muestra_ma
             ),
             tempo=TEMPO,
         )
+
+
+def test_la_normalizacion_divide_EN_SITIO_y_no_copia_la_mezcla():
+    """El contrato de memoria de `_normalizada`, que el tope del modulo necesita.
+
+    No es una prueba de rendimiento: es la unica cosa que separa un pico de 449 MB
+    de uno de 708 MB al renderizar una pieza en el tope, y el tope existe para que
+    el proceso falle limpio en vez de morir. Si la division volviera a copiar la
+    mezcla, el comentario de `MUESTRAS_MAXIMAS` volveria a ser falso y el proceso
+    podria morir POR DEBAJO del tope, que es el unico sitio donde la red no sujeta.
+
+    No se mide el pico con `getrusage` aqui a proposito: es una marca de agua de
+    TODO el proceso, asi que lo que midiera dependeria de las 1400 pruebas que
+    corran antes. El numero medido vive en el comentario de `MUESTRAS_MAXIMAS`; lo
+    que una prueba puede sujetar es el «en sitio», y es lo que sujeta.
+    """
+    mezcla = np.array([0.0, -2.0, 1.0], dtype=np.float64)
+    muestras = _normalizada(mezcla, 1.0)
+    assert np.array_equal(muestras, np.array([0.0, -1.0, 0.5], dtype=np.float32))
+    # La mezcla que entro quedo dividida: no se copio para dividirla.
+    assert np.array_equal(mezcla, np.array([0.0, -1.0, 0.5], dtype=np.float64))

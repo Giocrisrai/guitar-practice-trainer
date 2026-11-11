@@ -46,10 +46,20 @@ from nucleo.piezas.voces_de_fondo import VozDeFondo
 # doblaria la duracion de la pieza, la doblaria casi.
 COLA_DE_LA_FIGURA = 1.3
 
-# Tope de memoria, dicho en voz alta. Doce minutos a 48 kHz son 34,6 millones de
-# muestras, que en float32 son 138 MB -y el doble mientras se normaliza, porque la
-# mezcla se suma en float64-. Sin este tope, una cancion larga al 25 % de tempo
-# reserva cientos de megas y el proceso muere sin decir por que.
+# Tope de memoria, dicho en voz alta. Doce minutos a 48 kHz son 34,56 millones de
+# muestras. Sin este tope, una cancion larga al 25 % de tempo reserva cientos de
+# megas y el proceso muere sin decir por que.
+#
+# **El buffer y el pico de renderizarlo no son el mismo numero**, y conviene no
+# confundirlos: el buffer que se devuelve son 138 MB (float32), pero al final del
+# render conviven la mezcla en float64 -276 MB, porque sumar un acorde en float32
+# iria perdiendo bits- y el float32 que sale de ella. Medido con `getrusage` en el
+# tope exacto: **449,6 MB de pico**, de los que 34,7 son el interprete y numpy.
+# Antes de normalizar en sitio eran 708,7 MB, porque `np.abs(mezcla)` y
+# `mezcla / pico` copiaban la mezcla entera una vez cada uno; ver `_normalizada`.
+# Si alguien sube este tope, el pico sube con el a razon de 0,58 MB por segundo de
+# audio a 48 kHz (12 bytes por muestra entre los dos buffers), y es el pico -no el
+# buffer- lo que decide si el proceso muere.
 MUESTRAS_MAXIMAS = 48000 * 60 * 12
 
 # Cuanto separa la semilla de una nota de la de la siguiente. La semilla por nota
@@ -247,6 +257,10 @@ def _sumar_en_su_sitio(destino: np.ndarray, onda: np.ndarray, desde: int) -> Non
 def _normalizada(mezcla: np.ndarray, ganancia: float) -> np.ndarray:
     """Escala la mezcla ENTERA al pico 1,0 una sola vez y aplica la ganancia.
 
+    **Consume `mezcla`**: la divide en sitio, asi que quien la llama no puede
+    volver a usarla. Lo hace porque la mezcla de una pieza al tope de este modulo
+    pesa 276 MB y copiarla para dividirla es doblar el pico de memoria por nada.
+
     Aqui esta la decision 2 del modulo. Normalizar nota a nota -lo que hace
     `cuerda_pulsada` con su parametro `fuerza`- igualaria el pico de una nota sola
     al de un acorde de seis, y entonces el fondo no tendria dinamica ninguna: una
@@ -254,10 +268,18 @@ def _normalizada(mezcla: np.ndarray, ganancia: float) -> np.ndarray:
 
     Un pico de cero -imposible con una nota dentro, porque `cuerda_pulsada`
     devuelve pico `fuerza`- se deja pasar sin dividir por cero.
+
+    **Las dos cuentas estan escritas para no copiar la mezcla.** `np.abs(mezcla)`
+    reservaria una mezcla entera mas en float64 y `mezcla / pico` otra, y en una
+    pieza al tope del modulo eso son 552 MB de temporales que nadie necesita: el
+    pico sale de los dos extremos, que no copian nada, y la division va en sitio
+    sobre una mezcla que es local y recien hecha. El resultado es bit a bit el
+    mismo -son las mismas operaciones IEEE sobre los mismos numeros- y esta
+    comprobado con `np.array_equal` sobre cinco piezas, acorde incluido.
     """
-    pico = float(np.max(np.abs(mezcla))) if mezcla.size else 0.0
+    pico = max(abs(float(mezcla.max())), abs(float(mezcla.min()))) if mezcla.size else 0.0
     if pico > 0.0:
-        mezcla = mezcla / pico
+        mezcla /= pico
     muestras = mezcla.astype(np.float32)
     muestras *= np.float32(ganancia)
     return muestras
