@@ -111,6 +111,31 @@ def cuerda_pulsada(
     return _normalizada_al_pico(onda, fuerza)
 
 
+def duracion_minima_s(midi: float, frecuencia_muestreo: int) -> float:
+    """Lo menos que puede sonar una nota: una vuelta del anillo de la cuerda.
+
+    `cuerda_pulsada` rechaza una duracion que no llegue a un periodo de la nota,
+    porque por debajo de eso el anillo no da ni una vuelta y lo que sale es ruido
+    sin altura. En vez de dejar salir ese error, quien sintetiza ALARGA la nota
+    hasta este minimo. El interprete del gemelo lo alarga en la VERDAD y no solo
+    en el audio, para que `EventoTocado.duracion_s` siga diciendo exactamente lo
+    que suena; el acompañamiento no publica duraciones por nota y solo lo necesita
+    para no romper.
+
+    **Vive aqui, al lado de la funcion que impone la restriccion, y no en sus dos
+    llamantes.** Es la misma guarda para los dos y dos copias de ella se
+    desincronizarian el dia que el largo del anillo cambie.
+
+    Es tambien lo que hace una cuerda de verdad: no se puede pulsar durante menos
+    de un periodo. El minimo es diminuto -12 ms en el E2, 2 ms en el C5- y solo lo
+    roza una figura absurda a un tempo absurdo (una negra pegada a la siguiente
+    por debajo de los 14 ms son mas de 4000 pulsos por minuto), asi que en la
+    practica no alarga nada y el invariante de no solapar del interprete aguanta.
+    """
+    periodo = frecuencia_muestreo / midi_a_frecuencia(midi)
+    return (periodo + 2.0) / frecuencia_muestreo
+
+
 def _peso_del_promedio(brillo: float) -> float:
     """Peso del promedio del anillo a partir de `brillo`, en [0, 1].
 
