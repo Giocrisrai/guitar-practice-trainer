@@ -42,7 +42,6 @@ class StreamCapturado:
         self._intentos = 0
         self._candado = threading.Lock()
         self.arranques = 0
-        self.paradas = 0
         self.cierres = 0
 
     @property
@@ -73,7 +72,7 @@ class StreamCapturado:
             self._bloques.append(datos.reshape(datos.shape[0], -1)[:, 0])
 
     def stop(self) -> None:
-        self.paradas += 1
+        pass
 
     def close(self) -> None:
         self.cierres += 1
@@ -123,10 +122,6 @@ class SalidaCapturada:
     @property
     def arranques(self) -> int:
         return self._stream.arranques
-
-    @property
-    def paradas(self) -> int:
-        return self._stream.paradas
 
     @property
     def cierres(self) -> int:

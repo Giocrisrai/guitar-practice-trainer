@@ -28,6 +28,7 @@ from fastapi.testclient import TestClient
 
 from nucleo.analisis.pipeline import ResultadoAnalisis
 from nucleo.captura import NOMBRE_ROCKSMITH, DispositivoAudio
+from nucleo.gemelo.salida import SalidaCapturada
 from nucleo.piezas.estudio import FACTOR_MINIMO, PASO_DEL_FACTOR, PlanDePasada
 from nucleo.piezas.modelo import NotaEnPieza, Pieza, Seccion
 from nucleo.sintesis import Metronomo, SalidaAudio
@@ -612,10 +613,6 @@ class SesionAudioFalsa:
         self.observadores.clear()
 
 
-def _sin_dispositivo(**kwargs):
-    raise OSError("sin dispositivo de audio")
-
-
 def carril_a_mano(salida=None):
     """Un carril con el reloj y la señal en la mano de la prueba.
 
@@ -624,7 +621,7 @@ def carril_a_mano(salida=None):
     """
     reloj = RelojFalso()
     sesion = SesionAudioFalsa()
-    salida = salida or SalidaAudio(abrir_stream=_sin_dispositivo)
+    salida = salida or SalidaCapturada(fallar_al_abrir=True).salida
     return SesionCarril(sesion, reloj=reloj, salida=salida), sesion, reloj
 
 
@@ -1186,40 +1183,15 @@ def test_aplicar_la_sugerencia_con_un_plan_nuevo_la_deja_a_cero():
 # ---------------------------------------------------------------------------
 
 
-class StreamFalso:
-    """Un stream de salida que cuenta las escrituras. Nunca abre audio."""
-
-    def __init__(self, **kwargs) -> None:
-        self.escrituras = 0
-        self.cerrado = False
-
-    def start(self) -> None:
-        pass
-
-    def write(self, muestras) -> None:
-        self.escrituras += 1
-
-    def stop(self) -> None:
-        pass
-
-    def close(self) -> None:
-        self.cerrado = True
-
-
 def salida_falsa():
-    """Una `SalidaAudio` de verdad sobre un stream de mentira, y el stream."""
-    streams = []
-
-    def abrir_stream(**kwargs):
-        streams.append(StreamFalso(**kwargs))
-        return streams[-1]
-
-    return SalidaAudio(abrir_stream=abrir_stream), streams
+    """Una `SalidaAudio` de verdad sobre un stream capturado, y el capturador."""
+    captura = SalidaCapturada()
+    return captura.salida, captura
 
 
 def salida_muda():
     """Una `SalidaAudio` a la que le falla el dispositivo: `activa` es False."""
-    return SalidaAudio(abrir_stream=_sin_dispositivo)
+    return SalidaCapturada(fallar_al_abrir=True).salida
 
 
 @pytest.fixture
@@ -1247,14 +1219,14 @@ def cliente_con_salida(tmp_path):
 
 
 def test_con_click_el_estado_dice_que_suena(cliente_con_salida):
-    salida, streams = salida_falsa()
+    salida, captura = salida_falsa()
     with TestClient(cliente_con_salida(salida), base_url=BASE_LOCAL) as cliente:
         assert iniciar(cliente, con_click=True)["click_sonando"] is True
         # Y suena de verdad: el hilo del metronomo escribe en la salida.
         esperar_a = time.monotonic() + 3.0
-        while streams[0].escrituras == 0 and time.monotonic() < esperar_a:
+        while not captura.bloques and time.monotonic() < esperar_a:
             time.sleep(0.01)
-        assert streams[0].escrituras > 0
+        assert len(captura.bloques) > 0
 
 
 def test_sin_salida_de_audio_el_click_no_miente(cliente_con_salida):
@@ -1268,19 +1240,19 @@ def test_sin_salida_de_audio_el_click_no_miente(cliente_con_salida):
 
 
 def test_sin_pedir_click_no_suena_ni_se_abre_la_salida(cliente_con_salida):
-    salida, streams = salida_falsa()
+    salida, captura = salida_falsa()
     with TestClient(cliente_con_salida(salida), base_url=BASE_LOCAL) as cliente:
         assert iniciar(cliente)["click_sonando"] is False
-        assert streams == []
+        assert captura.arranques == 0
 
 
 def test_apagar_el_click_desde_el_plan_lo_para_y_encenderlo_lo_devuelve(cliente_con_salida):
-    salida, streams = salida_falsa()
+    salida, captura = salida_falsa()
     with TestClient(cliente_con_salida(salida), base_url=BASE_LOCAL) as cliente:
         iniciar(cliente, con_click=True)
         datos = cliente.post("/api/piezas/plan", json={"con_click": False}).json()
         assert datos["click_sonando"] is False
-        assert streams[0].cerrado is True
+        assert captura.cierres > 0
         datos = cliente.post("/api/piezas/plan", json={"con_click": True}).json()
         assert datos["click_sonando"] is True
 
@@ -1288,7 +1260,7 @@ def test_apagar_el_click_desde_el_plan_lo_para_y_encenderlo_lo_devuelve(cliente_
 def test_un_tempo_que_el_metronomo_no_acepta_deja_la_pasada_en_pie(cliente_con_salida):
     # 400 ppm esta por encima de TEMPO_MAXIMO_PPM: el Metronomo lo rechaza. La
     # pasada no se cae, solo se queda sin click.
-    salida, streams = salida_falsa()
+    salida, captura = salida_falsa()
     with TestClient(cliente_con_salida(salida), base_url=BASE_LOCAL) as cliente:
         pieza = replace(pieza_de_doce_compases(), tempo=400)
         datos = iniciar(cliente, pieza=pieza, con_click=True)
@@ -1308,11 +1280,11 @@ def test_un_tempo_redondeado_a_cero_tampoco_tumba_la_pasada(cliente_con_salida):
 
 
 def test_detener_la_pieza_para_el_click_y_cierra_la_salida(cliente_con_salida):
-    salida, streams = salida_falsa()
+    salida, captura = salida_falsa()
     with TestClient(cliente_con_salida(salida), base_url=BASE_LOCAL) as cliente:
         iniciar(cliente, con_click=True)
         assert cliente.post("/api/piezas/detener").json()["click_sonando"] is False
-        assert streams[0].cerrado is True
+        assert captura.cierres > 0
 
 
 class MetronomoEspia(Metronomo):
@@ -1403,7 +1375,7 @@ def test_el_acento_del_click_cuenta_los_pulsos_del_compas_y_no_el_numerador(
 
 
 def test_el_click_se_rearranca_en_cada_repeticion_y_solo_en_ellas(espia):
-    salida, streams = salida_falsa()
+    salida, captura = salida_falsa()
     carril, sesion, reloj = carril_a_mano(salida)
     try:
         carril.iniciar(pieza_de_doce_compases(), PlanDePasada(**PLAN_DE_BUCLE_CON_CLICK))
@@ -1419,7 +1391,7 @@ def test_el_click_se_rearranca_en_cada_repeticion_y_solo_en_ellas(espia):
         mirar_hasta(carril, reloj, lambda e: e["repeticion"] == 3)
         assert len(espia) == 3
         # La salida no se cierra y se reabre en cada compas: es la misma.
-        assert len(streams) == 1 and streams[0].cerrado is False
+        assert captura.arranques == 1 and captura.cierres == 0
     finally:
         carril.detener()
         sesion.detener()
@@ -1541,7 +1513,7 @@ def test_la_pausa_del_usuario_y_la_de_senal_no_se_pisan_el_click(espia):
 
 
 def test_al_acabar_el_tramo_sin_bucle_el_click_se_para_y_la_pasada_siguiente_lo_arranca(espia):
-    salida, streams = salida_falsa()
+    salida, captura = salida_falsa()
     carril, sesion, reloj = carril_a_mano(salida)
     try:
         carril.iniciar(
@@ -1556,7 +1528,7 @@ def test_al_acabar_el_tramo_sin_bucle_el_click_se_para_y_la_pasada_siguiente_lo_
         estado = carril.estado()
         assert estado["click_sonando"] is False
         assert espia[0].vivo is False
-        assert streams[0].cerrado is True
+        assert captura.cierres > 0
         # Mirar el informe cien veces no lo vuelve a arrancar.
         for _ in range(5):
             reloj.avanzar(1 / 30.0)
@@ -1604,21 +1576,21 @@ def test_un_tempo_rechazado_a_mitad_de_pasada_no_deja_la_salida_abierta(espia):
     """Suena a 1 ppm; el factor minimo lo deja en round(0,4) = 0, que el metronomo
     rechaza, y el click se para. La salida tiene que cerrarse con el: abierta y
     sin nada que suene retendria el dispositivo del usuario."""
-    salida, streams = salida_falsa()
+    salida, captura = salida_falsa()
     carril, sesion, reloj = carril_a_mano(salida)
     try:
         carril.iniciar(replace(pieza_de_doce_compases(), tempo=1), PlanDePasada(con_click=True))
-        assert len(streams) == 1 and streams[0].cerrado is False
+        assert captura.arranques == 1 and captura.cierres == 0
         estado = carril.cambiar_plan(PlanDePasada(con_click=True, factor_tempo=FACTOR_MINIMO))
         assert estado["click_sonando"] is False
-        assert len(streams) == 1
-        assert streams[0].cerrado is True
+        assert captura.arranques == 1
+        assert captura.cierres > 0
         assert salida.activa is False
         # Y no se reabre en cada consulta mientras el tempo siga rechazado.
         for _ in range(5):
             reloj.avanzar(1 / 30.0)
             carril.estado()
-        assert len(streams) == 1
+        assert captura.arranques == 1
     finally:
         carril.detener()
         sesion.detener()
@@ -1633,12 +1605,12 @@ def test_un_metronomo_que_no_arranca_con_la_salida_abierta_la_cierra(monkeypatch
             return False
 
     monkeypatch.setattr(modulo_piezas, "Metronomo", MetronomoQueNoArranca)
-    salida, streams = salida_falsa()
+    salida, captura = salida_falsa()
     carril, sesion, _ = carril_a_mano(salida)
     try:
         estado = carril.iniciar(pieza_de_doce_compases(), PlanDePasada(con_click=True))
         assert estado["click_sonando"] is False
-        assert len(streams) == 1 and streams[0].cerrado is True
+        assert captura.arranques == 1 and captura.cierres > 0
     finally:
         carril.detener()
         sesion.detener()
@@ -1728,7 +1700,7 @@ def test_los_cuadros_de_audio_no_matan_la_cuenta_atras():
 def test_arrancar_con_cuenta_atras_y_click_no_deja_el_click_sonando_antes_de_hora(
     cliente_con_salida,
 ):
-    salida, streams = salida_falsa()
+    salida, captura = salida_falsa()
     with TestClient(cliente_con_salida(salida), base_url=BASE_LOCAL) as cliente:
         datos = iniciar(cliente, con_click=True)
         # El click suena desde el primer pulso de la cuenta, que es lo que se
@@ -1740,6 +1712,6 @@ def test_arrancar_con_cuenta_atras_y_click_no_deja_el_click_sonando_antes_de_hor
             estado = cliente.get("/api/piezas/estado").json()
         # Cinco miradas en plena cuenta no rearrancan el click (una sola salida
         # abierta) ni mueven el cabezal.
-        assert len(streams) == 1
+        assert captura.arranques == 1
         assert estado["click_sonando"] is True
         assert estado["instante_s"] == 0

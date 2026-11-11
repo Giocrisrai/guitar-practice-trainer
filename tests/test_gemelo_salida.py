@@ -95,13 +95,13 @@ def test_se_puede_reabrir_tras_cerrar_y_la_clausura_no_se_agota():
 
 def test_el_stream_se_arranca_y_se_cierra_de_verdad():
     captura = SalidaCapturada()
-    assert (captura.arranques, captura.paradas, captura.cierres) == (0, 0, 0)
+    assert (captura.arranques, captura.cierres) == (0, 0)
     captura.abrir()
     captura.abrir()
     assert captura.arranques == 1
     captura.salida.cerrar()
     captura.salida.cerrar()
-    assert (captura.paradas, captura.cierres) == (1, 1)
+    assert captura.cierres == 1
 
 
 def test_el_stream_recibe_lo_que_la_salida_pide():

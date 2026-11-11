@@ -4,8 +4,8 @@ import numpy as np
 import pytest
 
 from nucleo.captura import NOMBRE_ROCKSMITH, DispositivoAudio
+from nucleo.gemelo.salida import SalidaCapturada
 from nucleo.musica import midi_a_frecuencia
-from nucleo.sintesis import SalidaAudio
 from servidor.configuracion import Configuracion
 from servidor.ejercicios import GENERADORES, SesionPractica
 from servidor.sesion import Sesion
@@ -38,23 +38,6 @@ class CapturaFalsa:
         return (0.3 * np.sin(2 * np.pi * 82.41 * t)).astype(np.float32)
 
 
-class StreamSalidaFalso:
-    def __init__(self, **kwargs):
-        self.cerrado = False
-
-    def start(self):
-        pass
-
-    def write(self, muestras):
-        pass
-
-    def stop(self):
-        pass
-
-    def close(self):
-        self.cerrado = True
-
-
 def practica(perfil: str = "guitarra_estandar") -> SesionPractica:
     sesion = Sesion(
         Configuracion(dispositivo=3, perfil=perfil),
@@ -62,7 +45,7 @@ def practica(perfil: str = "guitarra_estandar") -> SesionPractica:
         listar=lambda: [CABLE],
     )
     sesion.iniciar()
-    return SesionPractica(sesion, salida=SalidaAudio(abrir_stream=lambda **kw: StreamSalidaFalso()))
+    return SesionPractica(sesion, salida=SalidaCapturada().salida)
 
 
 def test_las_cuatro_familias_estan_registradas():
@@ -157,10 +140,7 @@ def test_sin_salida_de_audio_el_ejercicio_arranca_igual_sin_metronomo():
     )
     sesion_audio.iniciar()
 
-    def abrir_que_falla(**kwargs):
-        raise OSError("No output device")
-
-    sesion = SesionPractica(sesion_audio, salida=SalidaAudio(abrir_stream=abrir_que_falla))
+    sesion = SesionPractica(sesion_audio, salida=SalidaCapturada(fallar_al_abrir=True).salida)
     ejercicio = sesion.generar("lectura", repeticiones=2, semilla=1)
     estado = sesion.iniciar(ejercicio, con_metronomo=True)
     assert sesion.activa is True
@@ -189,11 +169,7 @@ def test_el_ejercicio_de_intervalos_hace_sonar_la_nota_de_referencia():
     objetivo. Sin eso el ejercicio de intervalos es uno de lectura con la
     respuesta escrita en pantalla, y el entrenamiento de oido no existe.
     """
-    escritos = []
-
-    class StreamQueApunta(StreamSalidaFalso):
-        def write(self, muestras):
-            escritos.append(np.asarray(muestras).copy())
+    captura = SalidaCapturada()
 
     sesion_audio = Sesion(
         Configuracion(dispositivo=3),
@@ -202,30 +178,26 @@ def test_el_ejercicio_de_intervalos_hace_sonar_la_nota_de_referencia():
     )
     sesion_audio.iniciar()
     sesion = SesionPractica(
-        sesion_audio, salida=SalidaAudio(abrir_stream=lambda **kw: StreamQueApunta())
+        sesion_audio, salida=captura.salida
     )
     ejercicio = sesion.generar("intervalo", repeticiones=3, semilla=1)
     assert ejercicio.notas[0].referencia_midi is not None
 
     sesion.iniciar(ejercicio, con_metronomo=False)
     for _ in range(100):
-        if escritos:
+        if captura.bloques:
             break
         time.sleep(0.01)
     sesion.detener()
 
-    assert len(escritos) == 1
+    assert len(captura.bloques) == 1
     esperada = midi_a_frecuencia(ejercicio.notas[0].referencia_midi)
-    assert frecuencia_dominante(escritos[0]) == pytest.approx(esperada, rel=0.03)
+    assert frecuencia_dominante(captura.muestras) == pytest.approx(esperada, rel=0.03)
 
 
 def test_la_referencia_suena_una_sola_vez_por_nota():
     """Se pide al entrar en la nota, no en cada cuadro de analisis."""
-    escritos = []
-
-    class StreamQueCuenta(StreamSalidaFalso):
-        def write(self, muestras):
-            escritos.append(1)
+    captura = SalidaCapturada()
 
     sesion_audio = Sesion(
         Configuracion(dispositivo=3),
@@ -234,23 +206,19 @@ def test_la_referencia_suena_una_sola_vez_por_nota():
     )
     sesion_audio.iniciar()
     sesion = SesionPractica(
-        sesion_audio, salida=SalidaAudio(abrir_stream=lambda **kw: StreamQueCuenta())
+        sesion_audio, salida=captura.salida
     )
     ejercicio = sesion.generar("intervalo", repeticiones=3, semilla=2)
     sesion.iniciar(ejercicio, con_metronomo=False)
     time.sleep(0.5)  # unos 24 cuadros de analisis
     sesion.detener()
 
-    assert len(escritos) == 1
+    assert len(captura.bloques) == 1
 
 
 def test_el_ejercicio_de_lectura_no_hace_sonar_nada():
     """En lectura `referencia_midi` es None: no se abre la salida ni suena nada."""
-    escritos = []
-
-    class StreamQueCuenta(StreamSalidaFalso):
-        def write(self, muestras):
-            escritos.append(1)
+    captura = SalidaCapturada()
 
     sesion_audio = Sesion(
         Configuracion(dispositivo=3),
@@ -259,30 +227,27 @@ def test_el_ejercicio_de_lectura_no_hace_sonar_nada():
     )
     sesion_audio.iniciar()
     sesion = SesionPractica(
-        sesion_audio, salida=SalidaAudio(abrir_stream=lambda **kw: StreamQueCuenta())
+        sesion_audio, salida=captura.salida
     )
     ejercicio = sesion.generar("lectura", repeticiones=3, semilla=1)
     sesion.iniciar(ejercicio, con_metronomo=False)
     time.sleep(0.3)
     sesion.detener()
 
-    assert escritos == []
+    assert captura.bloques == ()
 
 
 def test_sin_salida_de_audio_el_ejercicio_de_intervalos_sigue_sin_tono():
     """Degrada suave, igual que el metronomo: la spec dice que quedarse sin
     altavoces no impide practicar.
     """
-    def abrir_que_falla(**kwargs):
-        raise OSError("No output device")
-
     sesion_audio = Sesion(
         Configuracion(dispositivo=3),
         crear_captura=lambda **kw: CapturaFalsa(**kw),
         listar=lambda: [CABLE],
     )
     sesion_audio.iniciar()
-    sesion = SesionPractica(sesion_audio, salida=SalidaAudio(abrir_stream=abrir_que_falla))
+    sesion = SesionPractica(sesion_audio, salida=SalidaCapturada(fallar_al_abrir=True).salida)
     ejercicio = sesion.generar("intervalo", repeticiones=2, semilla=1)
     sesion.iniciar(ejercicio, con_metronomo=False)
     assert sesion.activa is True
@@ -302,9 +267,7 @@ def test_al_perder_la_senal_el_metronomo_se_pausa_y_al_volver_se_reanuda():
     )
     sesion_audio.segundos_sin_senal = 0.05
     sesion_audio.iniciar()
-    sesion = SesionPractica(
-        sesion_audio, salida=SalidaAudio(abrir_stream=lambda **kw: StreamSalidaFalso())
-    )
+    sesion = SesionPractica(sesion_audio, salida=SalidaCapturada().salida)
     ejercicio = sesion.generar("escala", traste_maximo=4)
     estado = sesion.iniciar(ejercicio)
     assert estado["metronomo"] is True
