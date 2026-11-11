@@ -85,31 +85,31 @@ def test_un_acorde_SUMA_y_no_se_queda_con_la_mas_grave():
     Se mide por el espectro y no por el pico porque los dos renders salen
     normalizados al pico 1,0 por construccion -lo fija la prueba siguiente-, asi
     que el pico no distingue una mezcla de tres de una nota sola. Lo que si
-    distingue es que las otras dos notas ESTEN: 103,8 Hz (el Do#3) no es armonico
-    del Mi2, asi que su energia solo puede venir de la segunda nota del acorde.
+    distingue es que las notas ESTEN, y se comprueba **nota a nota anadida**: con
+    una sola medida, un render que sumara dos de las tres pasaria.
+
+    Mi2 82,4 Hz, Do#3 103,8 y Si2 123,5. Ninguna de las dos ultimas es armonico de
+    las anteriores -los armonicos del Mi2 son 164,8, 247,2...-, asi que la energia
+    en su banda solo puede venir de su propia nota.
     """
-    acorde = renderizar(
-        _voz(
-            NotaDeFondo(midi=40, inicio_pulsos=0.0, duracion_pulsos=1.0),
-            NotaDeFondo(midi=44, inicio_pulsos=0.0, duracion_pulsos=1.0),
-            NotaDeFondo(midi=47, inicio_pulsos=0.0, duracion_pulsos=1.0),
-        ),
-        tempo=TEMPO,
-    )
-    solo_la_grave = renderizar(
-        _voz(NotaDeFondo(midi=40, inicio_pulsos=0.0, duracion_pulsos=1.0)),
-        tempo=TEMPO,
+    notas = (
+        NotaDeFondo(midi=40, inicio_pulsos=0.0, duracion_pulsos=1.0),
+        NotaDeFondo(midi=44, inicio_pulsos=0.0, duracion_pulsos=1.0),
+        NotaDeFondo(midi=47, inicio_pulsos=0.0, duracion_pulsos=1.0),
     )
     ventana = MUESTREO // 2
-    hertz_de_la_segunda = midi_a_frecuencia(44)
-    con_acorde = _energia_cerca_de(acorde.muestras[:ventana], hertz_de_la_segunda)
-    sin_acorde = _energia_cerca_de(solo_la_grave.muestras[:ventana], hertz_de_la_segunda)
-    assert con_acorde > 10.0 * sin_acorde
+    renders = [renderizar(_voz(*notas[:cuantas]), tempo=TEMPO) for cuantas in (1, 2, 3)]
+    for anadida, pieza in enumerate(renders[1:], start=1):
+        antes = renders[anadida - 1]
+        hertz = midi_a_frecuencia(notas[anadida].midi)
+        con = _energia_cerca_de(pieza.muestras[:ventana], hertz)
+        sin = _energia_cerca_de(antes.muestras[:ventana], hertz)
+        assert con > 10.0 * sin, f"la nota {anadida + 1} del acorde no esta sonando"
     # Y no es la mas grave disfrazada: la semilla de la primera nota del acorde es
     # la misma que la de la nota sola, asi que reducir el acorde a la mas grave
     # daria exactamente el mismo buffer.
     assert not np.array_equal(
-        acorde.muestras[: solo_la_grave.muestras.size], solo_la_grave.muestras
+        renders[2].muestras[: renders[0].muestras.size], renders[0].muestras
     )
 
 
@@ -142,8 +142,12 @@ def test_la_nota_mas_corta_que_su_periodo_se_alarga_y_no_lanza():
         _voz(NotaDeFondo(midi=40, inicio_pulsos=0.0, duracion_pulsos=0.002)),
         tempo=TEMPO,
     )
-    minimo_s = 1.0 / midi_a_frecuencia(40)
-    assert pieza.duracion_s >= minimo_s
+    # El minimo exacto, escrito a mano: el periodo del Mi2 en muestras mas las dos
+    # de prehistoria que lee el lazo de tres tomas, en segundos. Se afirma en
+    # VALOR y no con un «mayor que un periodo», porque un minimo de 1/f -sin las
+    # dos muestras- tampoco haria lanzar a `cuerda_pulsada` y pasaria inadvertido.
+    minimo_s = (MUESTREO / midi_a_frecuencia(40) + 2.0) / MUESTREO
+    assert pieza.duracion_s == pytest.approx(minimo_s, rel=1e-12)
     assert float(np.max(np.abs(pieza.muestras))) > 0.0
 
 
@@ -253,3 +257,199 @@ def test_la_ganancia_escala_el_pico_de_la_mezcla():
     )
     a_medias = renderizar(voces, tempo=TEMPO, ganancia=0.5)
     assert float(np.max(np.abs(a_medias.muestras))) == pytest.approx(0.5, abs=1e-6)
+
+
+# --- Las pruebas de la ronda de arreglos 1/5: nueve mutantes que vivian ---
+
+
+def test_suenan_TODAS_las_voces_y_TODAS_sus_notas():
+    """Sumar varias pistas es la razon de existir del modulo.
+
+    Con las once pruebas de la primera vuelta, renderizar solo `voces[:1]` -o
+    solo la primera nota de cada voz- pasaba: ninguna usaba mas de una voz. Aqui
+    hay dos voces de tres y dos notas, separadas dos pulsos, y se comprueba el
+    ataque de cada una por su indice calculado a mano.
+
+    Las notas duran un pulso -0,65 s con la cola a 120 bpm- y van cada dos pulsos
+    -1,0 s-, asi que antes de cada ataque hay silencio de verdad y «la muestra
+    anterior es cero» significa algo.
+    """
+    pulsos_del_bajo = (0.0, 2.0, 4.0)
+    pulsos_del_piano = (6.0, 8.0)
+    voces = (
+        VozDeFondo(
+            nombre="Bajo",
+            instrumento="Bass",
+            notas=tuple(
+                NotaDeFondo(midi=40 + puesto * 5, inicio_pulsos=pulso, duracion_pulsos=1.0)
+                for puesto, pulso in enumerate(pulsos_del_bajo)
+            ),
+        ),
+        VozDeFondo(
+            nombre="Piano",
+            instrumento="Piano",
+            notas=tuple(
+                NotaDeFondo(midi=60 + puesto * 4, inicio_pulsos=pulso, duracion_pulsos=1.0)
+                for puesto, pulso in enumerate(pulsos_del_piano)
+            ),
+        ),
+    )
+    pieza = renderizar(voces, tempo=TEMPO)
+    for pulso in pulsos_del_bajo + pulsos_del_piano:
+        desde = _muestra_del_pulso(pulso)
+        if desde > 0:
+            assert pieza.muestras[desde - 1] == 0.0, f"hay sonido antes del pulso {pulso}"
+        assert pieza.muestras[desde] != 0.0, f"no hay ataque en el pulso {pulso}"
+
+
+def test_el_ataque_cae_EXACTAMENTE_en_la_muestra_del_mapa():
+    """Ni una muestra antes ni una despues, y con un reparto que no es entero.
+
+    A 140 bpm el pulso mide 20571,43 muestras, asi que el pulso 2 cae en la
+    41142,86: redondear da 41143 y truncar 41142. La prueba distingue las dos, que
+    es la unica forma de que un desplazamiento de una muestra -o de cien- se vea.
+    """
+    tempo_que_no_cuadra = 140
+    pieza = renderizar(
+        _voz(NotaDeFondo(midi=40, inicio_pulsos=2.0, duracion_pulsos=1.0)),
+        tempo=tempo_que_no_cuadra,
+    )
+    desde = _muestra_del_pulso(2.0, tempo=tempo_que_no_cuadra)
+    assert desde == 41143  # la cuenta a mano, escrita tambien en decimal
+    assert pieza.muestras[desde - 1] == 0.0
+    assert pieza.muestras[desde] != 0.0
+    assert not pieza.muestras[:desde].any()
+
+
+def test_el_factor_de_tempo_llega_al_MAPA_y_no_solo_a_la_duracion():
+    """La decision M2 de la spec: el cabezal indexa por aqui.
+
+    Si `pulsos_por_segundo` se guardara sin el factor, el fondo se desincronizaria
+    en cuanto el usuario baja el tempo -el defecto mas caro de la etapa- y
+    `duracion_s` seguiria siendo correcta, asi que la prueba del factor no lo
+    veria. El indice se calcula a mano CON el factor dentro.
+    """
+    factor = 0.5
+    pieza = renderizar(
+        _voz(NotaDeFondo(midi=40, inicio_pulsos=4.0, duracion_pulsos=1.0)),
+        tempo=TEMPO,
+        factor_tempo=factor,
+    )
+    desde = _muestra_del_pulso(4.0, factor_tempo=factor)
+    assert desde == 192000  # 4 pulsos a 60 bpm efectivos: 4 s a 48 kHz
+    assert pieza.muestras[desde - 1] == 0.0
+    assert pieza.muestras[desde] != 0.0
+    cuantas = 1024
+    assert np.array_equal(
+        pieza.rodaja(4.0, cuantas), pieza.muestras[desde : desde + cuantas]
+    )
+
+
+def test_la_duracion_total_lleva_la_cola_escrita_de_la_figura():
+    """`duracion_s` en valor absoluto: una blanca a 120 bpm son 1,0 s y la cola 1,3.
+
+    El 1,3 se escribe aqui y no se importa del modulo: una prueba que lea la
+    constante que prueba no prueba nada.
+    """
+    pieza = renderizar(
+        _voz(NotaDeFondo(midi=40, inicio_pulsos=0.0, duracion_pulsos=2.0)),
+        tempo=TEMPO,
+    )
+    figura_s = 2.0 * 60.0 / TEMPO
+    assert pieza.duracion_s == pytest.approx(1.3 * figura_s)
+    assert pieza.muestras.size == int(round(1.3 * figura_s * MUESTREO))
+
+
+def test_la_semilla_base_cambia_el_render_y_None_lo_hace_distinto_cada_vez():
+    """Con otra semilla, otro ruido; con `None`, ni dos veces igual."""
+    voces = _voz(NotaDeFondo(midi=40, inicio_pulsos=0.0, duracion_pulsos=1.0))
+    assert not np.array_equal(
+        renderizar(voces, tempo=TEMPO, semilla=0).muestras,
+        renderizar(voces, tempo=TEMPO, semilla=1).muestras,
+    )
+    assert not np.array_equal(
+        renderizar(voces, tempo=TEMPO, semilla=None).muestras,
+        renderizar(voces, tempo=TEMPO, semilla=None).muestras,
+    )
+
+
+def test_rodaja_a_medias_por_la_izquierda_y_por_la_derecha():
+    """Los dos bordes parciales, que son los que de verdad pasan en una pasada.
+
+    El bloque que pide el acompanante cae a caballo del pulso cero al arrancar y a
+    caballo del final al acabar, y en los dos casos la mitad buena tiene que estar
+    EN SU SITIO dentro del bloque: desplazada, repite audio o abre un hueco.
+    """
+    pieza = renderizar(
+        _voz(NotaDeFondo(midi=40, inicio_pulsos=0.0, duracion_pulsos=2.0)),
+        tempo=TEMPO,
+    )
+    cuantas = 1024
+
+    # Izquierda: -0,01 pulsos a 120 bpm son -240 muestras.
+    desde = _muestra_del_pulso(-0.01)
+    assert desde == -240
+    bloque = pieza.rodaja(-0.01, cuantas)
+    assert not bloque[:240].any()
+    assert np.array_equal(bloque[240:], pieza.muestras[: cuantas - 240])
+
+    # Derecha: el bloque que empieza 300 muestras antes del final.
+    fuera = 300
+    pulso = (pieza.muestras.size - fuera) * (TEMPO / 60.0) / MUESTREO
+    bloque = pieza.rodaja(pulso, cuantas)
+    assert np.array_equal(bloque[:fuera], pieza.muestras[-fuera:])
+    assert not bloque[fuera:].any()
+
+
+def test_un_tempo_o_un_factor_que_no_sirven_se_dicen_en_vez_de_dividir_por_cero():
+    """Sin la guarda, un factor 0 es una division por cero diez lineas despues."""
+    voces = _voz(NotaDeFondo(midi=40, inicio_pulsos=0.0, duracion_pulsos=1.0))
+    for tempo_malo in (0, -120):
+        with pytest.raises(ValueError, match="tempo"):
+            renderizar(voces, tempo=tempo_malo)
+    for factor_malo in (0.0, -1.0):
+        with pytest.raises(ValueError, match="factor"):
+            renderizar(voces, tempo=TEMPO, factor_tempo=factor_malo)
+
+
+def test_a_otra_frecuencia_de_muestreo_cambian_las_muestras_y_no_la_musica():
+    """A 24 kHz la pieza dura lo mismo, ocupa la mitad y suena a la misma altura.
+
+    Ninguna prueba de la primera vuelta salia de los 48000, asi que una
+    frecuencia de muestreo cableada dentro pasaba.
+    """
+    muestreo = 24000
+    pieza = renderizar(
+        _voz(NotaDeFondo(midi=40, inicio_pulsos=2.0, duracion_pulsos=2.0)),
+        tempo=TEMPO,
+        frecuencia_muestreo=muestreo,
+    )
+    figura_s = 2.0 * 60.0 / TEMPO
+    assert pieza.frecuencia_muestreo == muestreo
+    assert pieza.duracion_s == pytest.approx(2.0 * 60.0 / TEMPO + 1.3 * figura_s)
+    assert pieza.muestras.size == int(round(pieza.duracion_s * muestreo))
+    desde = _muestra_del_pulso(2.0, muestreo=muestreo)
+    assert desde == 24000
+    assert pieza.muestras[desde - 1] == 0.0
+    assert pieza.muestras[desde] != 0.0
+    assert _frecuencia_del_periodo_dominante(
+        pieza.muestras[desde : desde + muestreo // 2], muestreo=muestreo
+    ) == pytest.approx(midi_a_frecuencia(40), rel=0.03)
+
+
+def test_las_muestras_son_float32_y_tambien_las_de_la_rodaja():
+    """Lo que escribe el acompanante en la tarjeta, y el `dtype` que ella espera.
+
+    Un float64 que colase aqui dobla la memoria y rompe la escritura del stream,
+    asi que el `dtype` se afirma apuntandole, y no de rebote.
+    """
+    pieza = renderizar(
+        _voz(NotaDeFondo(midi=40, inicio_pulsos=0.0, duracion_pulsos=1.0)),
+        tempo=TEMPO,
+    )
+    assert pieza.muestras.dtype == np.float32
+    assert pieza.rodaja(0.0, 256).dtype == np.float32
+    assert pieza.rodaja(-9.0, 256).dtype == np.float32
+    vacia = renderizar((), tempo=TEMPO)
+    assert vacia.muestras.dtype == np.float32
+    assert vacia.rodaja(0.0, 256).dtype == np.float32
