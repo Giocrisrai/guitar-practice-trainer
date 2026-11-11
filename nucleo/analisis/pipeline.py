@@ -21,6 +21,61 @@ from nucleo.musica import (
 )
 
 
+# Cada cuánto se analiza una ventana, en segundos. Es la CADENCIA DE PRODUCCIÓN, y
+# vive aquí -y no en quien alimenta el análisis- porque hay dos alimentadores: el
+# hilo de trabajo del servidor (`servidor/sesion.py`, que la importa con el nombre
+# `INTERVALO_ANALISIS`) y la cadena directa del gemelo digital
+# (`nucleo/gemelo/cadena.py`), que mete audio por la ruta real en tiempo virtual.
+# Con una copia en cada sitio, el gemelo verificaría una cadencia que producción no
+# usa, y lo haría en silencio.
+#
+# Por qué 21 ms: 512/48000 ≈ 10,67 ms es lo que tarda en llegar un bloque, y 21 ms
+# son unos 1008, es decir dos bloques. No hace falta analizar a la cadencia exacta
+# de los bloques, porque la emisión posterior hacia la interfaz va a 30 Hz (unos
+# 33 ms) y analizar más a menudo que eso no añadiría información visible, solo
+# gastaría CPU.
+#
+# **NO se cambia sin revisar el detector de pulsaciones.** Las constantes de
+# `nucleo/ejercicios/pulsaciones.py` están acopladas a este número y lo dice por
+# escrito: `CUADROS_PARA_NOTA_ESTABLE = 3` son 63 ms a 21 ms por cuadro y 32 ms a
+# 10,67 ms. Los mismos cuadros representan más tiempo con un intervalo mayor y
+# menos con uno menor, así que quien mueva esto tiene que volver a mirar allí.
+INTERVALO_DE_ANALISIS_S = 0.021
+
+# Cuantas frecuencias entran en la mediana movil del suavizado.
+#
+# **ESTA ACOPLADO A `CUADROS_PARA_NOTA_ESTABLE` DEL DETECTOR DE PULSACIONES**, y
+# la desigualdad que tiene que seguir siendo cierta es
+#
+#     CUADROS_PARA_NOTA_ESTABLE > TAMANO_SUAVIZADO // 2
+#
+# De donde sale: una mediana de n no gira hasta que `n // 2 + 1` de sus entradas
+# son nuevas, asi que tras un cambio de altura publica la altura VIEJA durante
+# `n // 2` cuadros. Con n=5 son 2 cuadros. El camino A del detector
+# (`nucleo/ejercicios/pulsaciones.py`) solo sella cuando la nota lleva
+# `cuadros_para_nota_estable` cuadros creibles seguidos, asi que si la racha
+# vieja alcanzara esa cifra el detector volveria a sellar el ataque de una nota
+# con la altura de la anterior: es el defecto que la Task 6c arreglo, y perder
+# esta desigualdad lo devuelve entero.
+#
+# Se cuenta en CUADROS por los dos lados, asi que la desigualdad no depende de la
+# frecuencia de muestreo ni del tempo. Lo que SI depende del perfil es el otro
+# sumando de la racha vieja -los cuadros cuya ventana cruza la frontera entre dos
+# notas-, y con el perfil de bajo ese sumando ya se come el margen: ver la
+# medicion en el docstring de `nucleo/ejercicios/pulsaciones.py`. La desigualdad
+# esta afirmada en
+# `tests/test_pulsaciones.py::test_la_racha_estable_supera_al_suavizador`.
+#
+# Y esa afirmacion tiene DOS limites, los dos nombrados en el docstring de la
+# prueba: no cubre el perfil de bajo (donde el margen ya es cero por la ventana)
+# ni un suavizador construido con otro tamaño, porque se afirma sobre esta
+# constante y no sobre el tamaño de la instancia. `tamano` y `tamano_suavizado`
+# siguen siendo parametros libres -`herramientas/grabar_muestras.py` pasa 1- y
+# nada impide pasar un 7, que romperia el margen sin que ninguna prueba se
+# enterase.
+TAMANO_SUAVIZADO = 5
+
+
 class Suavizador:
     """Mediana móvil sobre las últimas frecuencias detectadas.
 
@@ -33,7 +88,7 @@ class Suavizador:
     apoyada en menos muestras de las previstas.
     """
 
-    def __init__(self, tamano: int = 5) -> None:
+    def __init__(self, tamano: int = TAMANO_SUAVIZADO) -> None:
         if tamano < 1:
             raise ValueError("El tamaño del suavizado debe ser al menos 1")
         self._tamano = tamano
@@ -97,7 +152,7 @@ class Analizador:
         referencia_a4: float = 440.0,
         confianza_minima: float = 0.75,
         nombre_detector: str = "yin",
-        tamano_suavizado: int = 5,
+        tamano_suavizado: int = TAMANO_SUAVIZADO,
     ) -> None:
         self.perfil = perfil
         self.frecuencia_muestreo = frecuencia_muestreo

@@ -5,9 +5,15 @@ a mano. Tampoco se abre ningun dispositivo de audio: la sesion de audio es un
 doble con las tres cosas que `SesionCarril` le pide.
 """
 
+import pathlib
+import threading
+
 import pytest
 
 from nucleo.analisis.pipeline import ResultadoAnalisis
+from nucleo.piezas.conductor import ESPERA_SIN_CUADROS_S as ESPERA_DEL_NUCLEO
+from nucleo.piezas.conductor import TECHO_TRAMO_S as TECHO_DEL_NUCLEO
+from nucleo.piezas.estudio import PlanDePasada
 from nucleo.piezas.modelo import NotaEnPieza, Pieza
 from servidor.configuracion import Configuracion
 from servidor.piezas import (
@@ -84,7 +90,31 @@ SILENCIO = ResultadoAnalisis(
 )
 
 
-def publicar(sesion, reloj, resultado, cuadros=1, paso=0.021):
+# Lo que dura un cuadro de analisis en estas pruebas, que es el paso por omision
+# de `publicar` y la cadencia de produccion (21 ms). Como margen de una medicion
+# en segundos es lo mas fino que tiene sentido pedir: por debajo de un cuadro, lo
+# que se estaria midiendo es en que cuadro cayo la cuenta y no el comportamiento.
+PASO_DE_CUADRO_S = 0.021
+UN_CUADRO_S = PASO_DE_CUADRO_S
+
+
+def reloj_del_seguidor(sesion_carril) -> float:
+    """El reloj del SEGUIDOR, leido sin pasar por `estado()`.
+
+    Se mete por dentro a proposito, y es el unico sitio del archivo que lo hace.
+    `estado()` no sirve para esto: antes de publicar MIRA, y la mirada puede mover
+    el reloj, asi que lo que devuelve es el reloj ya arreglado y no el que la
+    pausa dejo. Y el espejo publico del servidor (`_instante`) tampoco, porque es
+    una copia que se adopta en cada aviso y no el reloj de verdad.
+
+    Lo que el seguidor tiene es la verdad del cabezal (`EstadoEstudio.carril` ES
+    `SeguidorPieza.estado`), asi que leerlo aqui es leer el reloj que el nucleo
+    lleva mientras entra audio.
+    """
+    return sesion_carril._estudio._seguidor.estado.instante_s
+
+
+def publicar(sesion, reloj, resultado, cuadros=1, paso=PASO_DE_CUADRO_S):
     """Publica cuadros de analisis como lo haria la sesion de audio de verdad.
 
     El instante que acompaña a cada cuadro es el del reloj del ANALISIS, que en
@@ -400,14 +430,46 @@ def test_mientras_no_hay_senal_los_cuadros_no_mueven_el_carril():
 
 
 def test_la_pausa_le_congela_el_reloj_tambien_al_seguidor():
-    """Sin mirar el estado en medio: la pausa tiene que bastarse sola.
+    """El reloj DEL SEGUIDOR durante la pausa, leido sin pasar por `estado()`.
 
-    Mientras entra audio, el reloj del carril lo lleva el SEGUIDOR (cuadro a
-    cuadro), asi que pausar sin congelarselo deja su origen viejo, y el primer
-    cuadro de la vuelta lo coloca tantos segundos dentro de la pieza como haya
-    durado la pausa. `estado()` lo tapa cuando alguien lo llama -mueve el reloj a
-    mano en cuanto los cuadros se quedan viejos-, y por eso esta prueba no lo
-    llama hasta el final: sin cliente de WebSocket conectado nadie lo llamaria.
+    **ESTA PRUEBA MEDIA OTRA COSA QUE SU NOMBRE, y esto es lo que se cambio.** Lo
+    que hacia era un apagon de 100 cuadros (2,1 s) y una sola lectura de
+    `estado()` al final. Dos problemas:
+
+    1. **El apagon pasaba de `ESPERA_SIN_CUADROS_S`** (0,25 s), asi que lo que
+       salvaba el cabezal no era la pausa sino el hueco de audio: al volver la
+       señal, `ConductorDeEstudio.observar` ve el hueco en el reloj del analisis y
+       recoloca por ese camino. Medido: quitando el `congelar_en` de
+       `mover_el_reloj` -o sea, dejando la pausa sin congelar nada- esta prueba
+       seguia PASANDO, y la que caia era
+       `test_una_pausa_corta_con_audio_entrando_tampoco_mueve_el_cabezal`, que es
+       la que si usa una pausa mas corta que esa espera.
+    2. **Leia el estado publicado y no el reloj del seguidor**, que es lo que el
+       nombre promete. El estado publicado sale de `estado()`, que antes de
+       publicarlo MIRA, y la mirada puede recolocar el reloj: lo que se afirmaba
+       era el resultado de ese arreglo, no el estado en que la pausa dejo al
+       seguidor.
+
+    Lo que mide ahora, con una pausa de 5 cuadros -mas corta que
+    `ESPERA_SIN_CUADROS_S`, para que el camino del hueco de audio NO pueda
+    taparlo- y sin una sola llamada a `estado()` en medio:
+
+    * el reloj del seguidor **no se mueve en ningun cuadro de la pausa**, y se
+      queda exactamente en el espejo del conductor: 0,168 s, un cuadro (21 ms)
+      por detras de los 0,189 s a los que lo dejo el ultimo cuadro con señal. Ese
+      cuadro de diferencia no es deriva: es la decision escrita en
+      `ConductorDeEstudio.observar` de que el espejo lo adopta la MIRADA y no el
+      cuadro, para que la pausa congele el cabezal en un punto fijo. Por eso se
+      afirma la igualdad con el espejo y no con el ultimo cuadro;
+    * y al volver la señal **retoma desde ahi**: 12 cuadros despues esta en
+      0,399 s, o sea el punto congelado mas once cuadros (el primero no cuenta,
+      porque es el que vuelve a fijar la correspondencia entre los dos relojes).
+      Sin congelar, ese primer cuadro le mete la pausa entera en el cabezal y se
+      iria a 0,504 s, cinco cuadros mas alla.
+
+    Que la lectura sea del seguidor y no de `estado()` es lo que hace que la
+    segunda afirmacion sea del nucleo: sin cliente de WebSocket conectado nadie
+    llama a `estado()`, asi que esto es lo que de verdad pasa.
     """
     reloj = RelojFalso()
     sesion_carril, sesion = carril(reloj)
@@ -417,11 +479,34 @@ def test_la_pausa_le_congela_el_reloj_tambien_al_seguidor():
     # mediria nada (ver `agotar_cuenta_atras`).
     agotar_cuenta_atras(sesion_carril, reloj)
     publicar(sesion, reloj, SILENCIO, cuadros=10)
+    con_senal = reloj_del_seguidor(sesion_carril)
+    assert con_senal == pytest.approx(0.189, abs=UN_CUADRO_S)
+
+    # La pausa tiene que ser MAS CORTA que la espera sin cuadros, o el camino del
+    # hueco de audio recoloca el reloj y esta prueba deja de medir la pausa. Se
+    # afirma aqui para que la premisa no se pudra si alguna de las dos cambia.
+    assert PASO_DE_CUADRO_S * 5 < ESPERA_SIN_CUADROS_S
     sesion.senal_ausente = True
-    publicar(sesion, reloj, SILENCIO, cuadros=100)
+    congelado = None
+    for _ in range(5):
+        publicar(sesion, reloj, SILENCIO, cuadros=1)
+        ahora = reloj_del_seguidor(sesion_carril)
+        if congelado is None:
+            congelado = ahora
+        # Quieto EXACTAMENTE, cuadro a cuadro: no es una tolerancia, es que
+        # `observar` no le da de comer al estudio mientras el reloj esta congelado.
+        assert ahora == congelado
+
+    # Congelado donde lo dejo la ultima MIRADA, que es el espejo del conductor, y
+    # no donde lo dejo el ultimo cuadro: un cuadro por detras, a proposito.
+    assert congelado == sesion_carril._instante
+    assert congelado == pytest.approx(con_senal - UN_CUADRO_S, abs=1e-9)
+
     sesion.senal_ausente = False
     publicar(sesion, reloj, SILENCIO, cuadros=12)
-    assert sesion_carril.estado()["instante_s"] == pytest.approx(0.21 + 0.25, abs=0.1)
+    assert reloj_del_seguidor(sesion_carril) == pytest.approx(
+        congelado + 11 * PASO_DE_CUADRO_S, abs=UN_CUADRO_S
+    ), "el primer cuadro tras la pausa le metio el apagon en el cabezal"
 
 
 def test_una_pausa_corta_con_audio_entrando_tampoco_mueve_el_cabezal():
@@ -768,3 +853,490 @@ def test_desenchufar_con_el_carril_en_marcha_lo_pausa_por_captura_cerrada():
     finally:
         sesion_carril.detener()
         real.detener()
+
+
+def test_las_constantes_del_reloj_se_siguen_leyendo_del_servidor():
+    """Se mudaron al nucleo en la etapa 3d y aqui se leen donde estaban.
+
+    Este archivo las importa de `servidor.piezas` desde la etapa 3a y las usa en
+    media docena de pruebas: reexportarlas es lo que impide que un cambio de
+    domicilio rompa a quien las lea, y esta prueba es lo que impide que la
+    reexportacion se caiga sin que nadie se entere.
+    """
+    assert TECHO_TRAMO_S is TECHO_DEL_NUCLEO
+    assert ESPERA_SIN_CUADROS_S is ESPERA_DEL_NUCLEO
+
+
+def candado_tomado(candado) -> bool:
+    """Si ese candado esta tomado ahora mismo. No espera a nadie.
+
+    Se pregunta desde OTRO hilo a proposito: un `RLock` se deja tomar otra vez
+    por el hilo que ya lo tiene, asi que preguntarselo desde el hilo que lo tomo
+    diria siempre "libre" y la prueba no comprobaria nada.
+    """
+    ajeno = []
+
+    def intentar():
+        tomado = candado.acquire(blocking=False)
+        ajeno.append(not tomado)
+        if tomado:
+            candado.release()
+
+    hilo = threading.Thread(target=intentar)
+    hilo.start()
+    hilo.join()
+    return ajeno[0]
+
+
+def test_el_oyente_del_click_toma_el_candado_del_carril():
+    """El oyente del click se protege a si mismo, venga el aviso de donde venga.
+
+    `_ajustar_click` lee y escribe `_metronomo`, `_clave_del_click` y `_pausado`,
+    que son de esta clase y los lee el hilo HTTP. Cuando el aviso de la vuelta
+    llegaba desde `estado()`, el candado estaba tomado por casualidad -lo tenia
+    ese hilo-, y eso bastaba mientras el carril fuera el unico que conducia la
+    pasada. Ya no lo es: el gemelo digital conduce `ConductorDeEstudio.mirar`
+    directamente, sin ningun candado de este servidor por encima, y el conductor
+    avisa con el suyo SUELTO a proposito (si avisara con el tomado, un oyente que
+    tomara este invertiria el orden de las tomas y plantaria el servidor). Por ese
+    camino el oyente se quedaba sin exclusion ninguna.
+
+    Se comprueba en dos mitades, porque son dos cosas que pueden romperse por
+    separado: que lo que el conductor tiene enganchado es la version que toma el
+    candado, y que esa version lo toma de verdad. Mira dos campos privados -el
+    oyente del conductor y el candado del carril- porque el contrato es
+    justamente interno: si se comprobara solo por fuera, volveria a cumplirse por
+    casualidad, que es lo que esta prueba existe para impedir.
+    """
+    reloj = RelojFalso()
+    sesion_carril, sesion = carril(reloj)
+    estado_inicial = sesion_carril.iniciar(
+        pieza_de([40, 41, 42, 43]),
+        PlanDePasada(en_bucle=True, compases_de_cuenta_atras=0),
+    )
+    assert estado_inicial["repeticion"] == 1
+    try:
+        conductor = sesion_carril._conductor
+        # Mitad 1: el enganche. `__func__` porque lo enganchado es un metodo ya
+        # ligado a esta instancia.
+        assert (
+            conductor._al_cambiar_repeticion.__func__
+            is SesionCarril._ajustar_click_bajo_candado
+        )
+        # Mitad 2: la exclusion. Se llama al oyente como lo llamaria el conductor
+        # -desde un hilo sin ningun candado de este servidor tomado, que es el
+        # caso del gemelo- y se mira desde dentro si el candado esta tomado.
+        tomado = []
+        sesion_carril._ajustar_click = lambda estado: tomado.append(
+            candado_tomado(sesion_carril._candado)
+        )
+        assert candado_tomado(sesion_carril._candado) is False, (
+            "nadie deberia tener el candado antes del aviso"
+        )
+        conductor._al_cambiar_repeticion(sesion_carril._estudio.estado)
+        assert tomado == [True]
+    finally:
+        sesion_carril.detener()
+        sesion.detener()
+
+
+# -- el resumen de fin de pieza no se contradice con su propio informe -------
+
+
+def terminar_la_pasada(sesion_carril, reloj, tope_s=30.0):
+    """Mira hasta que el carril publica `completado`. Devuelve el estado.
+
+    Mirando y no tocando el nucleo por detras: el final del tramo lo decide el
+    reloj de la pasada, y el reloj de la pasada lo mueve la mirada. Despues del
+    ultimo cuadro de audio el conductor no mueve nada hasta que pasan
+    `ESPERA_SIN_CUADROS_S` (es su invariante: con cuadros recientes, mover el
+    reloj a mano le costaria pulsaciones al seguidor), asi que el tope es generoso
+    a proposito; ninguna de esas esperas es real, las da el reloj falso.
+    """
+    mirado = 0.0
+    while mirado < tope_s:
+        estado = avanzar_mirando(sesion_carril, reloj, 0.5)
+        mirado += 0.5
+        if estado["completado"]:
+            return estado
+    raise AssertionError("la pasada no llego a completarse")
+
+
+def test_al_acabar_la_pieza_el_estado_sigue_diciendo_lo_que_se_toco():
+    """El numero grande de «Pieza terminada» y la tabla del informe, de acuerdo.
+
+    Era el defecto: el estado publicado salia con `tocadas` VACIA en cuanto la
+    pasada se completaba, asi que la pantalla titulaba «0 de 48 notas acertadas»
+    tres centimetros por encima de un informe por compases que sumaba 31. La causa
+    es que las dos cifras salian de dos acumuladores distintos y el que alimenta el
+    numero grande se vacia justo al terminar: el conductor cierra el tramo con
+    `cerrar_repeticion`, cuyo ultimo acto es `olvidar_tramo` sobre la pieza entera,
+    y eso poda las `NotaTocada` del seguidor en el MISMO cuadro en que
+    `completado` se enciende.
+
+    Se mide la concordancia y no una cifra suelta: «0 de 48» junto a una tabla con
+    31 aciertos es una contradiccion en pantalla, y lo que hay que vigilar es que
+    los dos numeros digan lo mismo.
+    """
+    reloj = RelojFalso()
+    sesion_carril, sesion = carril(reloj)
+    # Las cuatro notas LLENAN el compas, y eso es parte del caso: con una pieza
+    # mas corta que su compas el reloj llega al final de la PIEZA antes que al del
+    # TRAMO, y entonces no hay cierre de tramo que vacie nada. Lo que el usuario
+    # vio en pantalla es una pieza de doce compases con sus cuatro notas cada uno.
+    sesion_carril.iniciar(
+        pieza_de([40, 45, 50, 55]), PlanDePasada(compases_de_cuenta_atras=0)
+    )
+    publicar(sesion, reloj, suena("E2"), cuadros=12)
+    assert len(sesion_carril.estado()["tocadas"]) == 1
+
+    terminar_la_pasada(sesion_carril, reloj)
+    # Y se mira OTRA VEZ, que es lo que hace la pantalla: el WebSocket sigue
+    # pidiendo el estado 30 veces por segundo despues del final. El cuadro en que
+    # `completado` se enciende se publica ANTES de que el conductor cierre el tramo
+    # (`ConductorDeEstudio.mirar` devuelve el estado leido antes del cierre), asi
+    # que el que el usuario tiene delante es cualquiera de los siguientes.
+    estado = sesion_carril.estado()
+    assert estado["completado"] is True
+
+    en_pantalla = sum(1 for t in estado["tocadas"] if t["acertada"])
+    en_el_informe = sum(
+        c["acertadas"] for c in sesion_carril.informe()["informe"]["compases"]
+    )
+    assert en_el_informe == 1, "la tabla por compases es la que ya decia la verdad"
+    assert en_pantalla == en_el_informe
+    sesion_carril.detener()
+    sesion.detener()
+
+# -- no se acusa al cable cuando la sesion no espera notas -------------------
+
+
+def test_sin_pasada_en_marcha_se_espera_que_el_usuario_toque():
+    """El caso legitimo del aviso: nadie esta tocando una pieza, pero el usuario
+    puede estar en el afinador intentando que suene algo. Ahi callarse seria
+    esconder el unico aviso que le explicaria por que no ve nada."""
+    reloj = RelojFalso()
+    sesion_carril, sesion = carril(reloj)
+    assert sesion_carril.esperando_notas is True
+    sesion.detener()
+
+
+def test_con_la_pieza_en_marcha_se_esperan_notas_y_al_acabar_ya_no():
+    """La distincion es por ESTADO DE LA SESION y no por un temporizador.
+
+    Mientras la pasada corre, el silencio del cable es un problema y el aviso es
+    cierto. En cuanto la pieza termina, la sesion no espera que nadie toque: el
+    usuario acaba la pasada, deja de tocar, y acusar entonces al cable es decirle
+    que suba el volumen de una guitarra que esta perfectamente bien.
+    """
+    reloj = RelojFalso()
+    sesion_carril, sesion = carril(reloj)
+    sesion_carril.iniciar(
+        pieza_de([40, 45, 50, 55]), PlanDePasada(compases_de_cuenta_atras=0)
+    )
+    assert sesion_carril.esperando_notas is True
+
+    terminar_la_pasada(sesion_carril, reloj)
+    assert sesion_carril.esperando_notas is False
+
+    sesion_carril.detener()
+    sesion.detener()
+
+
+def test_en_la_pausa_del_usuario_se_siguen_esperando_notas_si_nunca_llego_senal():
+    """**La pausa NO calla el aviso, y callarla era un defecto medido.**
+
+    Esta prueba afirmaba lo contrario -«la pausa la pidio el usuario, el silencio
+    es lo que pidio»- y es el argumento equivocado: el usuario que pausa porque no
+    le marca nada es exactamente quien necesita leer que no llega señal. Es el
+    mismo argumento con el que `esperando_notas` se queda en True sin pasada en
+    marcha («puede estar en el afinador peleandose con el jack»), y la otra mitad
+    del aviso -la linea naranja del carril- SI salia en pausa, asi que las dos
+    mitades decian lo contrario a la vez.
+
+    Lo que calla el aviso no es quien pidio el silencio: es que el cable ya haya
+    demostrado en esta pasada que funciona. Ver `se_esperan_notas`.
+    """
+    reloj = RelojFalso()
+    sesion_carril, sesion = carril(reloj)
+    sesion_carril.iniciar(
+        pieza_de([40, 45, 50, 55]), PlanDePasada(compases_de_cuenta_atras=0)
+    )
+    sesion_carril.pausa(True)
+    sesion.senal_ausente = True
+    avanzar_mirando(sesion_carril, reloj, 1.0)
+
+    assert sesion_carril.estado()["pausado"] is True
+    assert sesion_carril.esperando_notas is True, (
+        "nunca llego señal en esta pasada: el aviso es el unico que le explica "
+        "por que no ve nada, y es justo lo que fue a investigar pausando"
+    )
+    assert sesion_carril.estado()["esperando_notas"] is True
+
+    sesion_carril.detener()
+    sesion.detener()
+
+
+def test_en_un_bucle_el_descanso_entre_vueltas_no_acusa_al_cable():
+    """**EL DEFECTO QUE EL REVISOR MIDIO EN EL USO CENTRAL DE LA ETAPA 3C.**
+
+    Medido con el escaparate en `--bucle 2-2 --repeticiones 2`: a los 12,2 s
+    `pausado=True` y el diagnostico decia `sin_senal`, o sea «sube el volumen de
+    la guitarra» de una guitarra que estaba perfectamente bien. La causa: un tramo
+    en bucle NO publica nunca `completado` ni `tramo_terminado` -el bucle no se
+    acaba, es su proposito-, asi que la regla de «con la pieza terminada no se
+    esperan notas» no muerde nunca y el aviso volvia entero. El commit que
+    arreglo el caso sin bucle lo dejo intacto en el caso con bucle, que es como el
+    usuario practica: machacar el compas que falla, y descansar la mano entre
+    repeticiones.
+
+    La regla que lo cierra no mira si la pasada acabo, que en un bucle no acaba
+    nunca: mira si **el cable ya entrego señal en esta pasada**. Si entrego,
+    «sube el volumen» es falso y el aviso calla; si no entrego nunca, el aviso es
+    el caso legitimo y sigue saliendo (prueba de arriba).
+    """
+    reloj = RelojFalso()
+    sesion_carril, sesion = carril(reloj)
+    sesion_carril.iniciar(
+        pieza_de([40, 45, 50, 55]),
+        PlanDePasada(en_bucle=True, compases_de_cuenta_atras=0),
+    )
+    # Toca de verdad un par de segundos: el cable entrega señal.
+    publicar(sesion, reloj, suena("E2"), cuadros=20)
+    avanzar_mirando(sesion_carril, reloj, 0.5)
+    assert sesion_carril.esperando_notas is True, "tocando si se esperan notas"
+
+    # Y descansa la mano. A los 5 s sin señal el carril se congela.
+    sesion.senal_ausente = True
+    estado = avanzar_mirando(sesion_carril, reloj, 7.0)
+
+    assert estado["en_bucle"] is True
+    assert estado["completado"] is False, "un bucle no se acaba: es su proposito"
+    assert estado["tramo_terminado"] is False
+    assert estado["pausado"] is True, "el carril si esta congelado, y lo dice"
+    assert sesion_carril.esperando_notas is False, (
+        "el cable entrego señal hace un momento: acusarlo ahora es decirle que "
+        "suba el volumen de una guitarra que esta bien"
+    )
+    assert estado["esperando_notas"] is False
+
+    sesion_carril.detener()
+    sesion.detener()
+
+
+def test_los_cuadros_de_silencio_no_cuentan_como_cable_que_entrego():
+    """**UN MUTANTE SUPERVIVIENTE, y era el defecto que mas cerca estuvo de colarse.**
+
+    Lo que calla el aviso es que el cable haya entregado señal en esta pasada, y
+    ese hecho se deduce DEL CUADRO: un cuadro con nivel por encima del umbral de
+    ruido. La tentacion es deducirlo de `senal_ausente` -«no falta señal, luego
+    hay señal»- y es falso, porque `senal_ausente` es «cinco segundos seguidos por
+    debajo del umbral»: durante los cinco primeros segundos de CUALQUIER pasada es
+    falso, tambien de una en la que no llegue nunca nada. Con esa version, el
+    aviso se callaba justo en el caso legitimo.
+
+    Aqui los cuadros SI llegan -el cable esta abierto y publicando- pero traen
+    silencio a -90 dBFS, muy por debajo del umbral. Eso no es el cable
+    entregando: es el cable callado, que es el caso que el aviso existe para
+    nombrar.
+
+    El mutante que esto mata: `_cuadro_con_senal` devolviendo `True` siempre.
+    Sobrevivia a la suite entera.
+    """
+    reloj = RelojFalso()
+    sesion_carril, sesion = carril(reloj)
+    sesion_carril.iniciar(
+        pieza_de([40, 45, 50, 55]), PlanDePasada(compases_de_cuenta_atras=0)
+    )
+
+    publicar(sesion, reloj, SILENCIO, cuadros=60)
+    sesion.senal_ausente = True
+    estado = avanzar_mirando(sesion_carril, reloj, 7.0)
+
+    assert estado["pausado"] is True
+    assert sesion_carril.esperando_notas is True, (
+        "llegaron sesenta cuadros y ninguno traia señal: el cable no ha entregado "
+        "nada en esta pasada y el aviso es el caso legitimo"
+    )
+    assert estado["esperando_notas"] is True
+
+    sesion_carril.detener()
+    sesion.detener()
+
+
+def test_el_umbral_que_decide_si_el_cable_entrego_es_el_de_la_configuracion():
+    """**EL MUTANTE QUE SOBREVIVIO A LA RE-REVISION: el umbral de fabrica siempre.**
+
+    `_cuadro_con_senal` existe para no tener dos respuestas a la misma pregunta:
+    el umbral con el que se decide «este cuadro trae señal» tiene que ser el mismo
+    con el que la sesion de audio decide «falta señal», y ese lo elige el usuario
+    en su configuracion. Ninguna prueba miraba esa rama, porque el doble de la
+    sesion no lleva configuracion y entonces manda el de fabrica: la rama de
+    PRODUCCION -la unica que el usuario ejecuta- no la vigilaba nadie.
+
+    El cuadro de aqui trae -45 dBFS: por ENCIMA del umbral de fabrica (-60) y por
+    DEBAJO del que esta puesto (-30). Con el umbral correcto no es el cable
+    entregando, asi que el aviso del cable NO se calla. Con el mutante -usar
+    siempre `UMBRAL_DE_RUIDO_POR_DEFECTO_DBFS`- se callaria.
+
+    Los dos numeros de la asercion vienen de la configuracion y de la constante,
+    no de llamar a `_cuadro_con_senal`.
+    """
+    reloj = RelojFalso()
+    sesion = SesionAudioFalsa()
+    sesion.configuracion = Configuracion(umbral_ruido_dbfs=-30.0)
+    sesion_carril = SesionCarril(sesion, reloj=reloj)
+    try:
+        sesion_carril.iniciar(
+            pieza_de([40, 45, 50, 55]), PlanDePasada(compases_de_cuenta_atras=0)
+        )
+        publicar(sesion, reloj, suena("E2", nivel=-45.0), cuadros=60)
+        sesion.senal_ausente = True
+        estado = avanzar_mirando(sesion_carril, reloj, 7.0)
+
+        assert sesion_carril.esperando_notas is True, (
+            "-45 dBFS esta por debajo del umbral puesto (-30) aunque este por "
+            "encima del de fabrica (-60): no es el cable entregando"
+        )
+        assert estado["esperando_notas"] is True
+    finally:
+        sesion_carril.detener()
+        sesion.detener()
+
+
+def test_lo_que_entrego_el_cable_en_la_pasada_anterior_no_calla_la_nueva():
+    """**OTRO MUTANTE SUPERVIVIENTE: el hecho es DE LA PASADA, no de la sesion.**
+
+    Si «el cable entrego señal» se quedara puesto de una pasada para la siguiente,
+    el usuario que toca una pieza, la termina, desenchufa y empieza otra se
+    quedaria sin el aviso justo cuando lo necesita, porque su pasada anterior
+    habia ido bien. Se borra al arrancar y al parar.
+
+    El mutante que esto mata: quitar `self._hubo_senal = False` de `iniciar`.
+    Sobrevivia a la suite entera.
+    """
+    reloj = RelojFalso()
+    sesion_carril, sesion = carril(reloj)
+
+    # Primera pasada: se toca de verdad y el aviso se calla al descansar.
+    sesion_carril.iniciar(
+        pieza_de([40, 45, 50, 55]), PlanDePasada(compases_de_cuenta_atras=0)
+    )
+    publicar(sesion, reloj, suena("E2"), cuadros=20)
+    sesion.senal_ausente = True
+    avanzar_mirando(sesion_carril, reloj, 7.0)
+    assert sesion_carril.esperando_notas is False
+
+    # Segunda pasada, sin una sola muestra: el aviso vuelve.
+    sesion_carril.iniciar(
+        pieza_de([40, 45, 50, 55]), PlanDePasada(compases_de_cuenta_atras=0)
+    )
+    estado = avanzar_mirando(sesion_carril, reloj, 7.0)
+
+    assert estado["pausado"] is True
+    assert sesion_carril.esperando_notas is True, (
+        "lo que el cable entrego en la pasada anterior no dice nada de esta"
+    )
+
+    sesion_carril.detener()
+    sesion.detener()
+
+
+def test_la_regla_del_aviso_se_decide_una_vez_y_las_dos_mitades_la_leen():
+    """**LA COSTURA: el panel de diagnostico y el carril leen el MISMO dato.**
+
+    La regla vivia escrita dos veces -tres clausulas en Python
+    (`tramo_terminado`, `carril.completado`, `en_pausa`) y una en TypeScript
+    (`!completado`)-, no eran la misma, y un comentario del JSX afirmaba que si.
+    Cada mitad tenia su mutante y cada mutante moria en su propio idioma, lo que
+    daba la sensacion de estar cubierto. El resultado medible era que en la pausa
+    del usuario el diagnostico callaba y el carril acusaba al cable.
+
+    Ahora la regla se decide en `se_esperan_notas` y viaja PUBLICADA en el estado,
+    asi que las dos mitades no pueden discrepar: la propiedad que lee
+    `/api/diagnostico` y el campo que lee el carril salen de la misma llamada.
+    Esto cruza la costura por el lado de Python; por el de TypeScript la cruza
+    `Carril.test.tsx`, que dibuja la linea naranja solo con el campo publicado, y
+    `test_la_interfaz_no_recalcula_la_regla_del_aviso`, que comprueba que el JSX no
+    se la vuelve a inventar.
+    """
+    reloj = RelojFalso()
+    sesion_carril, sesion = carril(reloj)
+
+    # Sin pasada: el afinador. Las dos mitades dicen que si.
+    assert sesion_carril.esperando_notas is True
+    assert sesion_carril.estado()["esperando_notas"] is True
+
+    sesion_carril.iniciar(
+        pieza_de([40, 45, 50, 55]), PlanDePasada(compases_de_cuenta_atras=0)
+    )
+    for paso in ("recien empezada", "en pausa", "sin señal tras tocar", "terminada"):
+        if paso == "en pausa":
+            sesion_carril.pausa(True)
+            sesion_carril.pausa(False)
+        elif paso == "sin señal tras tocar":
+            publicar(sesion, reloj, suena("E2"), cuadros=20)
+            sesion.senal_ausente = True
+            avanzar_mirando(sesion_carril, reloj, 7.0)
+        elif paso == "terminada":
+            sesion.senal_ausente = False
+            terminar_la_pasada(sesion_carril, reloj)
+        estado = sesion_carril.estado()
+        assert estado["esperando_notas"] is sesion_carril.esperando_notas, (
+            f"las dos mitades discrepan con la pasada {paso}: el panel de "
+            "diagnostico y el carril tienen que leer la misma regla"
+        )
+
+    sesion_carril.detener()
+    sesion.detener()
+
+
+def test_la_interfaz_no_recalcula_la_regla_del_aviso():
+    """El JSX LEE `esperando_notas`; no se vuelve a inventar la regla.
+
+    Es la otra mitad de la costura, afirmada desde aqui porque es el unico sitio
+    donde se puede comparar con la regla de Python. Un comentario que dijera «es la
+    misma regla» es exactamente lo que habia antes, y era falso.
+    """
+    jsx = (
+        pathlib.Path(__file__).resolve().parents[1] / "interfaz" / "src" / "Carril.tsx"
+    ).read_text(encoding="utf-8")
+    # La condicion de la linea naranja: lo que hay entre la llave que la abre y el
+    # parrafo que la dibuja.
+    corte = jsx.index("Carril pausado")
+    condicion = jsx[jsx.rindex("{estado", 0, corte) : corte]
+
+    assert "esperando_notas" in condicion, (
+        "la linea del cable tiene que decidirse con el campo PUBLICADO: "
+        f"la condicion de hoy es {condicion!r}"
+    )
+    assert "completado" not in condicion, (
+        "y no recalculando la regla aqui, que es lo que hacia que las dos mitades "
+        "no fueran la misma"
+    )
+
+
+def test_una_pieza_que_acaba_antes_de_su_barra_de_compas_tampoco_espera_notas():
+    """`completado` tiene DOS motivos, y los dos valen para callar el aviso.
+
+    Lo delato un mutante que sobrevivio: mirando solo `tramo_terminado` la prueba
+    de arriba pasaba igual, porque su pieza llena el compas y los dos motivos se
+    encienden a la vez. Una pieza cuyas notas se acaban ANTES de la barra -dos
+    notas en un compas de 4/4- termina por el otro: el reloj pasa el final de la
+    PIEZA (`carril.completado`) y se sigue moviendo hasta el final del TRAMO. En
+    esos segundos la pantalla ya dice «Pieza terminada» -lo publicado es
+    `tramo_terminado or carril.completado`- y el aviso naranja volvia a acusar al
+    cable de un silencio que nadie podia evitar.
+    """
+    reloj = RelojFalso()
+    sesion_carril, sesion = carril(reloj)
+    # Dos notas en un compas de 4/4 a 60 ppm: la pieza dura 2 s y el tramo, 4.
+    sesion_carril.iniciar(pieza_de([40, 45]), PlanDePasada(compases_de_cuenta_atras=0))
+    estado = avanzar_mirando(sesion_carril, reloj, 2.5)
+
+    assert estado["completado"] is True, "la pieza se acabo"
+    assert estado["tramo_terminado"] is False, "el tramo todavia no"
+    assert sesion_carril.esperando_notas is False
+
+    sesion_carril.detener()
+    sesion.detener()

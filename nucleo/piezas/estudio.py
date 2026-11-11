@@ -32,7 +32,7 @@ from nucleo.piezas.compases import (
     total_de_compases,
 )
 from nucleo.piezas.modelo import Pieza, pulsos_a_segundos, segundos_a_pulsos
-from nucleo.piezas.seguimiento import EstadoCarril, SeguidorPieza
+from nucleo.piezas.seguimiento import EstadoCarril, NotaTocada, SeguidorPieza
 
 # Mas abajo del 40 % el carril ya no se parece a musica; por encima del 100 % se
 # estaria practicando mas rapido que el original, que es otra cosa y no se
@@ -350,6 +350,24 @@ class SesionDeEstudio:
         # El informe de la ultima vuelta del bucle que se cerro, o None si
         # todavia no se cerro ninguna. Lo lee el servidor para el historial.
         self._ultima_vuelta: InformeDePasada | None = None
+        # Y las `NotaTocada` de esa misma vuelta, que el informe NO lleva: solo
+        # lleva conteos por compas. Sin esto, lo adjudicado en el mismo cuadro
+        # que da la vuelta no es observable por ninguna API publica (ver
+        # `_dar_la_vuelta` y la propiedad `tocadas_de_la_ultima_vuelta`).
+        self._tocadas_de_la_vuelta: tuple[NotaTocada, ...] = ()
+        # Las `NotaTocada` que el seguidor tenia cuando el tramo se dio por
+        # acabado SIN bucle, para que el estado publicado no se quede mudo al
+        # terminar. Ver `_tocadas_al_acabar_el_tramo`, que es quien las publica.
+        #
+        # NO hace falta vaciarla al reabrir el tramo, y se probo a hacerlo: ese
+        # borrado era codigo muerto y lo delato un mutante que ninguna prueba podia
+        # matar. Se escribe SIEMPRE junto con `_tramo_terminado = True` (es la unica
+        # linea que la toca, en `_al_dia`) y solo se publica con `_tramo_terminado`
+        # puesto, asi que el tramo reabierto no puede publicar nada viejo: cuando
+        # vuelva a acabarse, la lista se habra reescrito con lo que el seguidor
+        # tenga entonces. Si algun dia `_tramo_terminado` se enciende desde otro
+        # sitio, esa linea tiene que guardar tambien esto.
+        self._tocadas_del_tramo_acabado: tuple[NotaTocada, ...] = ()
         # El ultimo instante del reloj del ANALISIS que vimos, solo para sacar
         # el delta de la cuenta atras cuando el tiempo viene en cuadros.
         self._ultimo_analisis: float | None = None
@@ -419,9 +437,49 @@ class SesionDeEstudio:
     def plan(self) -> PlanDePasada:
         return self._plan
 
+    def _tocadas_al_acabar_el_tramo(
+        self, en_vuelo: tuple[NotaTocada, ...]
+    ) -> tuple[NotaTocada, ...]:
+        """Lo tocado que el estado publica con el tramo ya acabado SIN bucle.
+
+        **ES EL ARREGLO DE UN DEFECTO QUE SE VEIA EN PANTALLA Y NO LO VIO NINGUNA
+        PRUEBA.** Al terminar la pieza el resumen decia «0 de 48 notas acertadas»
+        tres centimetros por encima de un informe por compases que sumaba 31: las
+        dos cifras salen de dos acumuladores distintos, y el que alimenta el numero
+        grande -`estado.carril.tocadas`, que es el registro VIVO del seguidor- se
+        vacia justo al terminar. Quien lo vacia es el cierre del tramo
+        (`cerrar_repeticion` -> `olvidar_tramo` sobre la pieza entera), y lo hace
+        en el mismo cuadro en que `completado` se enciende, asi que el usuario
+        nunca llegaba a ver un estado con las notas dentro.
+
+        Que el cierre vacie el seguidor es correcto y no se toca: el informe suma
+        lo acumulado MAS lo que el seguidor tenga, y sin vaciarlo contaria dos
+        veces. Lo que se arregla es la OTRA mitad: las notas de la pasada se
+        guardan al acabar el tramo y se siguen publicando, que es la misma solucion
+        -y por el mismo motivo- que `tocadas_de_la_ultima_vuelta` ya daba para la
+        vuelta del bucle.
+
+        Lo que el seguidor adjudique DESPUES se añade, sin repetir indices: el
+        detector firma un onset hasta `VENTANA_ATAQUE_COMO_ONSET_S` despues de que
+        ocurriera, asi que la ultima nota del tramo se resuelve con el tramo ya
+        acabado y tiene que salir en el resumen igual que sale en el informe.
+
+        Solo manda con `_tramo_terminado`, que es el final de un tramo SIN bucle:
+        con bucle no se enciende nunca, y publicar ahi las notas de una vuelta
+        cerrada seria pintar marcas sobre notas que la vuelta nueva no ha tocado.
+        """
+        ya = {tocada.indice for tocada in self._tocadas_del_tramo_acabado}
+        return self._tocadas_del_tramo_acabado + tuple(
+            tocada for tocada in en_vuelo if tocada.indice not in ya
+        )
+
     @property
     def estado(self) -> EstadoEstudio:
         carril = self._seguidor.estado
+        if self._tramo_terminado:
+            carril = replace(
+                carril, tocadas=self._tocadas_al_acabar_el_tramo(carril.tocadas)
+            )
         pulsos = self._pulsos(carril.instante_s)
         # El compas se acota al ultimo del tramo, y no es cosmetica: los pulsos
         # del compas son un intervalo MEDIO ABIERTO, asi que el reloj parado en
@@ -457,6 +515,22 @@ class SesionDeEstudio:
         """El informe de la ultima vuelta del bucle cerrada, o None si no hubo."""
         return self._ultima_vuelta
 
+    @property
+    def tocadas_de_la_ultima_vuelta(self) -> tuple[NotaTocada, ...]:
+        """Las `NotaTocada` de la ultima vuelta cerrada. Vacia si no hubo ninguna.
+
+        Es la hermana de `ultima_vuelta` y existe por un defecto medido: lo que se
+        adjudica en el MISMO cuadro que da la vuelta no aparece en ningun
+        `estado.carril.tocadas` de ninguna llamada. `procesar` llama al seguidor y,
+        en la misma llamada, acaba en `_dar_la_vuelta` -> `cerrar_repeticion`, cuyo
+        ultimo acto es `olvidar_tramo`, y devuelve el estado DESPUES de eso. El
+        informe de la vuelta no lo salva: solo lleva conteos por compas, no las
+        notas. Sin esta propiedad, quien quiera saber QUE nota se adjudico en ese
+        cuadro -el gemelo digital recogiendo el registro, o la interfaz- no tiene
+        por donde preguntarlo.
+        """
+        return self._tocadas_de_la_vuelta
+
     def _segundos_de_cuenta_atras(self) -> float:
         if self._plan.compases_de_cuenta_atras == 0:
             return 0.0
@@ -465,31 +539,227 @@ class SesionDeEstudio:
         )
 
     def _delta_del_analisis(self, instante_analisis: float) -> float:
-        """Cuanto tiempo paso entre dos cuadros, nunca negativo.
+        """Cuanto tiempo paso entre dos cuadros, nunca negativo y SIN HUECOS.
 
         Solo lo necesita la cuenta atras: el reloj de la pieza lo mueve
         `procesar` del seguidor por su correspondencia, no esta resta.
+
+        **UN HUECO DE AUDIO NO ES TIEMPO TRANSCURRIDO Y AQUI VALE CERO.** Es la
+        misma regla que `ConductorDeEstudio` escribe para el reloj de la pasada
+        -«un hueco largo no entra en la pieza por ningun camino»- y el mismo
+        criterio con que ese conductor decide que un cuadro llega tras un apagon
+        (`_hueco_de_audio`, que mide `VENTANA_ATAQUE_COMO_ONSET_S` contra el reloj
+        del analisis). Se vuelve a aplicar aqui porque el conductor no lo puede
+        aplicar por nosotros: `congelar_en` -lo que llama al detectar el hueco- NO
+        reinicia `_ultimo_analisis`, asi que el cuadro siguiente llega con el hueco
+        entero en la resta.
+
+        Era un defecto medido en los dos caminos que la usan, y el segundo lo
+        trajo la rama que le entrega al reloj lo que sobra del cuadro que agota la
+        cuenta:
+
+        * la cuenta atras se la comia un apagon de golpe -30 s de hueco se tragan
+          cualquier cuenta-, cuando `congelar_en` existe precisamente para que
+          perder la señal en plena cuenta NO sea motivo para tirarla;
+        * y lo que sobraba de ese hueco se le daba al reloj: medido con un hueco de
+          30 s dentro de la cuenta, **el cabezal se iba al final del tramo y el
+          bucle daba una VUELTA FANTASMA** que nadie toco (repeticion 2 con el
+          alumno con el cable desenchufado).
+
+        El techo es el del propio detector y no un numero nuevo: por encima de
+        `VENTANA_ATAQUE_COMO_ONSET_S` sin un cuadro no queda nada en vuelo que
+        pueda resolverse, que es la definicion de hueco que ya usan el conductor
+        (`ESPERA_SIN_CUADROS_S`) y `_ataques_en_vuelo`. Y el hueco vale CERO y no
+        el techo, porque el tiempo sin señal no entra en la pieza por ninguna
+        puerta: quien desenchufa el cable a media cuenta y lo vuelve a enchufar se
+        encuentra la cuenta DONDE LA DEJO, no reiniciada y no gastada.
+
+        Es el mismo razonamiento que `_exceso_de_la_vuelta` escribe dos metodos mas
+        abajo -«un exceso mayor que el tramo no es una vuelta sino un salto de
+        reloj»- aplicado a la otra punta.
         """
         anterior = self._ultimo_analisis
         self._ultimo_analisis = instante_analisis
         if anterior is None:
             return 0.0
-        return max(0.0, instante_analisis - anterior)
+        delta = max(0.0, instante_analisis - anterior)
+        return 0.0 if delta >= VENTANA_ATAQUE_COMO_ONSET_S else delta
 
-    def _dar_la_vuelta(self) -> None:
+    def _exceso_de_la_vuelta(self, inicio: float, fin: float) -> float:
+        """Con cuanto se paso el reloj del final del tramo, acotado al tramo.
+
+        EL EXCESO NO SE TIRA, y tirarlo era el defecto central del bucle. El
+        reloj no cruza el final del tramo en el final exacto: lo cruza en el
+        primer cuadro de analisis POSTERIOR, con hasta 21 ms de exceso (y con lo
+        que mida la mirada, en el camino sin audio). Dando la vuelta a `inicio`
+        pelado, el audio de la vuelta siguiente empieza donde tocaba pero el
+        reloj empieza re-anclado, y la diferencia SE ACUMULA vuelta a vuelta.
+        Medido con el gemelo antes del arreglo, cuatro vueltas de un interprete
+        PERFECTO: desfase medio +36,1, +2,6, -36,0 ms -unos 36 ms por vuelta-, y
+        con ocho vueltas la quinta ya salia con 2 notas limpias de 8 y la sexta
+        con 0.
+
+        El exceso se ACOTA a la longitud del tramo, y no es cosmetica: un exceso
+        mayor que el tramo entero no es una vuelta sino un salto de reloj -una
+        mirada tras un apagon, un `avanzar` con un delta enorme-, y arrastrarlo
+        dejaria el cabezal mas alla del final del tramo recien abierto. Acotado,
+        el reloj siempre queda DENTRO del tramo.
+        """
+        return min(max(0.0, self._seguidor.estado.instante_s - fin), max(0.0, fin - inicio))
+
+    def _dar_la_vuelta(self, con_audio: bool = False) -> None:
         """Los cuatro pasos del bucle, en este orden y no en otro.
 
         El informe de la vuelta que acaba se guarda en `_ultima_vuelta`, porque
         quien lo necesita -el historial- se entera de la vuelta mirando
         `repeticion` DESPUES de que esto haya pasado, y entonces ya no podria
-        pedirlo.
+        pedirlo. Y con el las `NotaTocada` de esa vuelta, por el mismo motivo y
+        por uno mas: lo adjudicado en el MISMO cuadro que da la vuelta no aparece
+        en ningun `estado.carril.tocadas` de ninguna llamada -`procesar` devuelve
+        el estado DESPUES de que `cerrar_repeticion` haya vaciado el seguidor-,
+        asi que sin esta linea esas notas no son observables por ninguna API
+        publica. El informe solo lleva conteos por compas.
+
+        **El exceso con que el reloj cruzo el final se CONSERVA, y con audio el
+        salto lleva ademas su correspondencia escrita.** Son las dos mitades de lo
+        mismo -que la vuelta no le robe tiempo al reloj- y hacen falta las dos:
+
+        * El exceso (`_exceso_de_la_vuelta`): el reloj no cruza el final en el
+          final exacto, y tirar la diferencia arrastraba ~15 ms por vuelta.
+        * La correspondencia: con audio, el reloj de la pieza lo mueve SOLO la
+          correspondencia entre los dos relojes del seguidor, y un salto ordinario
+          la deja sin fijar hasta el cuadro siguiente, con lo que el reloj se
+          queda quieto un cuadro entero (21 ms por vuelta a la cadencia de
+          produccion). Pasandole al seguidor el instante del analisis en que el
+          reloj vale `inicio + exceso`, la correspondencia queda escrita y **no
+          hay nada que estimar**.
+
+        La version anterior de esto SI estimaba: le sumaba al exceso «la cadencia
+        recien medida». Era un defecto medido y lo delato una revision: si el
+        cuadro que cruza el final llega tarde -un hueco de audio-, ese retraso
+        entra en el exceso, que es correcto, **y otra vez** en la cadencia, que es
+        lo que se sumaba. Con un hueco de 300 ms en la frontera, la vuelta nueva
+        arrancaba en 0,359 s en vez de 0,059, y con un tramo corto el tope se lo
+        comia entero y la vuelta se saltaba. Escribir la correspondencia en vez de
+        estimarla no arregla el doble conteo: lo hace imposible, y de paso deja el
+        reloj exacto a cualquier cadencia (comprobado a 7,5 / 21 / 40 / 100 ms por
+        cuadro, con desvio 0,000).
+
+        SIN AUDIO no hay correspondencia ni frontera que pasar, y no hace falta:
+        `avanzar` suma el tramo transcurrido sobre el reloj que haya, asi que la
+        vuelta no congela nada.
         """
-        self._ultima_vuelta = self.cerrar_repeticion()
         inicio, fin = self._inicio_s(), self._fin_s()
+        exceso_del_cruce = self._exceso_de_la_vuelta(inicio, fin)
+        cuenta = self._segundos_de_cuenta_atras()
+        # **CON CUENTA ATRAS, EL EXCESO SE LE DEBITA A LA CUENTA Y NO AL RELOJ**, y
+        # es la primera mitad del arrastre que el bucle CON cuenta tenia (la
+        # segunda esta en `procesar`). El exceso es tiempo que ya paso desde que el
+        # reloj cruzo el final del tramo, y con una cuenta atras abierta ese tiempo
+        # lo gasta la CUENTA: la cuenta empieza en la frontera, no en el cuadro que
+        # se entero. Dandoselo al reloj -que es lo que se hacia- la cuenta duraba
+        # `exceso` de mas y el reloj no se lo quedaba, porque mientras la cuenta
+        # corre esta clavado en el inicio: se perdia en cada vuelta.
+        #
+        # Si el exceso es MAYOR que la cuenta, lo que sobra sigue yendo al reloj:
+        # un exceso enorme es un salto de reloj y no una vuelta, y tragarselo
+        # entero en una cuenta de dos compases seria inventarse una cuenta corta.
+        #
+        # Sin cuenta atras (`cuenta == 0`) esto no hace nada y el exceso va al
+        # reloj, que es lo que la T7 dejo medido.
+        gastado_en_la_cuenta = min(exceso_del_cruce, cuenta)
+        cuenta -= gastado_en_la_cuenta
+        exceso = exceso_del_cruce - gastado_en_la_cuenta
+        frontera = None
+        ahora = None
+        if con_audio and self._ultimo_analisis is not None:
+            # LA FRONTERA ES UN INSTANTE DEL RELOJ DEL ANALISIS, no un cuadro: es
+            # el instante en que el reloj de la pieza paso por el final del tramo,
+            # que no es este cuadro sino `exceso` segundos antes (el reloj avanza
+            # con el analisis y por eso la resta vale). Lo que atacaste antes de
+            # ese instante es de la vuelta que cierra y lo que atacaste despues es
+            # de la que abre, y el seguidor necesita el numero para decidirlo.
+            #
+            # Y la correspondencia va con ella, por el mismo motivo por el que la
+            # resta vale: el reloj de la pieza marca `inicio + exceso` AHORA.
+            #
+            # La frontera se resta con el exceso DEL CRUCE y no con el que le queda
+            # al reloj: la frontera es el instante en que el reloj paso por el final
+            # del tramo, y eso no cambia porque parte de ese tiempo se le debite a
+            # la cuenta atras. Restar el debitado la pondria en este cuadro y le
+            # regalaria a la vuelta nueva lo que se ataco antes de ella.
+            ahora = self._ultimo_analisis
+            frontera = ahora - exceso_del_cruce
+        self._tocadas_de_la_vuelta = tuple(self._seguidor.estado.tocadas)
+        self._ultima_vuelta = self.cerrar_repeticion()
         self._seguidor.olvidar_tramo(inicio, fin)
-        self._seguidor.avanzar_a(inicio)
+        self._seguidor.avanzar_a(
+            inicio + exceso,
+            frontera_del_salto_s=frontera,
+            instante_analisis_s=ahora,
+        )
         self._repeticion += 1
-        self._cuenta_atras_restante_s = self._segundos_de_cuenta_atras()
+        self._cuenta_atras_restante_s = cuenta
+
+    def _cobrar_la_cola(self) -> None:
+        """Vuelca al informe de la vuelta que CERRO lo que se ataco antes de ella.
+
+        El detector firma un onset hasta `VENTANA_ATAQUE_COMO_ONSET_S` (250 ms)
+        despues de que ocurriera, asi que la ultima nota de una vuelta se resuelve
+        con la vuelta siguiente ya abierta. **Una nota pertenece a la vuelta en que
+        se ATACO**, no a la vuelta en que el detector la resolvio: una nota atacada
+        50 ms antes del final cuenta en la vuelta que cierra, y lo contrario le
+        regalaria a la vuelta nueva una nota que nadie toco en ella.
+
+        Quien las retiene es el seguidor -son suyas, y es el unico que tiene el
+        reloj en que se atacaron- y aqui solo se cobran: suman al acumulado de la
+        pasada, se anaden a las `NotaTocada` de la vuelta y el informe de esa
+        vuelta se vuelve a armar con ellas dentro. Rearmarlo y no parchearlo es lo
+        que mantiene `InformeDePasada` inmutable.
+
+        Se llama en CADA cuadro con audio y no solo tras la vuelta: la cola puede
+        tardar varios cuadros en llenarse, y preguntar siempre cuesta una tupla
+        vacia.
+
+        **UNA NOTA DE LA VUELTA NO SE COBRA DOS VECES, y eso se decide aqui.** La
+        cola lleva su propio registro de lo cobrado -la nota de la frontera es de
+        la vuelta que cierra, asi que la vuelta que abre tiene que poder cobrar su
+        propia copia de esa misma nota-, pero ese registro arranca vacio en cada
+        vuelta y no sabe lo que la vuelta que cerro ya habia cobrado: cuando
+        `cerrar_repeticion` se llevo sus `NotaTocada`, el seguidor dejo de tenerlo.
+        El unico que lo sabe es este metodo, porque es quien guarda
+        `_tocadas_de_la_vuelta`.
+
+        Sin esta guarda, dos ataques cerca de la frontera -machacando un compas no
+        es nada exotico- cobraban la misma nota dos veces: medido, la nota 3 salia
+        en `estado.tocadas` «a tiempo» con +0,000 y OTRA VEZ en la cola «tarde»
+        con +0,900, y como `_contar` no deduplica y esto suma encima del informe
+        ya cerrado, **el compas salia con mas acertadas que notas escritas**.
+        Exactamente lo que la regla 1 de `_adjudicar` promete que no pasa, y con
+        el tempo automatico colgando de esos contadores.
+
+        Lo repetido se DESCARTA, no se re-adjudica a la siguiente nota libre: es
+        lo mismo que hace `_adjudicar` cuando una pulsacion no alcanza a ninguna
+        nota reclamable -no se anota y no cuenta como fallo- y es la unica salida
+        honesta desde aqui, porque re-adjudicar exigiria volver a correr la
+        adjudicacion entera con el reloj retirado, que es del seguidor y no de
+        este metodo.
+        """
+        cola = self._seguidor.recoger_la_cola()
+        if not cola:
+            return
+        ya_cobrados = {tocada.indice for tocada in self._tocadas_de_la_vuelta}
+        nuevas = tuple(t for t in cola if t.indice not in ya_cobrados)
+        if not nuevas:
+            return
+        for numero, fila in self._contar(nuevas).items():
+            destino = self._acumulado.setdefault(numero, self._contadores())
+            for clave, valor in fila.items():
+                destino[clave] += valor
+        self._tocadas_de_la_vuelta += nuevas
+        self._ultima_vuelta = self._armar_informe(
+            self._contar(self._tocadas_de_la_vuelta), {}, 1
+        )
 
     def _ataques_en_vuelo(self) -> bool:
         """Si todavia puede quedar un ataque del final del tramo por resolver.
@@ -528,7 +798,7 @@ class SesionDeEstudio:
             return
         if self._plan.en_bucle:
             if avanzando:
-                self._dar_la_vuelta()
+                self._dar_la_vuelta(con_audio=con_audio)
         else:
             # Clavar el reloj en el final del tramo se APLAZA mientras pueda
             # quedar un ataque en vuelo, y esa es la correccion de un defecto
@@ -565,6 +835,13 @@ class SesionDeEstudio:
             if not self._tramo_terminado:
                 self._tramo_terminado = True
                 self._analisis_al_acabar = self._ultimo_analisis
+                # Lo tocado se guarda AQUI, en la transicion, y no cuando alguien
+                # cierra el tramo: el seguidor todavia lo tiene, y asi esto no
+                # depende de que quien conduzca llame a `cerrar_repeticion` ni de
+                # cuando lo llame. Ver `_tocadas_al_acabar_el_tramo`.
+                self._tocadas_del_tramo_acabado = tuple(
+                    self._seguidor.estado.tocadas
+                )
             if not con_audio:
                 # Un aviso SIN cuadros cierra la ventana, y no solo en la
                 # transicion: esta linea es el tope del aplazamiento y sin ella el
@@ -670,14 +947,54 @@ class SesionDeEstudio:
             if self._en_pausa:
                 self._seguidor.avanzar_a(self._seguidor.estado.instante_s)
                 return self.estado
-            if self._cuenta_atras_restante_s > 0:
-                self._cuenta_atras_restante_s = max(
-                    0.0, self._cuenta_atras_restante_s - delta
-                )
-                # Igual que en `avanzar`: reloj quieto en el inicio, nada se cobra.
+            if delta < self._cuenta_atras_restante_s:
+                # La cuenta se come el cuadro ENTERO y sigue viva. Igual que en
+                # `avanzar`: reloj quieto en el inicio, nada se cobra.
+                self._cuenta_atras_restante_s -= delta
                 self._seguidor.avanzar_a(self._inicio_s())
                 return self.estado
+            if self._cuenta_atras_restante_s > 0:
+                # **LA CUENTA SE ACABA DENTRO DE ESTE CUADRO, Y LO QUE SOBRA DEL
+                # CUADRO YA ES TIEMPO DEL TRAMO: se le entrega al reloj AQUI.** Es
+                # la segunda mitad del arrastre que el bucle CON cuenta atras tenia
+                # (la primera esta en `_dar_la_vuelta`), y era un cuadro de analisis
+                # entero por vuelta -21 ms a la cadencia de produccion-: el cuadro
+                # que agotaba la cuenta volvia con el reloj clavado en el inicio y
+                # la correspondencia sin fijar, asi que el reloj no empezaba a
+                # correr hasta el cuadro SIGUIENTE y se perdia lo que `sobra` mide.
+                # Es el mismo cuadro congelado que la T7 le quito a la vuelta del
+                # bucle, aqui por el camino de la cuenta.
+                #
+                # **Y NO HACE FALTA NI UNA PUERTA NUEVA NI TOCAR NINGUN CONTRATO**,
+                # que es lo que hace a esta la version barata: el `avanzar_a` es
+                # ORDINARIO -sin frontera ni correspondencia- y la correspondencia
+                # la escribe el `procesar` de abajo, en este mismo cuadro, desde el
+                # reloj que acabamos de dejar (`SeguidorPieza.procesar`: «si
+                # `_origen_analisis` es None, se fija con el instante de este
+                # cuadro»). El salto ordinario sigue DESCARTANDO lo que estuviera en
+                # vuelo y sigue poniendo `_analisis_desde` en este cuadro, que es
+                # literalmente «durante la cuenta atras no se cobra nada»: lo
+                # atacado antes de que la cuenta se agotara no se anota ni va a la
+                # cola.
+                sobra = delta - self._cuenta_atras_restante_s
+                self._cuenta_atras_restante_s = 0.0
+                self._seguidor.avanzar_a(self._inicio_s() + sobra)
             self._seguidor.procesar(resultado, instante_analisis)
+            # Cobrar ANTES de `_al_dia`, porque lo que el seguidor acaba de
+            # retener es de la vuelta que cerro la vez ANTERIOR: si este mismo
+            # cuadro diera OTRA vuelta, `_ultima_vuelta` ya seria la nueva y la
+            # cola iria al informe equivocado.
+            #
+            # Y el orden es gratis, no estructural: para que importe, un mismo
+            # cuadro tiene que resolver una nota retenida Y cruzar el final de la
+            # vuelta siguiente, o sea que la vuelta entera tiene que durar menos
+            # que lo que el detector tarda en firmar un ataque
+            # (`VENTANA_ATAQUE_COMO_ONSET_S`, 250 ms). Eso pide un compas de 0,24 s
+            # -un 4/4 a 1000 ppm, o un 1/4 a 250- y por eso NO hay prueba que lo
+            # cubra: se escribe el orden correcto porque cuesta lo mismo, y se
+            # escribe aqui que no esta medido para que nadie lo lea como una carga
+            # que lo esta.
+            self._cobrar_la_cola()
             self._al_dia(avanzando=True, con_audio=True)
             return self.estado
 
@@ -758,6 +1075,7 @@ class SesionDeEstudio:
             # La ultima vuelta es de la pasada que se acaba: dejarla alli metaria
             # una repeticion fantasma en el historial de la pasada nueva.
             self._ultima_vuelta = None
+            self._tocadas_de_la_vuelta = ()
             self._repeticion = 1
             self._tramo_terminado = False
             self._analisis_al_acabar = None
@@ -785,11 +1103,35 @@ class SesionDeEstudio:
             return self.estado
 
     def pausar(self) -> None:
-        """Pausa a voluntad del usuario. No es lo mismo que perder la senal."""
-        self._en_pausa = True
+        """Pausa a voluntad del usuario. No es lo mismo que perder la senal.
+
+        **BAJO CANDADO, y no por simetria.** El interruptor es una sola
+        asignacion y por tanto atomica, asi que lo que el candado compra no es la
+        asignacion: es que la pausa no pueda caer EN MEDIO de un cuadro. Esto lo
+        llama el hilo HTTP y `procesar` corre en el del analisis, que lee
+        `_en_pausa` al entrar y mueve el reloj despues; sin candado, una pausa que
+        se colara entre esas dos cosas volvia con el cabezal todavia por mover y
+        el cuadro lo movia DESPUES, o sea que el reloj avanzaba despues de que
+        `pausar()` hubiera vuelto. Con el candado, `pausar()` espera a que el
+        cuadro en vuelo termine y a partir de que vuelve el reloj esta quieto, que
+        es lo que la interfaz promete al pintar el boton.
+
+        El candado es reentrante (ver el docstring de la clase), asi que llamar a
+        esto desde dentro de otro metodo que ya lo tenga tomado no se bloquea.
+        """
+        with self._candado:
+            self._en_pausa = True
 
     def reanudar(self) -> None:
-        self._en_pausa = False
+        """Quita la pausa del usuario. BAJO CANDADO, por lo mismo que `pausar`.
+
+        Reanudar no mueve el cabezal ni un milimetro -el tiempo que no se conto no
+        se suma, ver `avanzar`-, asi que lo que el candado ordena aqui es la otra
+        mitad: que el primer cuadro que vuelva a contar sea entero y no uno que ya
+        estaba a medio camino de descartarse por la pausa.
+        """
+        with self._candado:
+            self._en_pausa = False
 
     # -- el informe --------------------------------------------------------
 
@@ -902,6 +1244,12 @@ class SesionDeEstudio:
         bucle. Contarlas inflaria `repeticiones` y hundiria `proporcion_limpia`
         cada vez que el usuario moviera el deslizador del tempo.
 
+        Y lo usa un tercero, que es el que delato el defecto: `ConductorDeEstudio`
+        al cerrar un tramo **sin bucle**. Esa pasada tiene UNA vuelta, la que el
+        `+1` de `informe` ya cuenta; sumarle otra dejaba `repeticiones=2` con el
+        seguidor ya vacio, o sea el denominador doblado y el numerador quieto:
+        ocho notas limpias de ocho salian 0,5.
+
         Vaciar el seguidor despues es lo que impide contar dos veces: el informe
         suma lo acumulado MAS lo que el seguidor tenga.
 
@@ -969,15 +1317,25 @@ class HistorialDeEstudio:
         se puede medir una nota de cada acorde, asi que saldrian fallados siempre
         y el boton de machacar mandaria al usuario justo a los compases que nunca
         podra pasar.
+
+        **LAS NOTAS MEDIBLES SE MULTIPLICAN POR LAS REPETICIONES DEL INFORME**, y
+        por lo mismo que en `proporcion_limpia`: `limpias` acumula TODAS las
+        vueltas que el informe lleva dentro y `notas_medibles` es lo que hay
+        escrito en el compas, que no se repite. Sin multiplicar, un informe de
+        cuatro vueltas con un compas de cuatro notas daba el compas por bueno con
+        **cuatro limpias de las dieciseis** que se tocaron -tres vueltas enteras
+        falladas-, y el boton de machacar no lo nominaba nunca. Era el defecto 4
+        del §8.
         """
         fallos: dict[int, list[int]] = {}
         for informe in self._pasadas:
+            vueltas = max(1, informe.repeticiones)
             for compas in informe.compases:
                 if compas.tiene_acordes:
                     continue
                 marca = fallos.setdefault(compas.numero, [0, 0])
                 marca[1] += 1
-                if compas.limpias < compas.notas_medibles:
+                if compas.limpias < compas.notas_medibles * vueltas:
                     marca[0] += 1
         ordenados = sorted(
             ((numero, fallo, contadas) for numero, (fallo, contadas) in fallos.items()),

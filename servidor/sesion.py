@@ -15,6 +15,9 @@ from typing import Callable
 
 from nucleo.afinaciones import PERFILES
 from nucleo.analisis.energia import nivel_dbfs
+from nucleo.analisis.pipeline import (
+    INTERVALO_DE_ANALISIS_S as INTERVALO_ANALISIS,
+)
 from nucleo.analisis.pipeline import Analizador, ResultadoAnalisis
 from nucleo.captura import CapturaAudio, buscar_rocksmith, listar_dispositivos_entrada
 from servidor.configuracion import Configuracion, calibrar_umbral
@@ -22,12 +25,12 @@ from servidor.diagnostico import Diagnostico, diagnosticar
 
 _registro = logging.getLogger(__name__)
 
-# Cada cuánto analiza el hilo de trabajo. 512/48000 ≈ 10,67 ms es lo que tarda en
-# llegar un bloque; 21 ms son unos 1024, es decir dos bloques. No hace falta
-# analizar a la cadencia exacta de los bloques: la emisión posterior hacia la
-# interfaz va a 30 Hz (unos 33 ms), así que analizar más a menudo que eso no
-# añadiría información visible, solo gastaría CPU.
-INTERVALO_ANALISIS = 0.021
+# Cada cuánto analiza el hilo de trabajo. La constante vive en el núcleo
+# (`nucleo.analisis.pipeline.INTERVALO_DE_ANALISIS_S`) y aquí se reexporta con su
+# nombre de siempre, porque el otro alimentador del análisis es la cadena directa
+# del gemelo digital y dos copias de la cadencia que gobierna la calibración del
+# detector se separan tarde o temprano. Es el mismo reparto que `TECHO_TRAMO_S`,
+# que vive en `nucleo/piezas/conductor.py` y `servidor/piezas.py` reexporta.
 
 # Espera entre intentos de abrir el dispositivo. Dos segundos es suficiente para
 # que enchufar el cable se note casi al instante y lo bastante largo para no
@@ -180,12 +183,18 @@ class Sesion:
         """
         return self._falta_senal_confirmada()
 
-    def diagnostico(self, nivel_db: float | None = None) -> Diagnostico:
+    def diagnostico(
+        self, nivel_db: float | None = None, esperando_notas: bool = True
+    ) -> Diagnostico:
         """Estado actual del montaje.
 
         Nunca devuelve "ok" si la sesión no está capturando: decir que todo está
         bien con la captura cerrada es justo la mentira que dejaba al usuario
         mirando una pantalla muerta con un mensaje tranquilizador.
+
+        `esperando_notas` viaja tal cual hasta `diagnosticar`, que es donde la
+        regla vive y está explicada: esta sesión no sabe si hay una pieza en marcha
+        -eso es del carril- y no es quien para decidirlo.
         """
         self._anotar_nivel(nivel_db)
         # Solo se acusa de falta de señal cuando lleva más de 5 s seguidos por
@@ -230,6 +239,7 @@ class Sesion:
             nivel_efectivo,
             self.configuracion.umbral_ruido_dbfs,
             rocksmith,
+            esperando_notas,
         )
         if sustituido:
             # Usar otro dispositivo que el elegido no se hace en silencio.

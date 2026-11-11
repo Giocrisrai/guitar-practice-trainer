@@ -41,6 +41,12 @@ export interface EstadoEstudio extends EstadoCarril {
   compas_variable: boolean;
   ritmo_aproximado: boolean;
   tramo_terminado: boolean;
+  /** Si el silencio de ahora mismo puede ser una avería del cable. Lo decide el
+   * servidor (`se_esperan_notas`, en `servidor/piezas.py`) y de él cuelgan las DOS
+   * mitades del mismo aviso: el `sin_senal` de `/api/diagnostico` y la línea
+   * naranja del carril. **No se recalcula aquí**: estaba escrito dos veces, las
+   * dos reglas no eran la misma, y un comentario del JSX afirmaba que sí. */
+  esperando_notas: boolean;
   /** Lo que SUENA, no lo que se pidió: `false` sin salida de audio aunque el plan
    * diga `con_click`. */
   click_sonando: boolean;

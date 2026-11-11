@@ -6,7 +6,9 @@ monofónicos (escalas, arpegios, intervalos y lectura) con corrección de nota,
 afinación y tempo. Etapa 3a: el carril, para tocar una pieza con la música
 corriendo. Etapa 3b: importar canciones de Guitar Pro, MusicXML, MIDI y
 tablatura de texto. Etapa 3c: practicar la pieza con compases, bucles y tempo
-ajustable.
+ajustable. Etapa 3d: un **gemelo digital** —un guitarrista sintético que genera
+audio de verdad y lo mete por donde entra el cable— para poder ver la sesión
+correr sin tener la guitarra enchufada.
 
 ## Requisitos
 
@@ -143,6 +145,25 @@ El carril se pausa por dos reglas distintas:
   él (o sin permiso de micrófono). La sesión revisa cada segundo si el dispositivo
   sigue ahí, así que al desenchufar el carril se pausa en cosa de un segundo, no
   de cinco; al arrancar sin captura, desde el primer momento.
+
+**Pausarse no es acusarte del silencio.** El aviso «no llega señal del cable» —en
+la barra de diagnóstico y en el carril, que son dos mitades de lo mismo— sale
+cuando el silencio puede ser una avería: la pasada en marcha y el cable sin
+entregar una sola muestra, estés tocando o en pausa. **No** sale cuando el cable
+ya entregó señal en esta pasada y luego te callas, que es lo que hace quien
+descansa la mano entre dos vueltas de un bucle: ahí «sube el volumen de la
+guitarra» sería falso, y un aviso falso justo cuando más se ve es un aviso que se
+deja de leer. Tampoco sale con la pieza terminada. El carril se pausa igual en
+todos los casos y sigue donde estaba en cuanto vuelves a tocar.
+
+**El precio de esa regla, dicho en claro:** si el cable se rompe *a mitad* de la
+pasada —el jack se afloja, el volumen de la guitarra se va a cero— el aviso **no**
+sale, porque el cable ya había entregado señal y para el programa eres tú quien
+ha dejado de tocar. Verás el carril pausado y ningún texto naranja. Es una
+elección deliberada: silenciar un fallo poco frecuente que notas en cuanto miras
+el cable, a cambio de no gritarte en falso cada vez que descansas la mano en un
+bucle, que es lo que se hace en cada sesión de práctica. Si el carril se pausa y
+no entiendes por qué, lo primero que hay que mirar es el jack.
 
 **Hay cuenta atrás desde el primer compás, y no hay metrónomo salvo que lo
 pidas.** El plan de fábrica trae **un compás de cuenta atrás** antes de la primera
@@ -309,6 +330,21 @@ pista, así que es su afinación la que decide: un `.gp5` con la pista 1 en est�
 la pista 2 en Drop C avisa al elegir la segunda y no al abrir la canción. Mientras no
 has elegido ninguna, el aviso es el de la primera pista usable, que es la que se
 importaría si no eliges otra.
+
+> **El bajo está en el selector y el carril no lo acompaña todavía.** `bajo_4` y
+> `bajo_5` son perfiles de fábrica, pero el carril se equivoca en casi cada nota
+> con ellos, y está medido en esta etapa (no es una sospecha): la ventana de
+> análisis de un bajo son 8192 muestras —**170,7 ms**— y con ella el margen de la
+> racha estable del detector se queda en **cero**, así que el ataque se sella con
+> la altura de la nota ANTERIOR; y esos mismos 170,7 ms empujan el retraso de la
+> cadena por encima de los 250 ms que el detector admite para seguir hablando del
+> mismo ataque, de modo que la pasada entera se desadjudica (**30 de 30** semillas
+> sucias en la medición). El afinador sí funciona: lo que no funciona es seguir
+> una pieza con el carril. Si tocas el bajo, afínalo y úsalo en el afinador, pero
+> cuenta con que el carril no te va a marcar bien hasta que esto se arregle. Está
+> declarado con todas las letras en `nucleo/ejercicios/pulsaciones.py`, y el
+> gemelo digital —la herramienta con la que se comprobaría— solo sabe de guitarra
+> estándar.
 
 **El aviso funciona también con una afinación que no es de fábrica**, y a la
 primera. De fábrica son estándar, Drop D y los dos bajos; una canción en Drop C no
@@ -481,10 +517,14 @@ canción, no un dato perdido.
 - **En una pieza con ritmo aproximado** —las tablaturas de texto— el ritmo lo
   infirió el lector de la etapa 3b, así que medir el desfase contra él no es un
   diagnóstico de fiar. El informe lo avisa en la cabecera.
-- **Marcar el rango arrastrando sobre la rejilla no funciona en pantalla
-  táctil.** Está hecho para el ratón (se practica en un MacBook). En una tableta
-  queda el selector de secciones, que no necesita arrastrar, pero solo sirve si el
-  archivo trae marcadores: para un rango cualquiera no hay otra manera todavía.
+- **Marcar el rango arrastrando sobre la rejilla ya funciona con el dedo**
+  (arreglado en la 3d). Estaba hecho solo para el ratón: en táctil el navegador le
+  da al compás donde se pulsa la captura del puntero, así que el arrastre no
+  pasaba de ese compás. Ahora la rejilla suelta esa captura y escucha
+  `pointermove`, y cada compás lleva `touch-action: none` para que el gesto no se
+  lo quede el scroll de la página. **Probado en jsdom, no en un teléfono de
+  verdad**: lo que se puede afirmar es que el arrastre marca el rango y que el
+  gesto no se va al scroll, no cómo se siente con el dedo.
 - **En un compás cuyo denominador no es 4, el acento del click se redondea.** El
   metrónomo da un click por negra, así que acentúa cada número **entero** de
   pulsos: en 6/8 acierta (3 negras), y en 7/8 el compás son 3,5 negras y el acento
@@ -495,7 +535,7 @@ canción, no un dato perdido.
   dice solo que el tramo terminó y lo que se tocó se lee en el informe por
   compases, que sí sabe qué notas son del tramo.
 - **La pieza no suena de fondo.** Solo se oye tu guitarra (y el click, si lo
-  pides): que la pieza suene mientras la sigues es la etapa siguiente.
+  pides): que la pieza suene mientras la sigues es la **etapa 3e**.
 - **Nada de esto se ha probado con la guitarra en las manos**: lo que hay son
   pruebas automáticas. Siguen pendientes de ensayo real si la cuenta atrás de un
   compás da tiempo a colocar la mano, si el click acentuado ayuda o estorba, si
@@ -508,6 +548,151 @@ bucle**, al revés que el *Riff Repeater* de Rocksmith: Carter y Grahn (2016,
 encontraron que gana la intercalada —y, de propina, que la mayoría de los
 participantes creía lo contrario—. **Son diez sujetos**: es una señal, no una
 ley. El bucle está porque es lo que se pidió; la alternancia no está construida.
+
+## El gemelo digital: verse tocar sin tocar
+
+```bash
+uv run python -m herramientas.gemelo
+```
+
+Levanta el servidor de verdad, le enchufa un **guitarrista sintético** por donde
+entra el audio del cable y toca la pieza de demostración solo. Sirve para lo que
+las pruebas automáticas no contestan: **ver la sesión correr** —el carril, la
+rejilla, el informe por compases— y opinar sobre si engancha, sin tener la
+guitarra enchufada y sin tocar una nota. Nadie toca: todo lo que suena lo genera
+el gemelo, y el dispositivo se anuncia como «(gemelo)» en el diagnóstico para
+que ningún informe se pueda leer como una pasada real.
+
+Abre `http://127.0.0.1:8420` en cuanto el escaparate imprima la dirección: la
+pasada de la pieza de demostración dura unos 30 segundos y es lo que hay que
+mirar. Si llegas tarde no pasa nada —el servidor sigue contestando mientras el
+proceso viva—, pero la pasada solo se ve moverse una vez. La pieza por omisión
+**se construye en código**: no hay ni habrá archivos de terceros en el
+repositorio.
+
+Opciones:
+
+- `--perfil`: destreza del guitarrista sintético —`perfecto`, `principiante`,
+  `intermedio`, `caos`—. Por omisión, `perfecto`.
+- `--tempo FACTOR`: factor sobre el tempo escrito; `0.5` es tocarla al doble de
+  lento.
+- `--bucle PRIMERO-ULTIMO`: tramo de compases a estudiar; un solo número es ese
+  compás (`--bucle 17`).
+- `--repeticiones N`: vueltas al tramo. La pasada se da por acabada cuando el
+  carril pasa de la última vuelta pedida.
+- `--cuenta-atras COMPASES`: compases de cuenta atrás antes de cada vuelta.
+- `--semilla N`: la semilla del azar del intérprete, para repetir una pasada.
+- `--pieza RUTA`: toca un archivo tuyo (Guitar Pro, MIDI, MusicXML, tablatura de
+  texto) en vez de la pieza de demostración. Se lee de donde esté; no se copia a
+  ninguna parte. **Toca siempre la PISTA 1 y no se puede elegir otra**: si la
+  primera pista de tu `.gp5` es la batería o el bajo, la demostración no tendrá
+  ningún sentido (el servidor sí deja elegir pista; el escaparate todavía no).
+  Y una canción de verdad trae acordes y notas repetidas, que el veredicto
+  **excluye** y cuenta aparte: con un archivo tuyo el número de `excluidas` deja
+  de ser cero y lo que el veredicto juzga es menos que lo que suena. La pieza de
+  demostración no tiene ni acordes ni repetidas, así que ese camino solo está
+  recorrido por las pruebas de unidad.
+- `--puerto`: el puerto del servidor (por omisión 8420).
+- `--salir-al-acabar`: terminar en cuanto la pasada acaba, que es la forma de
+  usarlo desde un script. Sin esta bandera el proceso se queda en primer plano
+  **con el servidor todavía contestando**, así que el navegador se puede abrir
+  también después de que el resumen aparezca (Ctrl+C para salir).
+
+**Los tres códigos de salida valen en los dos modos**: `0` si el veredicto sale
+limpio, `1` si la cadena tiene hallazgos o la pasada no se completó, y `2` si la
+demostración no llegó a montarse. Sin la bandera, el `Ctrl+C` con que cierras el
+escaparate devuelve el código del veredicto que acabas de leer, no un error: antes
+devolvía siempre `2` —«no llegó a montarse»— sobre una pasada completada y con su
+veredicto impreso en pantalla.
+
+### Que salga con código 1 y el perfil perfecto NO es un fallo
+
+La sesión completa publica su peor ataque **entre 236 y 250 ms** después de que
+la nota sonara, contra los **250 ms** que el detector admite para seguir
+hablando del mismo ataque: **margen cero**. De ahí salen una o dos notas sin
+emparejar en algunas pasadas, el veredicto sale «CON HALLAZGOS» y el proceso
+devuelve 1 aunque el gemelo haya tocado las 48 notas escritas.
+
+> **Y dos ejecuciones idénticas pueden dar veredictos distintos: el veredicto del
+> escaparate NO es reproducible.** Con margen cero, lo que decide de qué lado cae
+> cada nota no es la cadena sino el planificador de hilos del sistema. Medido en
+> cuatro pasadas: tres planes distintos dieron peores desfases de **+249,7**,
+> **+249,9** y **+250,0 ms** contra el techo de 250 —con 1, 3 y 2 notas sin
+> emparejar—, y una cuarta pasada del **mismo plan** que la de +250,0 dio
+> **+230,1 ms** y 3 notas. Así que si corres el escaparate dos veces y ves 1
+> pérdida y luego 3, no ha cambiado nada: es este margen. Lo que el gemelo mide de
+> forma estable es lo que la suite afirma con sus rangos; el número de una pasada
+> suelta no es un dato del programa. (La semilla con `--semilla` fija el azar del
+> INTÉRPRETE —lo que se toca sale igual byte a byte—, no el reparto de hilos del
+> servidor, que es lo que varía.)
+
+El escaparate **imprime un aviso** explicándolo junto al veredicto —solo con el
+perfil perfecto, solo si la pasada fue la pieza **entera, una vez** y el gemelo
+tocó todo lo escrito—, y aquí se dice también para que nadie lea ese 1 como «el
+programa se equivocó de nota». La tolerancia **no** se afloja para que el código
+sea cero: la demostración dice lo que mide. Con cualquier otro perfil los
+hallazgos sí son del intérprete.
+
+**Con `--bucle` ese aviso no sale, y es a propósito.** En un bucle, perder la
+última nota de cada vuelta es un mecanismo propio del bucle con su propia causa
+—está más abajo—, así que el borde del detector no lo explica y el aviso callaría
+diciendo algo falso. Lo decía: con `--bucle 1-6 --repeticiones 2` sobre la pieza
+de demostración afirmaba «el gemelo tocó las 48 notas de las 48 escritas» de una
+pasada que tocó 24 dos veces.
+
+### Los milisegundos de esta etapa son más benignos que el programa real
+
+**El gemelo es unos 30 ms más benigno que la cadena de producción, y está
+medido.** El hilo de análisis del servidor no corre a los 21 ms que declara su
+constante, sino a unos 30 (mediana 29,91 ms sobre 133 cuadros seguidos): espera
+con `Event.wait(0,021)` y en este equipo esa espera tarda 27 ms —macOS agrupa los
+temporizadores—. No es el trabajo: analizar la ventana cuesta 0,15 ms. Es un
+**defecto abierto**, no una decisión, y está nombrado en
+`nucleo/gemelo/cadena.py`; el arreglo —esperar con plazo acumulado— obliga a
+remedir la etapa entera. **Hoy no hay ninguna prueba que vigile esa cadencia.**
+Así que cualquier milisegundo que salga de esta etapa **subestima la cadena real
+en ese tanto**: la cadena a cadencia nominal publica los ataques entre 18 y 44 ms
+antes que la sesión completa.
+
+### El gemelo NO sustituye la prueba con el cable
+
+Lo que el gemelo verifica es que la cadena ve lo que pasó y nada más. **Si el
+sonido sintético no se parece bastante a una guitarra real, la cadena aprueba con
+él y falla con el cable**, y eso el gemelo no lo puede saber. La lista de cosas
+que **solo la guitarra en las manos** puede juzgar —si la cuenta atrás de un
+compás da tiempo a colocar la mano, si el click acentuado ayuda o estorba, si los
+pasos del 5 % son finos o bastos, si la digitación sale cómoda, si engancha—
+**sigue entera y pendiente**. El diseño lo dice en sus no-objetivos:
+[`docs/superpowers/specs/2026-11-02-gemelo-digital-design.md`](docs/superpowers/specs/2026-11-02-gemelo-digital-design.md).
+
+### Dos cosas que el escaparate hacía mal y ya no
+
+Las dos las encontró la verificación del README corriendo las órdenes como las
+corre el usuario, y las dos están arregladas. Se cuentan aquí porque el
+comportamiento de antes era desconcertante y alguien puede recordarlo.
+
+- **El servidor sigue contestando mientras el proceso vive.** Antes se cerraba en
+  el mismo instante en que se imprimía el veredicto (medido: a los 27,7 s de una
+  pasada de la pieza de demostración), así que el navegador que se abriera después
+  recibía «conexión rechazada» —justo lo natural de hacer, porque el resumen acaba
+  de aparecer— y el mensaje «la pantalla se queda donde está para que puedas
+  mirarla» prometía más de lo que hacía. Ahora el resumen y la espera ocurren con
+  el servidor en pie: remedido con un sondeo cada segundo, el veredicto se imprime
+  a los 7 s y el puerto sigue contestando a los 33 s, hasta que se corta el
+  proceso. Con `--salir-al-acabar` se apaga limpio, como siempre.
+- **`--repeticiones` mayor que 1 se da por completada.** Antes el escaparate
+  esperaba a que el estado publicase `completado`, y un tramo en bucle no lo
+  publica nunca: la pasada se cortaba al agotarse el margen, el resumen decía «SIN
+  COMPLETAR» y el proceso devolvía 1 aunque todo hubiera ido bien. Ahora la pasada
+  acaba cuando el carril pasa de la última vuelta pedida. Remedido con
+  `--bucle 2-3 --repeticiones 2`: «pasada: completada», 16 notas tocadas (las 8 del
+  tramo, dos veces).
+
+  Lo que sigue siendo así, y es del bucle y no del escaparate: **la última nota de
+  cada vuelta puede quedarse sin emparejar**. La cadena tarda unos 190 ms en
+  publicar un ataque y al dar la vuelta el seguidor olvida el tramo, así que ese
+  reporte llega cuando su nota ya no se puede reclamar. Está declarado en
+  `nucleo/gemelo/veredicto.py` y medido en `tests/test_gemelo_bucle.py`.
 
 ## Verificar el cable
 
@@ -551,16 +736,21 @@ grabaciones todavía no existen, así que esas pruebas aparecen como saltadas
 - `canciones/` — tu biblioteca. **No está en git**: son archivos de terceros. La
   crea el servidor al guardar la primera canción.
 - `interfaz/` — React + Vite.
-- `herramientas/` — utilidades de línea de comandos.
+- `nucleo/gemelo/` — el gemelo digital: la cuerda sintética, el intérprete, el
+  cable falso y el veredicto. Python puro, como el resto del núcleo.
+- `herramientas/` — utilidades de línea de comandos, incluido el escaparate del
+  gemelo (`herramientas/gemelo.py`).
 - `docs/superpowers/` — especificación y plan.
 
 ## Estado
 
-Etapas 1, 2a, 3a, 3b y 3c completas, con la salvedad de que las cinco
+Etapas 1, 2a, 3a, 3b, 3c y 3d completas, con la salvedad de que las cinco
 comprobaciones de la 3b que necesitan la guitarra y archivos reales siguen
-pendientes (están listadas en **Canciones**), y que la 3c tampoco se ha probado
-con el cable. Las siguientes, según el diseño:
+pendientes (están listadas en **Canciones**), y que **nada se ha probado con el
+cable todavía**: el gemelo digital de la 3d deja ver la sesión correr, pero no
+sustituye esa prueba (ver **El gemelo digital**). Las siguientes, según el
+diseño:
 
 2b. Ejercicios de acordes
-3d. La pieza sonando de fondo mientras la sigues (la etapa siguiente a la 3c)
+3e. La pieza sonando de fondo mientras la sigues (la etapa siguiente a la 3d)
 4. Grabación de sesiones, medición de progreso, entrenamiento de oído y efectos

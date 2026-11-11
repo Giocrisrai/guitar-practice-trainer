@@ -24,8 +24,20 @@ SALTO_ATAQUE_DB = 6.0
 # marcaria dos o tres ataques y el ejercicio avanzaria solo.
 REFRACTARIO_S = 0.050
 
-# Cuanto espera el evaluador tras un ataque antes de leer la nota. Justo en el
-# ataque la senal es caotica y la frecuencia poco fiable.
+# Lo MINIMO que espera el detector de pulsaciones tras un ataque antes de poder
+# leer la nota. Justo en el ataque la senal es caotica y la frecuencia poco
+# fiable.
+#
+# ES UN SUELO, NO LA ESPERA. Desde la Task 6c, el camino A de
+# `DetectorPulsaciones` no lee en el primer cuadro posterior a esta espera: lee
+# en el primero posterior EN QUE la nota ya lleva racha estable, y abandona si el
+# ataque envejece mas de `VENTANA_ATAQUE_COMO_ONSET_S`. La razon es que estos
+# 60 ms no alcanzan a cubrir lo que tarda el pipeline en PUBLICAR la altura nueva
+# (85,3 ms de ventana mas 42 ms de suavizador con guitarra estandar), asi que
+# leer justo aqui sellaba el ataque con la altura de la nota anterior. Subir este
+# numero no era la salida: dependeria del perfil de afinacion, porque la ventana
+# lo hace. Esta medido y razonado en el docstring de
+# `nucleo/ejercicios/pulsaciones.py`.
 ESPERA_ESTABILIZACION_S = 0.060
 
 # Cuantos niveles recientes componen la referencia. El valor esta ACOPLADO al

@@ -60,6 +60,27 @@ export function RejillaCompases({
     };
   }, [arrastrando]);
 
+  /**
+   * El dedo arrastra como el raton solo si se SUELTA LA CAPTURA IMPLICITA.
+   *
+   * En tactil el navegador le da al elemento del `pointerdown` la captura del
+   * puntero: desde ese momento todos los `pointermove` y el `pointerup` llegan a
+   * ese mismo compas aunque el dedo ya este sobre otro, y tampoco hay
+   * `pointerenter` en los vecinos. Por eso el arrastre funcionaba con raton (que
+   * no captura) y en el telefono solo marcaba el compas donde se habia pulsado.
+   * Soltando la captura, los eventos vuelven a ir al elemento de debajo del dedo.
+   *
+   * Se pregunta antes por `hasPointerCapture` porque soltar una captura que no
+   * existe -el caso del raton- es un `NotFoundError`, y se comprueba que los dos
+   * metodos existan porque jsdom (las pruebas) no implementa ninguno.
+   */
+  const soltarCaptura = (elemento: HTMLElement, puntero: number) => {
+    if (typeof elemento.hasPointerCapture !== "function") return;
+    if (typeof elemento.releasePointerCapture !== "function") return;
+    if (!elemento.hasPointerCapture(puntero)) return;
+    elemento.releasePointerCapture(puntero);
+  };
+
   if (total === 0) return null;
 
   const compases = Array.from({ length: total }, (_, i) => i + 1);
@@ -99,11 +120,21 @@ export function RejillaCompases({
                 .join(" ")}
               aria-current={numero === enCurso ? "true" : undefined}
               aria-label={`Compás ${numero}`}
-              onPointerDown={() => {
+              // `touch-action` NO se hereda: va en el elemento que el dedo toca.
+              // Sin esto el navegador se queda el gesto para hacer scroll de la
+              // pagina y el arrastre no llega a existir en el telefono.
+              style={{ touchAction: "none" }}
+              onPointerDown={(evento) => {
+                soltarCaptura(evento.currentTarget, evento.pointerId);
                 setDesde(numero);
                 setHasta(numero);
               }}
               onPointerEnter={() => {
+                if (desde !== null) setHasta(numero);
+              }}
+              // El dedo no manda `pointerenter` a los vecinos: el unico aviso de
+              // que paso por aqui es el `pointermove` (ya sin captura).
+              onPointerMove={() => {
                 if (desde !== null) setHasta(numero);
               }}
               onPointerUp={() => soltar(numero)}

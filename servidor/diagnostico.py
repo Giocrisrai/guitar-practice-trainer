@@ -37,6 +37,7 @@ def diagnosticar(
     nivel_db: float | None = None,
     umbral_dbfs: float = -60.0,
     rocksmith: DispositivoAudio | None = None,
+    esperando_notas: bool = True,
 ) -> Diagnostico:
     """Determina en cuál de los cinco estados está el montaje.
 
@@ -58,6 +59,28 @@ def diagnosticar(
     rocksmith es el cable Rocksmith encontrado por nombre en la lista, esté o no
     en uso; se usa solo para distinguir "otro_dispositivo" de una elección
     deliberada sin el cable presente.
+
+    **esperando_notas en False SILENCIA "sin_senal", y nada más.** Es si el
+    silencio de ahora mismo puede ser una avería del montaje. Con la pieza
+    terminada, o con el cable habiendo entregado señal hace un momento, no lo es:
+    el usuario acababa la pasada —o descansaba la mano entre dos vueltas del
+    bucle—, dejaba de tocar unos segundos y la pantalla le decía que subiera el
+    volumen de una guitarra que estaba perfectamente bien. Un aviso que es falso
+    justo cuando más se ve es un aviso que el usuario deja de leer, y el caso
+    legítimo —está intentando tocar y no llega señal— es el que no se puede perder.
+
+    **LA REGLA ENTERA, con sus cuatro casos y los dos defectos medidos que la
+    fijaron, está en `se_esperan_notas` (`servidor/piezas.py`)**, que es su único
+    sitio: de ahí la leen las dos mitades del mismo aviso, este endpoint y la línea
+    naranja del carril. Aquí no se decide nada; aquí se obedece.
+
+    Se distingue por ESTADO y no por un temporizador: "lleva un rato callado" es
+    verdad en todos los casos, así que el tiempo no los separa. Quien pregunta es
+    quien sabe si espera notas, y eso es toda la regla.
+
+    Los demás estados NO dependen de esto: que no haya permiso, que el cable no
+    aparezca o que el dispositivo en uso no sea el cable son hechos del montaje, y
+    siguen siendo ciertos mientras nadie toca.
     """
     if not dispositivos:
         return Diagnostico(
@@ -83,7 +106,7 @@ def diagnosticar(
             dispositivos=dispositivos,
         )
 
-    if nivel_db is not None and nivel_db <= umbral_dbfs:
+    if esperando_notas and nivel_db is not None and nivel_db <= umbral_dbfs:
         return Diagnostico(
             estado="sin_senal",
             mensaje="El cable está conectado pero no llega señal.",

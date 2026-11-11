@@ -235,6 +235,13 @@ class SeguidorPieza:
     - `duracion_s`: duracion de la pieza en segundos de la pasada.
     - `olvidar_tramo(desde_s, hasta_s)`: deja sin cobrar las notas de ese tramo
       y borra sus anotaciones, para poder repetir un bucle.
+    - `avanzar_a(instante_s, frontera_del_salto_s=None, instante_analisis_s=None)`:
+      con los dos ultimos, el salto es CONTINUO -la vuelta de un bucle-, trae su
+      correspondencia escrita y las pulsaciones en vuelo no se tiran: las de antes
+      de la frontera se adjudican con el reloj en que se atacaron y se retienen en
+      la COLA.
+    - `recoger_la_cola()`: entrega esas notas retenidas y las olvida. No salen en
+      `estado.tocadas`, que es el tramo que corre.
 
     Candado: este seguidor lleva el suyo (`_candado`) y protege tambien al
     `DetectorPulsaciones`, que no lleva ninguno. `procesar` y `avanzar_a` corren
@@ -350,8 +357,26 @@ class SeguidorPieza:
             # actual es valida: el primer cuadro tras colocar el reloj a mano.
             # Un onset anterior se midio con otra correspondencia (ver `procesar`).
             self._analisis_desde: float | None = None
+            # La correspondencia RETIRADA por el ultimo salto continuo, y el
+            # instante del reloj del analisis en que ese salto fue continuo. Las
+            # dos a None es "no hay salto continuo vigente", que es el caso de
+            # todos los saltos menos la vuelta del bucle (ver `avanzar_a`).
+            self._origen_retirado: float | None = None
+            self._frontera_del_salto: float | None = None
             self._tocadas: list[NotaTocada] = []
+            # La COLA: las pulsaciones que se atacaron antes de la frontera del
+            # ultimo salto continuo y que el detector firmo despues. No son del
+            # tramo que corre, asi que no salen en `estado.tocadas`: se las lleva
+            # `recoger_la_cola`.
+            self._tocadas_de_la_cola: list[NotaTocada] = []
             self._cobradas = np.zeros(len(self._inicios_s), dtype=bool)
+            # Lo que la cola ya cobro, aparte de `_cobradas` y a proposito: la
+            # nota de la frontera es de la vuelta que CERRO, asi que la vuelta que
+            # abre tiene que poder cobrar su propia copia de esa misma nota. Lo
+            # que este array impide es que dos pulsaciones DE LA COLA se lleven la
+            # misma nota; lo que la vuelta que cierra ya tenia cobrado no se puede
+            # saber desde aqui (ver `avanzar_a`).
+            self._cobradas_de_la_cola = np.zeros(len(self._inicios_s), dtype=bool)
 
     @property
     def factor_tempo(self) -> float:
@@ -395,7 +420,29 @@ class SeguidorPieza:
                 tocadas=tuple(self._tocadas),
             )
 
-    def avanzar_a(self, instante_s: float) -> EstadoCarril:
+    def recoger_la_cola(self) -> tuple[NotaTocada, ...]:
+        """Las notas que se atacaron ANTES del ultimo salto continuo, y las olvida.
+
+        Es la otra mitad de `avanzar_a(..., frontera_del_salto_s=...)`: lo que se
+        retuvo del tramo que se abandono, para que quien dio el salto lo cuente en
+        el informe del tramo al que pertenece. Se entrega UNA vez; la segunda
+        llamada devuelve la tupla vacia.
+
+        NO sale en `estado.tocadas` y es deliberado: el carril pinta el tramo que
+        corre, y una nota de la vuelta anterior pintada sobre la vuelta nueva
+        seria una marca en una nota que todavia no se ha tocado.
+        """
+        with self._candado:
+            cola = tuple(self._tocadas_de_la_cola)
+            self._tocadas_de_la_cola = []
+            return cola
+
+    def avanzar_a(
+        self,
+        instante_s: float,
+        frontera_del_salto_s: float | None = None,
+        instante_analisis_s: float | None = None,
+    ) -> EstadoCarril:
         """Mueve el reloj de la pieza a `instante_s`. No consume audio.
 
         Es la unica forma de mover el reloj sin señal, y por eso es tambien la que
@@ -413,11 +460,98 @@ class SeguidorPieza:
         nota 3 y "a tiempo". Por eso `_adjudicar` descarta los onsets anteriores
         al primer cuadro posterior a este salto: lo que se toco antes de la pausa
         pertenece al tramo que se acaba de abandonar.
+
+        **`frontera_del_salto_s` es la excepcion, y es UNA sola: el salto
+        CONTINUO.** Quien lo pasa esta declarando que el reloj de la pieza vuelve
+        atras pero no se ha ido a ninguna parte -la vuelta de un bucle: el audio
+        sigue sonando sin un corte y ese instante del reloj del ANALISIS es el
+        punto exacto en que el reloj de la pieza paso del final del tramo a su
+        principio-. Y entonces el argumento de arriba no se aplica, porque se sabe
+        DONDE paso cada cosa:
+
+        * Un onset POSTERIOR a la frontera se ataco ya en el tramo nuevo: se
+          adjudica con la correspondencia nueva, que es la que lo coloca bien, en
+          vez de descartarse. Sin esto se perdia la primera nota de cada vuelta
+          cuando su ataque caia en el mismo cuadro que la vuelta: medido con el
+          gemelo, una nota cada tres vueltas con un interprete PERFECTO.
+        * Un onset ANTERIOR se ataco en el tramo que se abandona, asi que se
+          adjudica con la correspondencia RETIRADA -el reloj en que se ataco- y va
+          a la COLA (`recoger_la_cola`), no a `estado.tocadas`. **Una nota
+          pertenece a la vuelta en que se ATACO, no a la vuelta en que el detector
+          la resolvio**, y el detector firma hasta
+          `VENTANA_ATAQUE_COMO_ONSET_S` despues.
+
+        **Y UN SALTO CONTINUO TRAE SU PROPIA CORRESPONDENCIA**
+        (`instante_analisis_s`, el instante del reloj del ANALISIS en que el reloj
+        de la pieza vale `instante_s`, o sea «ahora»). Es obligatorio con
+        `frontera_del_salto_s` y no se acepta sin ella: las dos o ninguna.
+
+        Esto es lo contrario de lo que hace un salto ordinario, y la razon es
+        medida. Un salto ordinario DEJA LA CORRESPONDENCIA SIN FIJAR y la fija el
+        cuadro siguiente, con el reloj donde el salto lo dejo, asi que entre los
+        dos cuadros el reloj de la pieza se queda QUIETO: en un bucle, eso es un
+        cuadro de analisis perdido en cada vuelta -21 ms a la cadencia de
+        produccion- y el arrastre que la Task 7 vino a quitar. Un salto continuo
+        no puede permitirselo, porque el audio no se para para que el reloj
+        espere: el reloj de la pieza es CONTINUO en la frontera y la
+        correspondencia se puede escribir exacta aqui mismo
+        (`instante_analisis_s - instante_s`), sin estimar nada.
+
+        Por eso `_analisis_desde` se fija en la FRONTERA y no en el cuadro
+        siguiente: lo que separa las dos vueltas es el instante en que el reloj
+        paso por el final del tramo, no el cuadro en que se entero nadie.
+
+        Sin `frontera_del_salto_s` -el valor por omision y lo que hacen todos los
+        demas llamadores: colocar, congelar, saltar de compas, la pausa, la cuenta
+        atras, el hueco de audio- el comportamiento es exactamente el de antes:
+        todo lo que estaba en vuelo se descarta y la correspondencia se vuelve a
+        fijar en el cuadro siguiente.
+
+        La frontera NO sobrevive al salto siguiente: un salto ordinario la borra,
+        y con ella la cola que nadie recogio, porque ese tramo ya se abandono de
+        verdad.
+
+        Lanza `ValueError` si se da una de las dos cosas del salto continuo sin la
+        otra: una frontera sin correspondencia dejaria el cuadro congelado que
+        esto existe para no perder, y una correspondencia sin frontera adjudicaria
+        con el reloj nuevo lo que se ataco con el viejo.
         """
+        if (frontera_del_salto_s is None) != (instante_analisis_s is None):
+            raise ValueError(
+                "un salto continuo necesita la frontera Y la correspondencia: "
+                f"frontera={frontera_del_salto_s}, analisis={instante_analisis_s}"
+            )
         with self._candado:
             self._instante_pieza = float(instante_s)
-            self._origen_analisis = None
-            self._analisis_desde = None
+            # La cola arranca sin nada cobrado en CUALQUIER salto, y aqui NO se
+            # hereda lo que el tramo que se abandona llevaba cobrado, aunque
+            # parezca lo natural. **No se puede desde aqui**: quien repite llama a
+            # `olvidar_tramo` antes del salto -es su contrato, para que la vuelta
+            # nueva pueda volver a cobrar- asi que cuando el salto llega
+            # `_cobradas` ya esta a cero y heredarlo seria heredar ceros. Se probo
+            # y se midio: la linea que lo heredaba no la ejecutaba ningun camino y
+            # su mutante no mataba ni una prueba.
+            #
+            # Que una nota ya cobrada por la vuelta que cierra no se vuelva a
+            # cobrar por la cola lo decide, por eso, quien cerro la vuelta:
+            # `SesionDeEstudio._cobrar_la_cola`, que es el unico que sigue
+            # teniendo esa lista. Lo que este array si decide es que dos
+            # pulsaciones DE LA COLA no se adjudiquen a la misma nota.
+            self._cobradas_de_la_cola[:] = False
+            if frontera_del_salto_s is None:
+                self._origen_retirado = None
+                self._frontera_del_salto = None
+                self._tocadas_de_la_cola = []
+                self._origen_analisis = None
+                self._analisis_desde = None
+            else:
+                self._origen_retirado = self._origen_analisis
+                self._frontera_del_salto = float(frontera_del_salto_s)
+                # La correspondencia, escrita y no estimada: el reloj de la pieza
+                # vale `instante_s` en `instante_analisis_s`, y de ahi en adelante
+                # corre con el analisis sin haberse parado un solo cuadro.
+                self._origen_analisis = float(instante_analisis_s) - self._instante_pieza
+                self._analisis_desde = float(frontera_del_salto_s)
             return self.estado
 
     def procesar(self, resultado: ResultadoAnalisis, instante_analisis: float) -> EstadoCarril:
@@ -474,15 +608,22 @@ class SeguidorPieza:
            acertada si coincidia la altura.
         2. La pieza entera esta ya cobrada.
         3. El onset es anterior al primer cuadro de la correspondencia actual, es
-           decir, se toco antes del ultimo `avanzar_a` (ver su docstring).
+           decir, se toco antes del ultimo `avanzar_a` (ver su docstring). **Con
+           una excepcion: el salto CONTINUO**, donde un onset anterior no se
+           descarta sino que se adjudica con el reloj en que se ataco y va a la
+           cola (ver `avanzar_a` y `recoger_la_cola`).
 
         Descartar no es gratis, y se paga en el detector: el ya ha sellado esa nota
         como la ultima resuelta y ha gastado el instante del ataque antes de que
         aqui se decida nada.
         """
-        if not self._cobradas.size or self._cobradas.all():
+        if not self._cobradas.size:
             return
 
+        # Si esta pulsacion es de la COLA -atacada antes de la frontera del ultimo
+        # salto continuo- se adjudica contra otro reloj y contra otro juego de
+        # notas cobradas, asi que se decide antes de buscar nada.
+        de_la_cola = False
         if pulsacion.instante is None:
             instante_onset: float | None = None
             instante_para_buscar = self._instante_pieza
@@ -491,10 +632,19 @@ class SeguidorPieza:
             # faltara, el desfase saldria del tamaño de time.monotonic() y una
             # rama defensiva lo taparia en vez de delatarlo.
             assert self._origen_analisis is not None, "sin correspondencia entre relojes"
+            origen = self._origen_analisis
             if self._analisis_desde is not None and pulsacion.instante < self._analisis_desde:
-                return
-            instante_onset = pulsacion.instante - self._origen_analisis
+                if self._frontera_del_salto is None or self._origen_retirado is None:
+                    return
+                if pulsacion.instante < self._frontera_del_salto:
+                    de_la_cola = True
+                    origen = self._origen_retirado
+            instante_onset = pulsacion.instante - origen
             instante_para_buscar = instante_onset
+
+        cobradas = self._cobradas_de_la_cola if de_la_cola else self._cobradas
+        if cobradas.all():
+            return
 
         midi_tocado = midi_de_nombre(pulsacion.nota)
         # La ventana de reclamo es ASIMETRICA: hacia atras la manda la duracion
@@ -505,7 +655,7 @@ class SeguidorPieza:
         limites = np.where(
             desfases >= 0, self._ventanas_reclamo_s, self._ventana_reclamo_pronto_s
         )
-        reclamables = (~self._cobradas) & (distancias <= limites)
+        reclamables = (~cobradas) & (distancias <= limites)
         if not reclamables.any():
             return
         # La altura primero, la cercania despues. Cuando las notas van a 75 ms unas
@@ -546,7 +696,7 @@ class SeguidorPieza:
         candidatas = coincidentes if coincidentes.any() else reclamables
         indice = int(np.argmin(np.where(candidatas, distancias, np.inf)))
         nota = self.pieza.notas[indice]
-        self._cobradas[indice] = True
+        cobradas[indice] = True
 
         if instante_onset is None:
             desfase: float | None = None
@@ -555,7 +705,8 @@ class SeguidorPieza:
             desfase = float(instante_onset - self._inicios_s[indice])
             clasificacion = self._clasificar(desfase)
 
-        self._tocadas.append(
+        destino = self._tocadas_de_la_cola if de_la_cola else self._tocadas
+        destino.append(
             NotaTocada(
                 indice=indice,
                 midi=midi_tocado,
