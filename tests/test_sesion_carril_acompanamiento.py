@@ -1038,6 +1038,60 @@ def test_sin_voces_el_acompanamiento_suena_tu_parte_y_lo_dice():
     cerrar(sesion_carril, sesion)
 
 
+def test_cargar_sin_decir_volumen_deja_el_fondo_POR_DEBAJO_de_tu_guitarra():
+    """El volumen de fabrica del fondo **se oye**, y por eso se fija aqui.
+
+    `VOLUMEN_DEL_FONDO_POR_OMISION` no es un numero de adorno: es la diferencia
+    entre un acompañamiento y una grabacion que te tapa. A ganancia entera el
+    fondo compite con la guitarra del alumno, deja de oirse los fallos y la
+    pasada entera pierde el sentido -es el anti-objetivo de la etapa por el
+    camino del volumen en vez de por el del microfono-. Nadie lo fijaba: con la
+    constante puesta a 1.0 la suite pasaba entera.
+
+    **El 0,6 se escribe a mano aqui**, no se importa de produccion: una prueba
+    que compare la constante consigo misma pasa con cualquier valor, que es lo
+    que acaba de ocurrir. Y lo que se mide son las MUESTRAS que salen por la
+    salida del fondo contra el render hecho en la prueba, no el campo interno:
+    la pregunta es cuanto suena, no cuanto dice que suena.
+
+    La otra mitad -que esta por debajo de 1- va aparte y con su motivo escrito,
+    porque es la razon de ser del numero y seguiria siendo verdad si mañana se
+    decide otro.
+    """
+    reloj = RelojFalso()
+    sesion_carril, sesion, captura_fondo, _ = carril(reloj)
+    midis = (40, 45, 50, 55)
+    sesion_carril.iniciar(pieza_de([52, 57, 59, 60]), SIN_CUENTA)
+    # SIN decir volumen: lo que se prueba es justo lo que se pone solo.
+    sesion_carril.cargar_acompanamiento(fondo_de(midis=midis))
+    # La instantanea es quien manda sintetizar (`_pedir_el_render`).
+    sesion_carril.estado()
+
+    esperaba = renderizar(
+        (voz_de(midis),),
+        tempo=TEMPO,
+        factor_tempo=1.0,
+        frecuencia_muestreo=MUESTREO,
+    )
+    esperar_el_render(sesion_carril)
+    hechos = captura_fondo.escrituras
+    assert captura_fondo.esperar_escrituras(hechos + 3), "el fondo no llego a sonar"
+    cual = hechos + 1
+    assert captura_fondo.bloques[cual] == BLOQUE
+    escrito = captura_fondo.muestras[cual * BLOQUE : (cual + 1) * BLOQUE]
+    desde = muestra_del_pulso(0.0)
+    rodaja = esperaba.muestras[desde : desde + BLOQUE]
+
+    assert not np.allclose(rodaja, 0.0), "el fondo de la prueba tiene que sonar"
+    assert np.allclose(escrito, rodaja * 0.6, atol=1e-6), (
+        "el fondo recien cargado suena al 0,6 de lo renderizado"
+    )
+    assert np.max(np.abs(escrito)) < np.max(np.abs(rodaja)), (
+        "y por debajo del original: a ganancia entera el fondo tapa al alumno"
+    )
+    cerrar(sesion_carril, sesion)
+
+
 def test_el_volumen_no_toca_el_plan():
     """Veinte cambios de volumen NO cierran ni una repeticion.
 
