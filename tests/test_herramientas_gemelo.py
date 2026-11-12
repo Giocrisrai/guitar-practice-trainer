@@ -1700,13 +1700,24 @@ def _referencia() -> np.ndarray:
 
 
 def _bloques_cortados(referencia, inicios_s, ganancia=0.6):
-    """Los bloques que escribiria el acompañante si estuviera en `inicios_s`."""
-    return [
-        (referencia[int(t * FS_FONDO) : int(t * FS_FONDO) + TAM_BLOQUE] * ganancia).astype(
-            np.float32
-        )
-        for t in inicios_s
-    ]
+    """Los bloques que escribiria el acompañante si estuviera en `inicios_s`.
+
+    **COMO SALEN DE VERDAD, NO COMO SALEN LIMPIOS.** El acompañante corta con
+    `PiezaRenderizada.rodaja` en un indice de muestra entero y arbitrario, y un
+    bloque que cambia de ganancia lleva una RAMPA lineal de 1,0 a la ganancia
+    pedida repartida por sus 1024 muestras (`Acompanante._con_ganancia`). Cortarlos
+    exactos y con ganancia constante probaba el localizador en el unico caso en
+    que el parecido es 1,0000 y el impostor mejor no puede empatar. (Un corte a
+    media muestra, por interpolacion, tambien lo probe: no es como salen los
+    bloques de produccion y el localizador se pierde ahi -13 a 60 ms de error-;
+    ver el informe.)
+    """
+    rampa = np.linspace(1.0, ganancia, TAM_BLOQUE)
+    bloques = []
+    for t in inicios_s:
+        desde = int(t * FS_FONDO)
+        bloques.append((referencia[desde : desde + TAM_BLOQUE] * rampa).astype(np.float32))
+    return bloques
 
 
 def _traza_recta(pps, hasta_s=3.0, paso_s=0.01):
@@ -2212,26 +2223,45 @@ def test_un_desfase_grande_se_mide_y_no_se_recorta():
     assert peor == pytest.approx(300.0, abs=0.1)
 
 
-@pytest.mark.parametrize("desplazamiento_s", [0.495, 0.600, 1.000])
-def test_un_desfase_mayor_que_la_ventana_no_se_publica_como_dato(desplazamiento_s):
-    """**El techo de la medida, declarado.** +495, +600 y +1000 ms: ninguno es un dato.
+@pytest.mark.parametrize(
+    "desplazamiento_s", [0.455, 0.495, 0.600, 1.000, -0.455, -0.495, -0.600]
+)
+def test_un_desfase_mayor_que_la_zona_fiable_no_se_publica_como_dato(desplazamiento_s):
+    """**El techo de la medida, declarado y por los dos lados.**
 
-    El revisor midio sobre la pieza real que +600 ms publicaba +498,8 ms (el borde
-    de la ventana) sin avisar. Ahora el bloque se cuenta como saturado o como sin
-    localizar, y NO entra en el peor: una aserciones `< 150` sobre esta cifra no
-    puede aprobar un desfase de medio segundo.
+    +455, +495, +600 y +1000 ms, y los mismos con signo negativo: ninguno es un
+    dato. El revisor midio sobre la pieza real que +600 ms publicaba +498,8 ms (el
+    borde de la ventana) sin avisar, y que con un borde sin vigilar -el negativo-
+    se publicaba -495 tan tranquilo. Ahora el bloque se cuenta como saturado o
+    como sin localizar y NO entra en el peor: una asercion `< 150` sobre esta cifra
+    no puede aprobar un desfase de medio segundo.
     """
     referencia = _referencia()
     pps = 1.5
 
     peor, medidos, sin_localizar, saturados = desfase_contra_el_cabezal(
-        _bloques_cortados(referencia, [1.0 + desplazamiento_s]), [1.0], referencia,
+        _bloques_cortados(referencia, [1.5 + desplazamiento_s]), [1.5], referencia,
         FS_FONDO, pps, _traza_recta(pps),
     )
 
-    assert medidos == 0, "un desfase fuera de la ventana no se puede medir"
+    assert medidos == 0, "un desfase fuera de la zona fiable no se puede medir"
     assert peor is None
     assert saturados + sin_localizar == 1, "el bloque tiene que contarse en algun sitio"
+
+
+@pytest.mark.parametrize("desplazamiento_s", [0.440, -0.440])
+def test_justo_dentro_de_la_zona_fiable_todavia_se_mide(desplazamiento_s):
+    """La otra cara del corte del 90 %: a 440 ms (por los dos lados) SI se publica."""
+    referencia = _referencia()
+    pps = 1.5
+
+    peor, medidos, _, saturados = desfase_contra_el_cabezal(
+        _bloques_cortados(referencia, [1.5 + desplazamiento_s]), [1.5], referencia,
+        FS_FONDO, pps, _traza_recta(pps),
+    )
+
+    assert (medidos, saturados) == (1, 0)
+    assert peor == pytest.approx(desplazamiento_s * 1000.0, abs=0.5)
 
 
 def test_el_borde_saturado_se_dice_en_el_informe_y_la_salvedad_siempre():
@@ -2433,8 +2463,8 @@ def test_la_atencion_sale_con_cualquiera_de_las_dos_cuentas(sin_localizar, satur
 def test_el_informe_del_fondo_trae_las_tres_cuentas_de_la_medida():
     """Del capturador al informe: un bloque saturado y uno ajeno llegan a sus campos.
 
-    Un bloque cortado 0,495 s por delante del cabezal (saturado) y un ruido ajeno
-    (sin localizar), mas uno bueno: las tres cuentas distintas, para que ninguna
+    Dos bloques cortados 0,495 s por delante del cabezal (saturados), un ruido ajeno
+    (sin localizar) y tres buenos: tres cuentas distintas, para que ninguna
     se pueda intercambiar o perder por el camino sin que se note.
     """
     referencia = _referencia()
@@ -2443,15 +2473,49 @@ def test_el_informe_del_fondo_trae_las_tres_cuentas_de_la_medida():
     capturador = StreamCapturadoAlRitmo(
         reloj=lambda: 1.0 + float(next(ticks)) * 0.0, esperar=lambda s: None
     )
-    for bloque in _bloques_cortados(referencia, [1.0]):  # bueno
+    # Tres medidos, DOS saturados y UNO sin localizar: las tres cuentas distintas
+    # entre si, para que dos campos intercambiados no puedan pasar (con 1, 1 y 1
+    # el intercambio no se veia).
+    for bloque in _bloques_cortados(referencia, [1.0, 1.0, 1.0]):  # buenos
         capturador.write(bloque)
-    for bloque in _bloques_cortados(referencia, [1.495]):  # saturado
+    for bloque in _bloques_cortados(referencia, [1.495, 1.495]):  # saturados
         capturador.write(bloque)
     capturador.write((np.random.default_rng(5).standard_normal(TAM_BLOQUE) * 0.1).astype(np.float32))
 
     informe = informe_del_fondo(capturador, referencia, pps, _traza_recta(pps))
 
-    assert informe.bloques_medidos == 1
-    assert informe.bloques_saturados == 1
+    assert informe.bloques_medidos == 3
+    assert informe.bloques_saturados == 2
     assert informe.bloques_sin_localizar == 1
     assert informe.desfase_maximo_ms == pytest.approx(0.0, abs=0.1)
+
+
+def test_sin_cifra_el_informe_sigue_diciendo_la_salvedad_y_la_atencion():
+    """Cuando no hay numero es cuando mas hace falta explicar por que."""
+    texto = _lineas_texto(
+        InformeDelFondo(0, None, 0, bloques_sin_localizar=4, bloques_saturados=2)
+    )
+
+    assert "sin medir" in texto
+    assert "consistencia interna" in texto and "HTTP" in texto
+    assert "ATENCION" in texto
+    assert "2 bloques saturados" in texto and "4 sin localizar" in texto
+
+
+# N4: el aviso de salida rota tambien con captura.
+def test_una_salida_de_captura_que_no_abre_tambien_se_dice(monkeypatch, capsys):
+    """El aviso no es cosa de `--altavoces`: con captura tambien tiene que decirse."""
+    from nucleo.gemelo.salida import SalidaCapturada
+
+    monkeypatch.setattr(
+        "herramientas.gemelo._salida_del_fondo",
+        lambda altavoces, abrir_stream=None: (
+            SalidaCapturada(fallar_al_abrir=True).salida,
+            None,
+        ),
+    )
+
+    salida = _correr_con_el_carril_real(monkeypatch, capsys, False, None)
+
+    assert "AVISO: la salida del fondo NO abrio" in salida
+    assert "sin dispositivo de audio (simulado)" in salida

@@ -146,17 +146,21 @@ AVISO_DESDE_MS = 230.0
 
 # Cuanto se busca, a cada lado del cabezal, donde sono de verdad un bloque del
 # fondo. **ES UN TECHO DURO DE MEDIDA**: un bloque cuyo desfase real pasa de
-# aqui no se puede medir. Si su mejor parecido cae en el borde de la ventana se
-# cuenta como SATURADO (la cifra real es mayor y el informe lo dice); si no se
-# parece a nada se cuenta como SIN LOCALIZAR. Lo que NO puede hacer nadie es
-# distinguir un desfase mayor que la ventana de un impostor que caiga dentro de
-# ella: por eso la prueba de punta a punta exige cero de las dos cuentas ademas
-# de la cota.
+# aqui no se puede medir. Si su mejor parecido cae fuera de la zona fiable (ver
+# `FRACCION_FIABLE_DE_LA_VENTANA`) se cuenta como SATURADO (la cifra real es
+# mayor y el informe lo dice); si no se parece a nada se cuenta como SIN
+# LOCALIZAR. Nadie puede distinguir un desfase mayor que la ventana de un
+# impostor que caiga dentro de ella; medido sobre 600 casos entre 0,51 y 2,00 s
+# solo 2 se publicaban (520 -> 479 ms y 530 -> 489 ms), y justo esos los cierra
+# la fraccion fiable. La prueba de punta a punta exige ademas cero de las dos
+# cuentas.
 VENTANA_DE_BUSQUEDA_S = 0.5
 
-# Un mejor parecido a menos de esto del borde de la ventana se da por saturado:
-# el pico verdadero puede estar fuera.
-MARGEN_DE_SATURACION_S = 0.01
+# Hasta que parte de la ventana se fia la medida: un mejor parecido a mas del 90 %
+# del borde (+-450 ms con la ventana de medio segundo) se cuenta saturado. Coste:
+# un desfase real de entre 450 y 500 ms se cuenta saturado en vez de publicarse;
+# en esa franja el numero ya no era de fiar.
+FRACCION_FIABLE_DE_LA_VENTANA = 0.9
 
 # Entre dos lecturas del cabezal que distan mas que esto no se interpola: es una
 # vuelta del bucle (el cabezal salta atras) o una pausa, y la recta entre las dos
@@ -341,7 +345,7 @@ def desfase_contra_el_cabezal(
     medidos = 0
     sin_localizar = 0
     saturados = 0
-    margen = int(MARGEN_DE_SATURACION_S * frecuencia_muestreo)
+    fiable = FRACCION_FIABLE_DE_LA_VENTANA * ventana
     for bloque, hora in zip(bloques, horas):
         n = len(bloque)
         if n == 0 or float(np.dot(bloque, bloque)) < ENERGIA_MINIMA_DEL_BLOQUE:
@@ -387,7 +391,7 @@ def desfase_contra_el_cabezal(
         if parecido[mejor] < PARECIDO_MINIMO:
             sin_localizar += 1
             continue
-        if mejor < margen or mejor > len(parecido) - 1 - margen:
+        if abs(mejor - ventana) > fiable:
             saturados += 1
             continue
         encontrado = (desde + mejor) / frecuencia_muestreo
