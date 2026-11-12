@@ -16,17 +16,28 @@ y su salida queda en el informe de la tarea, que es donde sirve de algo.
 
 import os
 import pathlib
+import socket
 import statistics
 import subprocess
+import sys
 import time
+import types
 import urllib.error
 from dataclasses import replace
 
+import numpy as np
 import pytest
 
 from herramientas.gemelo import (
     LECTURAS_POR_SEGUNDO,
+    InformeDelFondo,
+    StreamCapturadoAlRitmo,
+    _salida_del_fondo,
+    desfase_contra_el_cabezal,
+    fondo_pedido,
+    informe_del_fondo,
     _analizador_de_argumentos,
+    _construir,
     _correr_la_demostracion,
     _esperar_al_servidor,
     _seguir_la_pasada,
@@ -53,6 +64,8 @@ from nucleo.gemelo.piezas_de_prueba import escala_de_ocho_notas, pieza_de_demost
 from nucleo.gemelo.veredicto import Veredicto
 from nucleo.piezas.compases import pulsos_por_compas
 from nucleo.piezas.estudio import PlanDePasada, SesionDeEstudio
+from nucleo.piezas.voces_de_fondo import FondoDisponible, NotaDeFondo, VozDeFondo
+from nucleo.sintesis import _abrir_stream_real
 from servidor.diagnostico import Diagnostico
 
 RAIZ = pathlib.Path(__file__).resolve().parent.parent
@@ -1080,7 +1093,9 @@ class DemostracionDeMentira:
         self.veces = 0
         self.recibido: list[dict] = []
 
-    def __call__(self, pieza, interpretacion, plan, puerto, al_acabar):
+    def __call__(
+        self, pieza, interpretacion, plan, puerto, al_acabar, fondo=None, altavoces=False
+    ):
         self.veces += 1
         self.recibido.append(
             {
@@ -1089,6 +1104,8 @@ class DemostracionDeMentira:
                 "plan": plan,
                 "puerto": puerto,
                 "al_acabar": al_acabar,
+                "fondo": fondo,
+                "altavoces": altavoces,
             }
         )
         if self.veredicto is None:
@@ -1294,10 +1311,19 @@ class CarrilDeMentira:
     def __init__(self) -> None:
         self.iniciado = []
         self.detenido = 0
+        # El orden en que se le hablo, para poder afirmarlo.
+        self.llamadas: list = []
 
     def iniciar(self, pieza, plan) -> dict:
         self.iniciado.append((pieza, plan))
+        self.llamadas.append("iniciar")
         return {}
+
+    def cargar_acompanamiento(self, fondo) -> None:
+        self.llamadas.append(("cargar_acompanamiento", fondo))
+
+    def estado(self) -> dict:
+        return {"acompanamiento_voces": 0, "acompanamiento_posible": True}
 
     def detener(self) -> None:
         self.detenido += 1
@@ -1335,7 +1361,12 @@ def _demostracion_sin_red(monkeypatch, completada=True):
     sesion = SesionDeMentira()
     monkeypatch.setattr(
         "herramientas.gemelo._construir",
-        lambda pieza, interpretacion: (object(), sesion, carril, [CapturaDeMentira()]),
+        lambda pieza, interpretacion, salida_fondo=None: (
+            object(),
+            sesion,
+            carril,
+            [CapturaDeMentira()],
+        ),
     )
     monkeypatch.setattr(
         "herramientas.gemelo._levantar_el_servidor",
@@ -1348,7 +1379,7 @@ def _demostracion_sin_red(monkeypatch, completada=True):
     )
     seguimientos = []
 
-    def seguir(base, duracion_s, repeticiones=1):
+    def seguir(base, duracion_s, repeticiones=1, traza=None):
         seguimientos.append(
             {"base": base, "duracion_s": duracion_s, "repeticiones": repeticiones}
         )
@@ -1381,7 +1412,7 @@ def test_el_servidor_sigue_contestando_mientras_el_usuario_mira(monkeypatch, cap
     servidor, carril, sesion, _ = _demostracion_sin_red(monkeypatch)
     apagado_al_informar = []
 
-    def informar(veredicto, completada) -> None:
+    def informar(veredicto, completada, informe_del_fondo=None) -> None:
         apagado_al_informar.append(servidor.should_exit)
 
     resultado = _correr_la_demostracion(
@@ -1603,7 +1634,7 @@ def test_el_ctrl_c_antes_del_veredicto_sigue_valiendo_dos(monkeypatch, capsys):
     """
     _demostracion_sin_red(monkeypatch)
 
-    def ctrl_c_a_media_pasada(base, duracion_s, repeticiones=1):
+    def ctrl_c_a_media_pasada(base, duracion_s, repeticiones=1, traza=None):
         raise KeyboardInterrupt
 
     monkeypatch.setattr(
@@ -1618,3 +1649,406 @@ def test_el_ctrl_c_antes_del_veredicto_sigue_valiendo_dos(monkeypatch, capsys):
 
     assert codigo == 2
     assert "GEMELO" not in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# El escaparate toca con fondo (Task 7).
+#
+# Dos banderas: `--con-acompanamiento` CAPTURA (es la de por omision: el
+# escaparate corre sin hardware y el sandbox no abre audio) y `--altavoces` abre
+# la salida de verdad. Esta ultima NO se ejecuta nunca aqui: se comprueba CUAL
+# salida se eligio.
+#
+# **Una leccion de esta etapa, aplicada a cada prueba: la asercion tiene que
+# mirar un valor en el que el mutante y el original DIFIEREN en el estado donde
+# la prueba EMPIEZA.** Las pruebas del desfase parten de bloques cortados a
+# mano en un sitio y de un cabezal puesto en OTRO (40 ms de diferencia): si el
+# cabezal coincidiera con donde se corto, un desfase calculado contra «donde el
+# acompañante cree estar» tambien daria 0 y no se notaria.
+# ---------------------------------------------------------------------------
+
+FS_FONDO = 48000
+TAM_BLOQUE = 1024
+
+
+def _referencia(segundos: float = 4.0) -> np.ndarray:
+    """Una pieza renderizada de mentira: ruido con semilla, que no se parece a si mismo.
+
+    Ruido y no senoidal: una onda periodica se parece a si misma desplazada un
+    periodo y haria ambigua la localizacion, que es justo lo que se quiere medir.
+    """
+    return np.random.default_rng(7).standard_normal(int(segundos * FS_FONDO)).astype(
+        np.float32
+    ) * 0.2
+
+
+def _bloques_cortados(referencia, inicios_s, ganancia=0.6):
+    """Los bloques que escribiria el acompañante si estuviera en `inicios_s`."""
+    return [
+        (referencia[int(t * FS_FONDO) : int(t * FS_FONDO) + TAM_BLOQUE] * ganancia).astype(
+            np.float32
+        )
+        for t in inicios_s
+    ]
+
+
+def _traza_recta(pps, hasta_s=3.0, paso_s=0.01):
+    """El cabezal de una pasada derecha: a la hora t, el instante t (en pulsos)."""
+    return [(t, t * pps) for t in np.arange(0.0, hasta_s, paso_s)]
+
+
+def test_el_desfase_se_mide_contra_el_cabezal_y_no_contra_donde_el_fondo_cree_estar():
+    """**El cabezal dice 1,000 s y el bloque es del 1,040 s: son 40 ms, con signo.**
+
+    Un desfase calculado preguntandole al acompañante «donde crees estar» daria 0:
+    el bloque ES lo que el creyo tocar. El estado de partida distingue las dos
+    cosas porque el cabezal y el bloque NO coinciden.
+    """
+    referencia = _referencia()
+    pps = 1.5
+    traza = _traza_recta(pps)
+    # Escrito a la hora 1,000 (cabezal en 1,000 s) pero cortado del 1,040 s.
+    bloques = _bloques_cortados(referencia, [1.040])
+
+    peor, medidos, sin_localizar = desfase_contra_el_cabezal(
+        bloques, [1.000], referencia, FS_FONDO, pps, traza
+    )
+
+    assert medidos == 1 and sin_localizar == 0
+    assert peor == pytest.approx(40.0, abs=0.1), "el desfase es contra el cabezal"
+
+
+def test_el_desfase_tiene_signo_y_se_queda_con_el_peor():
+    """Un bloque adelantado 10 ms, otro atrasado 25 ms y uno justo: el peor es -25."""
+    referencia = _referencia()
+    pps = 1.5
+    bloques = _bloques_cortados(referencia, [0.510, 1.475, 2.000])
+
+    peor, medidos, _ = desfase_contra_el_cabezal(
+        bloques, [0.500, 1.500, 2.000], referencia, FS_FONDO, pps, _traza_recta(pps)
+    )
+
+    assert medidos == 3
+    assert peor == pytest.approx(-25.0, abs=0.1)
+
+
+def test_un_bloque_que_no_se_parece_a_la_pieza_no_se_mide_se_cuenta_aparte():
+    """Ruido ajeno no se localiza: sale en `sin_localizar` y no inventa un desfase."""
+    referencia = _referencia()
+    ajeno = (np.random.default_rng(99).standard_normal(TAM_BLOQUE) * 0.1).astype(np.float32)
+
+    peor, medidos, sin_localizar = desfase_contra_el_cabezal(
+        [ajeno], [1.0], referencia, FS_FONDO, 1.5, _traza_recta(1.5)
+    )
+
+    assert (peor, medidos, sin_localizar) == (None, 0, 1)
+
+
+def test_el_silencio_no_se_mide():
+    """El silencio esta en todas partes de la pieza: no hay a que cabezal compararlo."""
+    silencio = np.zeros(TAM_BLOQUE, dtype=np.float32)
+
+    resultado = desfase_contra_el_cabezal(
+        [silencio], [1.0], _referencia(), FS_FONDO, 1.5, _traza_recta(1.5)
+    )
+
+    assert resultado == (None, 0, 0)
+
+
+def test_las_muestras_escritas_salen_del_capturador_y_el_desfase_del_cabezal():
+    """Las dos cifras del informe, con escrituras hechas a mano y un reloj de mentira.
+
+    Se escriben 3 bloques de 1024 y uno de 500: 3572 muestras, contadas aqui y no
+    leidas de nadie. El cabezal esta 40 ms por detras de donde se cortaron.
+    """
+    referencia = _referencia()
+    pps = 1.5
+    reloj = types.SimpleNamespace(ahora=1.0)
+    # Un reloj que no avanza y una espera que no espera: lo que se prueba es la
+    # cuenta, no el ritmo.
+    capturador = StreamCapturadoAlRitmo(reloj=lambda: reloj.ahora)
+    capturador._debido = float("-inf")  # sin espera: ver StreamCapturadoAlRitmo.write
+    inicios = [1.040, 1.040, 1.040]
+    for bloque in _bloques_cortados(referencia, inicios):
+        capturador.write(bloque)
+    capturador.write(np.zeros(500, dtype=np.float32))
+
+    informe = informe_del_fondo(capturador, referencia, pps, _traza_recta(pps))
+
+    assert informe.muestras_escritas == 3 * 1024 + 500
+    assert informe.desfase_maximo_ms == pytest.approx(40.0, abs=0.1)
+    assert informe.bloques_medidos == 3
+
+
+def test_el_capturador_al_ritmo_apunta_la_hora_de_cada_escritura_y_espera():
+    """Cada escritura deja su hora, y la segunda espera a que pase lo escrito antes."""
+    horas = iter([10.0, 10.0, 10.0, 10.0, 10.5, 10.5])
+    esperas = []
+    capturador = StreamCapturadoAlRitmo(
+        frecuencia_muestreo=1000, reloj=lambda: next(horas), esperar=esperas.append
+    )
+    capturador.write(np.zeros(500, dtype=np.float32))  # dura 0,5 s
+    capturador.write(np.zeros(500, dtype=np.float32))
+
+    assert capturador.horas == (10.0, 10.0)
+    # Lo escrito debe a la tarjeta 0,5 s y luego 1,0 s en total; el reloj marca
+    # 10,0 las dos veces, asi que esperas de 0,5 y de 1,0.
+    assert esperas == pytest.approx([0.5, 1.0])
+    assert len(capturador.muestras) == 1000
+
+
+def test_con_acompanamiento_captura_y_no_abre_altavoces(monkeypatch):
+    """**Captura sin tocar `sounddevice`**: el escaparate corre sin hardware.
+
+    Se planta una trampa en `sys.modules`: si se pidiera la salida real,
+    `_abrir_stream_real` importaria la trampa y su `OutputStream` fallaria; como
+    `SalidaAudio.abrir` se traga las excepciones, lo que delata el error es que
+    `abrir()` devuelve False y que nada se capturo.
+    """
+    pedidos = []
+
+    def trampa(**argumentos):
+        pedidos.append(argumentos)
+        raise AssertionError("se intento abrir la salida REAL")
+
+    monkeypatch.setitem(
+        sys.modules, "sounddevice", types.SimpleNamespace(OutputStream=trampa)
+    )
+
+    salida, capturador = _salida_del_fondo(altavoces=False)
+
+    assert capturador is not None
+    assert salida._abrir_stream is not _abrir_stream_real
+    assert salida.abrir() is True, "con captura la salida tiene que abrirse"
+    salida.reproducir(np.ones(8, dtype=np.float32))
+    assert pedidos == [], "se abrio el dispositivo real"
+    assert len(capturador.muestras) == 8, "lo escrito tiene que quedar capturado"
+
+
+def test_altavoces_pide_la_salida_de_verdad():
+    """**No se ejecuta: se comprueba CUAL se eligio.** Por omision es la real."""
+    salida, capturador = _salida_del_fondo(altavoces=True)
+
+    assert salida._abrir_stream is _abrir_stream_real
+    assert capturador is None, "con altavoces no hay nada que capturar"
+
+
+def test_altavoces_usa_el_stream_que_se_le_inyecta():
+    """El seam: lo inyectado se usa tal cual, y es lo que prueba que se pidio abrir."""
+    abiertos = []
+
+    class StreamDeMentira:
+        def start(self):
+            pass
+
+    def abrir(**argumentos):
+        abiertos.append(argumentos)
+        return StreamDeMentira()
+
+    salida, _ = _salida_del_fondo(altavoces=True, abrir_stream=abrir)
+
+    assert salida.abrir() is True
+    assert len(abiertos) == 1
+
+
+def test_main_pasa_a_la_demostracion_cual_salida_se_pidio(monkeypatch):
+    """Cada bandera llega a la demostracion como lo que es; sin ellas, sin fondo."""
+    resultados = {}
+    for nombre, linea in [
+        ("nada", []),
+        ("captura", ["--con-acompanamiento"]),
+        ("altavoces", ["--altavoces"]),
+    ]:
+        _, demostracion, _ = _main_con_doble(
+            monkeypatch, linea + ["--bucle", "1", "--salir-al-acabar"], _veredicto()
+        )
+        resultados[nombre] = (demostracion.ultimo["fondo"], demostracion.ultimo["altavoces"])
+
+    assert resultados["nada"] == (None, False)
+    assert resultados["captura"][0] is not None and resultados["captura"][1] is False
+    assert resultados["altavoces"][0] is not None and resultados["altavoces"][1] is True
+
+
+def test_sin_pieza_el_fondo_es_la_propia_parte_y_con_pieza_son_las_voces_ajenas(monkeypatch):
+    """Sin archivo no hay otras pistas (guia); con archivo salen las del archivo."""
+    analizador = _analizador_de_argumentos()
+    pieza = pieza_de_demostracion()
+
+    sin = fondo_pedido(analizador.parse_args(["--con-acompanamiento"]), pieza)
+    assert sin is not None and sin.voces == ()
+
+    pedida = []
+    voz = VozDeFondo("bajo", "bajo", (NotaDeFondo(40.0, 0.0, 1.0),))
+    monkeypatch.setattr(
+        "herramientas.gemelo.voces_de",
+        lambda ruta, excluida: pedida.append((str(ruta), excluida))
+        or FondoDisponible((voz,), 90, ()),
+    )
+    con = fondo_pedido(
+        analizador.parse_args(["--altavoces", "--pieza", str(RUTA_DE_EJEMPLO)]), pieza
+    )
+    assert con is not None and con.voces == (voz,)
+    assert pedida == [(str(RUTA_DE_EJEMPLO), 1)]
+
+    assert fondo_pedido(analizador.parse_args([]), pieza) is None
+
+
+def test_las_dos_banderas_juntas_fallan_al_armar_nombrando_las_dos():
+    analizador = _analizador_de_argumentos()
+
+    with pytest.raises(ValueError) as error:
+        armar_la_pasada(analizador.parse_args(["--con-acompanamiento", "--altavoces"]))
+
+    assert "--con-acompanamiento" in str(error.value)
+    assert "--altavoces" in str(error.value)
+
+
+def test_los_dos_juntos_fallan_antes_de_levantar_nada(monkeypatch, capsys):
+    """**Instantaneo y antes de levantar el servidor**: la leccion de la etapa anterior.
+
+    No se sustituye `_correr_la_demostracion`: se dejan trampas en lo que levanta
+    cosas. Un error de opciones que saltara DESPUES de levantar el servidor
+    -quince segundos despues- pasaria por ellas.
+    """
+    def trampa(*args, **kwargs):
+        raise AssertionError("se levanto algo antes de rechazar las opciones")
+
+    monkeypatch.setattr("herramientas.gemelo._levantar_el_servidor", trampa)
+    monkeypatch.setattr("herramientas.gemelo._construir", trampa)
+    monkeypatch.setattr("herramientas.gemelo._esperar_al_servidor", trampa)
+
+    inicio = time.monotonic()
+    codigo = main(["--con-acompanamiento", "--altavoces", "--salir-al-acabar"])
+
+    assert codigo == 2
+    assert time.monotonic() - inicio < 2.0
+    salida = capsys.readouterr().out
+    assert "--con-acompanamiento" in salida and "--altavoces" in salida
+
+
+def test_el_orden_es_iniciar_y_despues_cargar_el_acompanamiento(monkeypatch):
+    """Al reves el fondo se pierde en silencio. Se mira el ORDEN de las llamadas."""
+    _, carril, _, _ = _demostracion_sin_red(monkeypatch)
+
+    main(["--con-acompanamiento", "--bucle", "1", "--salir-al-acabar"])
+
+    assert [llamada if isinstance(llamada, str) else llamada[0] for llamada in carril.llamadas] == [
+        "iniciar",
+        "cargar_acompanamiento",
+    ]
+
+
+def test_sin_fondo_no_se_carga_nada(monkeypatch):
+    _, carril, _, _ = _demostracion_sin_red(monkeypatch)
+
+    main(["--bucle", "1", "--salir-al-acabar"])
+
+    assert carril.llamadas == ["iniciar"]
+
+
+def test_el_fondo_queda_cargado_y_encendible_con_el_carril_de_verdad(monkeypatch, capsys):
+    """**Con el carril y la sesion REALES**: el fondo sobrevive y el gemelo es el cable.
+
+    Se sustituye solo lo que levanta el puerto y espera. Cuando la pasada se
+    «sigue» el fondo ya se cargo, y se lee del estado PUBLICADO: una voz cargada
+    (si se cargara antes de `iniciar` serian 0: `iniciar` lo suelta), y
+    `acompanamiento_posible` verdadero, que solo lo es si la entrada cuenta como
+    el cable Rocksmith -que es lo que hace falta para que cargar encienda-.
+    """
+    voz = VozDeFondo("bajo", "bajo", (NotaDeFondo(40.0, 0.0, 1.0),))
+    fondo = FondoDisponible((voz,), 90, ())
+    construidos = []
+    construir_de_verdad = _construir
+
+    def construir(pieza, interpretacion, salida_fondo=None):
+        resultado = construir_de_verdad(pieza, interpretacion, salida_fondo=salida_fondo)
+        construidos.append(resultado)
+        return resultado
+
+    monkeypatch.setattr("herramientas.gemelo._construir", construir)
+    monkeypatch.setattr(
+        "herramientas.gemelo._levantar_el_servidor", lambda app, puerto: ServidorDeMentira()
+    )
+    monkeypatch.setattr("herramientas.gemelo._esperar_al_servidor", lambda base: True)
+    vistos = []
+
+    def seguir(base, duracion_s, repeticiones=1, traza=None):
+        vistos.append(construidos[0][2].estado())
+        return RecolectorDeLaSesion(), True
+
+    monkeypatch.setattr("herramientas.gemelo._seguir_la_pasada", seguir)
+    pieza = pieza_de_demostracion()
+
+    _correr_la_demostracion(
+        pieza,
+        interpretar(pieza, PERFECTO, ultimo_compas=1),
+        PlanDePasada(ultimo_compas=1),
+        8420,
+        al_acabar=lambda *args: None,
+        fondo=fondo,
+    )
+
+    estado = vistos[0]
+    assert estado["acompanamiento_voces"] == 1, "el fondo se perdio: orden invertido"
+    assert estado["acompanamiento_posible"] is True, (
+        "el dispositivo del gemelo no cuenta como el cable: cargar no encenderia"
+    )
+    assert "Fondo capturado" in capsys.readouterr().out
+
+
+def test_el_resumen_lleva_las_dos_cifras_del_fondo_y_sin_fondo_no_las_lleva():
+    pieza = pieza_de_demostracion()
+    informe = InformeDelFondo(251904, -30.1, 242, 0)
+
+    con = resumen(_veredicto(), pieza, PERFECTO, True, informe)
+    sin = resumen(_veredicto(), pieza, PERFECTO, True)
+
+    assert "251904 muestras escritas" in con
+    assert "-30.1 ms el peor contra el cabezal" in con
+    assert "242 bloques medidos" in con
+    assert "fondo" not in sin
+
+
+def test_el_resumen_dice_cuando_el_desfase_no_se_pudo_medir():
+    informe = InformeDelFondo(0, None, 0, 0)
+
+    texto = resumen(_veredicto(), pieza_de_demostracion(), PERFECTO, True, informe)
+
+    assert "0 muestras escritas" in texto
+    assert "sin medir" in texto
+
+
+def _puerto_libre() -> int:
+    with socket.socket() as conexion:
+        conexion.bind(("127.0.0.1", 0))
+        return conexion.getsockname()[1]
+
+
+def test_una_pasada_de_verdad_con_fondo_captura_muestras_y_mide_el_desfase():
+    """**De punta a punta**: servidor real, cable del gemelo, fondo capturado.
+
+    Un compas, unos cuatro segundos. Lo que se afirma son las cotas medidas a mano
+    -una pasada de ~2,6 s escribe cientos de miles de muestras a 48 kHz, y el peor
+    desfase contra el cabezal salio entre -30 y +30 ms en cinco corridas-, con
+    margen: la cota de 150 ms es la mitad de un cuarto de segundo, que es lo que
+    ya se oye como un fondo que no va con la pieza.
+    """
+    pieza = pieza_de_demostracion()
+    recibido = []
+
+    resultado = _correr_la_demostracion(
+        pieza,
+        interpretar(pieza, PERFECTO, ultimo_compas=1),
+        PlanDePasada(ultimo_compas=1),
+        _puerto_libre(),
+        al_acabar=lambda veredicto, completada, informe=None: recibido.append(informe),
+        fondo=FondoDisponible((), pieza.tempo, ()),
+    )
+
+    assert resultado is not None
+    informe = recibido[0]
+    assert informe is not None
+    assert informe.muestras_escritas > 48000, "el fondo no sono: no se escribio ni un segundo"
+    assert informe.bloques_medidos > 20
+    assert informe.desfase_maximo_ms is not None
+    assert abs(informe.desfase_maximo_ms) < 150.0

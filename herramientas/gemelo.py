@@ -57,8 +57,13 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
+from scipy.signal import correlate
+
+from nucleo.acompanamiento import renderizar
 from nucleo.afinaciones import PERFILES
 from nucleo.captura import CapturaAudio
 from nucleo.gemelo.dispositivo import (
@@ -74,6 +79,7 @@ from nucleo.gemelo.perfiles import (
     PerfilDeDestreza,
 )
 from nucleo.gemelo.piezas_de_prueba import pieza_de_demostracion
+from nucleo.gemelo.salida import StreamCapturado
 from nucleo.gemelo.veredicto import (
     TOLERANCIA_DE_EMPAREJAMIENTO_MS,
     Veredicto,
@@ -83,11 +89,13 @@ from nucleo.piezas.compases import pulsos_por_compas
 from nucleo.piezas.estudio import PlanDePasada
 from nucleo.piezas.lectores import importar
 from nucleo.piezas.modelo import Pieza, pulsos_a_segundos
+from nucleo.piezas.voces_de_fondo import FondoDisponible, voces_de
+from nucleo.sintesis import FRECUENCIA_MUESTREO_SALIDA, SalidaAudio
 from servidor.app import crear_app
 from servidor.arranque import PUERTO_POR_DEFECTO, RUTA_INTERFAZ
 from servidor.configuracion import Configuracion
 from servidor.ejercicios import SesionPractica
-from servidor.piezas import SesionCarril
+from servidor.piezas import SesionCarril, voz_de_tu_parte
 from servidor.sesion import Sesion
 
 # Cada cuanto se le pregunta al servidor por el estado de la pasada.
@@ -133,6 +141,226 @@ MARGEN_DE_LA_PASADA_S = 10.0
 # el aviso: ahi todavia quedan 20 ms de margen contra el techo y lo que haya
 # encontrado la cadena es cosa suya. Ver `al_borde_del_techo_del_detector`.
 AVISO_DESDE_MS = 230.0
+
+
+# Cuanto se busca, a cada lado del cabezal, donde sono de verdad un bloque del
+# fondo. Medio segundo es ~20 bloques: mas que cualquier desfase sano -la cadena
+# publica el cabezal cada ~30 ms- y lo bastante corto para que la busqueda no
+# confunda dos notas iguales de compases distintos.
+VENTANA_DE_BUSQUEDA_S = 0.5
+
+# Entre dos lecturas del cabezal que distan mas que esto no se interpola: es una
+# vuelta del bucle (el cabezal salta atras) o una pausa, y la recta entre las dos
+# lecturas no es el cabezal.
+SALTO_MAXIMO_SIN_INTERPOLAR_S = 0.25
+
+# Lo que tiene que parecerse un bloque escrito a la pieza renderizada para darlo
+# por localizado (correlacion normalizada). Un bloque que no llega es un bloque
+# que no suena a la pieza, y se cuenta aparte en vez de medirse mal.
+PARECIDO_MINIMO = 0.9
+
+# Por debajo de esta energia un bloque es silencio y no se puede localizar: el
+# silencio esta en todas partes de la pieza.
+ENERGIA_MINIMA_DEL_BLOQUE = 1e-9
+
+
+@dataclass(frozen=True)
+class InformeDelFondo:
+    """Las cifras del fondo capturado, para el informe.
+
+    muestras_escritas: lo que el CAPTURADOR guardo, no lo que el acompañante dice
+        haber escrito.
+    desfase_maximo_ms: el peor desfase, con signo, entre donde sono cada bloque
+        escrito y donde estaba el CABEZAL cuando se escribio; positivo es que el
+        fondo sonaba por delante del cabezal. `None` si no se pudo medir ningun
+        bloque.
+    bloques_medidos / bloques_sin_localizar: cuantos bloques con sonido se
+        midieron y cuantos no se parecian a la pieza renderizada.
+    """
+
+    muestras_escritas: int
+    desfase_maximo_ms: float | None
+    bloques_medidos: int
+    bloques_sin_localizar: int
+
+
+class StreamCapturadoAlRitmo(StreamCapturado):
+    """El stream capturado que tarda lo que tardaria un dispositivo de verdad.
+
+    `StreamCapturado` acepta cada escritura al instante, y un acompañante que
+    escribe sin esperar nunca gira a la velocidad de la CPU: en una pasada de
+    treinta segundos son cientos de miles de bloques y gigas de memoria. Un
+    dispositivo real BLOQUEA la escritura hasta que hay hueco; aqui se imita
+    esperando a que el reloj alcance lo ya escrito. Y apunta la hora de cada
+    escritura, que es lo que permite compararla luego con el cabezal.
+
+    La espera es sobre un `Event` y no un `time.sleep`: no sincroniza ningun hilo,
+    solo hace que el tiempo pase.
+    """
+
+    def __init__(
+        self,
+        frecuencia_muestreo: int = FRECUENCIA_MUESTREO_SALIDA,
+        reloj: Callable[[], float] = time.monotonic,
+        esperar: Callable[[float], object] | None = None,
+        **argumentos,
+    ) -> None:
+        super().__init__(**argumentos)
+        self._frecuencia = frecuencia_muestreo
+        self._reloj = reloj
+        # Por omision, una espera sobre un `Event` que nadie activa.
+        self._esperar = esperar or threading.Event().wait
+        self._horas: list[float] = []
+        self._debido: float | None = None
+
+    @property
+    def horas(self) -> tuple[float, ...]:
+        """La hora (monotonica) en que entro cada escritura, en orden."""
+        with self._candado:
+            return tuple(self._horas)
+
+    def write(self, muestras: np.ndarray) -> None:
+        ahora = self._reloj()
+        if self._debido is None:
+            self._debido = ahora
+        super().write(muestras)
+        with self._candado:
+            self._horas.append(ahora)
+        self._debido += len(muestras) / self._frecuencia
+        espera = self._debido - self._reloj()
+        if espera > 0:
+            self._esperar(espera)
+
+
+def _salida_del_fondo(
+    altavoces: bool, abrir_stream: Callable | None = None
+) -> tuple[SalidaAudio, StreamCapturadoAlRitmo | None]:
+    """La salida del fondo: los altavoces de verdad, o un capturador.
+
+    **ESTA ES LA DECISION DE LAS DOS BANDERAS.** `--altavoces` abre la salida real
+    (`abrir_stream=None` es el `_abrir_stream_real` de `SalidaAudio`); sin ella se
+    captura, porque el escaparate existe para correr sin hardware y el sandbox de
+    desarrollo no abre audio. `abrir_stream` solo aplica a los altavoces: es el
+    seam para que una prueba compruebe CUAL se eligio sin abrir nada.
+
+    Devuelve la salida y el capturador (None con altavoces: no hay nada que leer).
+    """
+    if altavoces:
+        return SalidaAudio(abrir_stream=abrir_stream), None
+    capturador = StreamCapturadoAlRitmo()
+
+    def abrir_capturador(**argumentos) -> StreamCapturadoAlRitmo:
+        capturador.argumentos = dict(argumentos)
+        return capturador
+
+    return SalidaAudio(abrir_stream=abrir_capturador), capturador
+
+
+def desfase_contra_el_cabezal(
+    bloques: list[np.ndarray],
+    horas: list[float],
+    referencia: np.ndarray,
+    frecuencia_muestreo: int,
+    pulsos_por_segundo: float,
+    traza: list[tuple[float, float]],
+) -> tuple[float | None, int, int]:
+    """El peor desfase entre donde sono cada bloque escrito y donde estaba el cabezal.
+
+    `bloques` y `horas` son lo que CAPTURO la salida; `traza` son las lecturas
+    `(hora, instante en pulsos)` del cabezal tal como las publica el servidor; y
+    `referencia` es la pieza renderizada, que es lo que permite saber QUE parte
+    de la pieza era cada bloque. **Nada de esto se le pregunta al acompañante**:
+    el instante que el creyo tocar no entra en la cuenta.
+
+    Cada bloque con sonido se LOCALIZA en la referencia -correlacion normalizada
+    en una ventana alrededor de donde el cabezal decia que estaba- y se compara
+    con el cabezal a la hora en que se escribio. El cabezal se interpola entre
+    las dos lecturas que rodean esa hora (salvo si son de un salto: bucle o
+    pausa, donde se toma la anterior).
+
+    Devuelve `(peor desfase en ms con signo, medidos, sin localizar)`. Positivo:
+    el bloque era de un punto de la pieza POSTERIOR al cabezal.
+    """
+    if not traza or not len(referencia):
+        return None, 0, 0
+    tiempos = np.array([hora for hora, _ in traza])
+    segundos = np.array([pulsos / pulsos_por_segundo for _, pulsos in traza])
+    ventana = int(VENTANA_DE_BUSQUEDA_S * frecuencia_muestreo)
+    peor: float | None = None
+    medidos = 0
+    sin_localizar = 0
+    for bloque, hora in zip(bloques, horas):
+        n = len(bloque)
+        if n == 0 or float(np.dot(bloque, bloque)) < ENERGIA_MINIMA_DEL_BLOQUE:
+            continue
+        # El cabezal a la hora de la escritura.
+        despues = int(np.searchsorted(tiempos, hora))
+        if despues == 0:
+            esperado = segundos[0]
+        elif despues == len(tiempos):
+            esperado = segundos[-1]
+        else:
+            antes_s, despues_s = segundos[despues - 1], segundos[despues]
+            if abs(despues_s - antes_s) > SALTO_MAXIMO_SIN_INTERPOLAR_S:
+                esperado = antes_s
+            else:
+                t0, t1 = tiempos[despues - 1], tiempos[despues]
+                fraccion = 0.0 if t1 == t0 else (hora - t0) / (t1 - t0)
+                esperado = antes_s + fraccion * (despues_s - antes_s)
+        centro = int(round(esperado * frecuencia_muestreo))
+        # La referencia con ceros a los lados: una rodaja fuera de la pieza es
+        # silencio, igual que en `PiezaRenderizada.rodaja`.
+        desde = centro - ventana
+        hasta = centro + ventana + n
+        trozo = np.zeros(hasta - desde, dtype=np.float64)
+        a, b = max(desde, 0), min(hasta, len(referencia))
+        if b > a:
+            trozo[a - desde : b - desde] = referencia[a:b]
+        cruzada = correlate(trozo, bloque.astype(np.float64), mode="valid", method="fft")
+        acumulada = np.concatenate(([0.0], np.cumsum(trozo**2)))
+        energia = acumulada[n:] - acumulada[:-n]
+        energia_del_bloque = float(np.dot(bloque, bloque))
+        # El fondo sale con ganancia <= 1, asi que la parte de la pieza de la que
+        # salio el bloque tiene AL MENOS su energia. Donde la ventana tiene menos
+        # (los ceros del relleno, los bordes) no puede estar, y dividir por una
+        # energia casi nula convierte el ruido numerico de la correlacion en un
+        # «parecido» enorme: asi se «localizaron» bloques a medio segundo.
+        parecido = np.where(
+            energia >= 0.5 * energia_del_bloque,
+            cruzada / np.sqrt(np.maximum(energia, 1e-30) * energia_del_bloque),
+            -1.0,
+        )
+        mejor = int(np.argmax(parecido))
+        if parecido[mejor] < PARECIDO_MINIMO:
+            sin_localizar += 1
+            continue
+        encontrado = (desde + mejor) / frecuencia_muestreo
+        desfase_ms = (encontrado - esperado) * 1000.0
+        medidos += 1
+        if peor is None or abs(desfase_ms) > abs(peor):
+            peor = desfase_ms
+    return peor, medidos, sin_localizar
+
+
+def informe_del_fondo(
+    capturador: StreamCapturadoAlRitmo,
+    referencia: np.ndarray,
+    pulsos_por_segundo: float,
+    traza: list[tuple[float, float]],
+) -> InformeDelFondo:
+    """Las dos cifras del informe, de el capturador y del cabezal."""
+    muestras = capturador.muestras
+    cortes = np.cumsum((0,) + capturador.bloques)
+    bloques = [muestras[cortes[i] : cortes[i + 1]] for i in range(len(cortes) - 1)]
+    peor, medidos, sin_localizar = desfase_contra_el_cabezal(
+        bloques,
+        list(capturador.horas),
+        referencia,
+        FRECUENCIA_MUESTREO_SALIDA,
+        pulsos_por_segundo,
+        traza,
+    )
+    return InformeDelFondo(len(muestras), peor, medidos, sin_localizar)
 
 
 def leer_bucle(texto: str) -> tuple[int, int]:
@@ -277,7 +505,11 @@ def al_borde_del_techo_del_detector(
 
 
 def resumen(
-    veredicto: Veredicto, pieza: Pieza, perfil: PerfilDeDestreza, completada: bool
+    veredicto: Veredicto,
+    pieza: Pieza,
+    perfil: PerfilDeDestreza,
+    completada: bool,
+    fondo: InformeDelFondo | None = None,
 ) -> str:
     """El informe que se imprime al acabar la pasada.
 
@@ -305,6 +537,8 @@ def resumen(
         f"{veredicto.desfase_maximo_ms:+.1f} ms el peor",
         f"  veredicto: {'LIMPIO' if veredicto.limpio else 'CON HALLAZGOS'}",
     ]
+    if fondo is not None:
+        lineas.extend(_lineas_del_fondo(fondo))
     for vuelta, indice in veredicto.perdidas:
         lineas.append(f"    perdida: vuelta {vuelta}, nota {indice}")
     for vuelta, indice, midi in veredicto.mal_adjudicadas:
@@ -332,6 +566,28 @@ def resumen(
             ]
         )
     return "\n".join(lineas)
+
+
+def _lineas_del_fondo(fondo: InformeDelFondo) -> list[str]:
+    """Las dos lineas del fondo: muestras escritas y desfase maximo."""
+    if fondo.desfase_maximo_ms is None:
+        desfase = "sin medir (ningun bloque con sonido se pudo comparar con el cabezal)"
+    else:
+        desfase = (
+            f"{fondo.desfase_maximo_ms:+.1f} ms el peor contra el cabezal "
+            f"({fondo.bloques_medidos} bloques medidos"
+            + (
+                f", {fondo.bloques_sin_localizar} sin localizar"
+                if fondo.bloques_sin_localizar
+                else ""
+            )
+            + ")"
+        )
+    return [
+        f"  fondo   : {fondo.muestras_escritas} muestras escritas (capturadas, "
+        "no por los altavoces)",
+        f"  fondo   : desfase {desfase}",
+    ]
 
 
 def segundos_de_cuenta_atras(
@@ -384,7 +640,9 @@ def _esperar_al_servidor(base: str, limite_s: float = LIMITE_DE_ARRANQUE_S) -> b
 
 
 def _construir(
-    pieza: Pieza, interpretacion: Interpretacion
+    pieza: Pieza,
+    interpretacion: Interpretacion,
+    salida_fondo: SalidaAudio | None = None,
 ) -> tuple[object, Sesion, SesionCarril, list[CapturaAudio]]:
     """La aplicacion de produccion con el cable del gemelo enchufado.
 
@@ -412,7 +670,9 @@ def _construir(
         crear_captura=crear_captura,
         listar=listar,
     )
-    carril = SesionCarril(sesion)
+    # Sin `salida_fondo` el carril crea la suya, que es la real: solo se pasa una
+    # cuando se pidio el fondo (ver `_salida_del_fondo`).
+    carril = SesionCarril(sesion, salida_fondo=salida_fondo)
     app = crear_app(
         sesion,
         RUTA_INTERFAZ if RUTA_INTERFAZ.exists() else None,
@@ -422,8 +682,20 @@ def _construir(
     return app, sesion, carril, capturas
 
 
+def _leer_estado(base: str, traza: list[tuple[float, float]] | None) -> dict:
+    """Lee el estado publicado y, si hay traza, apunta donde estaba el cabezal."""
+    antes = time.monotonic()
+    estado = _leer_json(f"{base}/api/piezas/estado")
+    if traza is not None:
+        traza.append(((antes + time.monotonic()) / 2, float(estado["instante_pulsos"])))
+    return estado
+
+
 def _seguir_la_pasada(
-    base: str, duracion_s: float, repeticiones: int = 1
+    base: str,
+    duracion_s: float,
+    repeticiones: int = 1,
+    traza: list[tuple[float, float]] | None = None,
 ) -> tuple[RecolectorDeLaSesion, bool]:
     """Sigue la pasada por HTTP, recogiendo lo que el servidor publica.
 
@@ -449,13 +721,17 @@ def _seguir_la_pasada(
     (`olvidar_tramo`). Es la propiedad del bucle que `nucleo/gemelo/veredicto.py` y
     `tests/test_gemelo_bucle.py` ya declaran, no algo que el escaparate pueda
     arreglar desde fuera.
+
+    `traza`, si se da, recibe `(hora, instante en pulsos)` de cada lectura: es el
+    cabezal tal como lo publica el servidor, y lo que el informe del fondo compara
+    contra lo que se escribio. La hora es la del PUNTO MEDIO de la peticion.
     """
     recolector = RecolectorDeLaSesion()
     paso = 1.0 / LECTURAS_POR_SEGUNDO
     limite = time.monotonic() + duracion_s + MARGEN_DE_LA_PASADA_S
     completada = False
     while time.monotonic() < limite:
-        estado = _leer_json(f"{base}/api/piezas/estado")
+        estado = _leer_estado(base, traza)
         recolector.recoger(estado)
         if estado["completado"] or int(estado["repeticion"]) > repeticiones:
             completada = True
@@ -463,7 +739,7 @@ def _seguir_la_pasada(
         time.sleep(paso)
     final = time.monotonic() + COLA_TRAS_COMPLETAR_S
     while time.monotonic() < final:
-        recolector.recoger(_leer_json(f"{base}/api/piezas/estado"))
+        recolector.recoger(_leer_estado(base, traza))
         time.sleep(paso)
     return recolector, completada
 
@@ -519,6 +795,23 @@ def _analizador_de_argumentos() -> argparse.ArgumentParser:
         help="Puerto del servidor del escaparate, entre 1 y 65535",
     )
     analizador.add_argument(
+        "--con-acompanamiento",
+        action="store_true",
+        help=(
+            "Hace sonar la pieza de fondo CAPTURANDOLA, sin abrir altavoces: para "
+            "correr sin hardware. El informe dice las muestras escritas y el "
+            "desfase maximo contra el cabezal. No se puede juntar con --altavoces"
+        ),
+    )
+    analizador.add_argument(
+        "--altavoces",
+        action="store_true",
+        help=(
+            "Hace sonar la pieza de fondo por los altavoces de verdad, para "
+            "OIRLA. No se puede juntar con --con-acompanamiento"
+        ),
+    )
+    analizador.add_argument(
         "--salir-al-acabar",
         action="store_true",
         help=(
@@ -567,6 +860,15 @@ def armar_la_pasada(
     El mensaje trae la opcion y el valor RECIBIDO, que es lo que hace el resto del
     modulo (ver `leer_bucle` y `perfil_de_destreza`).
     """
+    # **LO PRIMERO, ANTES DE LEER NADA NI LEVANTAR NADA**: dos opciones que se
+    # contradicen se rechazan al armar la pasada, no despues de quince segundos de
+    # servidor (la leccion de la etapa anterior).
+    if argumentos.con_acompanamiento and argumentos.altavoces:
+        raise ValueError(
+            "`--con-acompanamiento` y `--altavoces` no se pueden pedir a la vez: "
+            "la primera captura el fondo sin abrir altavoces y la segunda los abre "
+            "de verdad. Elige una"
+        )
     if argumentos.semilla < 0:
         raise ValueError(
             f"La semilla {argumentos.semilla} no sirve: `--semilla` tiene que ser "
@@ -603,6 +905,23 @@ def armar_la_pasada(
         con_click=False,
     )
     return pieza, perfil, interpretacion, plan
+
+
+def fondo_pedido(argumentos: argparse.Namespace, pieza: Pieza) -> FondoDisponible | None:
+    """El fondo que se pidio, o None si no se pidio ninguno.
+
+    Con `--pieza` salen las voces AJENAS del archivo (la pista 1 es la que toca el
+    gemelo, igual que la que lee `pieza_pedida`). Sin ella la pieza de
+    demostracion no tiene otras pistas: el fondo es su propia parte, que suena
+    como guia (`FondoDisponible` sin voces).
+
+    Lanza `ValueError` u `OSError` si el archivo no se puede leer para el fondo.
+    """
+    if not (argumentos.con_acompanamiento or argumentos.altavoces):
+        return None
+    if argumentos.pieza is None:
+        return FondoDisponible((), pieza.tempo, ())
+    return voces_de(Path(argumentos.pieza), 1)
 
 
 def _quedarse_vivo() -> None:
@@ -642,12 +961,52 @@ def _levantar_el_servidor(app, puerto: int):
     return servidor
 
 
+def _decir_el_fondo(carril, altavoces: bool) -> None:
+    """Dice por donde sale el fondo y avisa si cargarlo NO lo dejo posible.
+
+    Se lee del estado publicado y no se da por hecho: el fondo solo suena con el
+    cable como entrada, y si el dispositivo del gemelo dejara de contar como
+    cable el escaparate correria «con fondo» sin que sonara nada.
+    """
+    estado = carril.estado()
+    destino = "por los altavoces" if altavoces else "capturado (sin altavoces)"
+    print(f"Fondo {destino}: {estado['acompanamiento_voces']} voces ajenas")
+    if not estado["acompanamiento_posible"]:
+        print(
+            "  AVISO: el fondo NO puede sonar: la entrada no es el cable "
+            "Rocksmith, y con otra el fondo entraria por ella."
+        )
+
+
+def _informe_del_capturador(
+    capturador: StreamCapturadoAlRitmo,
+    pieza: Pieza,
+    fondo: FondoDisponible,
+    plan: PlanDePasada,
+    traza: list[tuple[float, float]],
+) -> InformeDelFondo:
+    """Renderiza la referencia aparte y mide lo capturado contra el cabezal."""
+    voces = fondo.voces or (voz_de_tu_parte(pieza),)
+    referencia = renderizar(
+        voces,
+        tempo=pieza.tempo,
+        factor_tempo=plan.factor_tempo,
+        frecuencia_muestreo=FRECUENCIA_MUESTREO_SALIDA,
+    )
+    return informe_del_fondo(
+        capturador, referencia.muestras, referencia.pulsos_por_segundo, traza
+    )
+
+
 def _correr_la_demostracion(
     pieza: Pieza,
     interpretacion: Interpretacion,
     plan: PlanDePasada,
     puerto: int,
-    al_acabar: Callable[[Veredicto, bool], None],
+    al_acabar: Callable[..., None],
+    fondo: FondoDisponible | None = None,
+    altavoces: bool = False,
+    abrir_stream: Callable | None = None,
 ) -> tuple[Veredicto, bool] | None:
     """Levanta el servidor, mete el audio por el cable y devuelve lo que salio.
 
@@ -672,11 +1031,27 @@ def _correr_la_demostracion(
     `--salir-al-acabar`, `al_acabar` imprime y vuelve en seguida, y el `finally`
     apaga el servidor igual de limpio que antes.
 
+    **CON `fondo`, EL ORDEN ES `iniciar` Y DESPUES `cargar_acompanamiento`**: al
+    reves el fondo se pierde en silencio (`iniciar` detiene lo anterior y soltar
+    la pieza suelta el fondo). Cargar enciende solo si la entrada es el cable
+    -decision M6-, y el dispositivo del gemelo se llama Rocksmith, asi que cuenta;
+    se comprueba en el estado publicado y se dice si no. `altavoces` y
+    `abrir_stream` son la decision de `_salida_del_fondo`. `al_acabar` recibe el
+    `InformeDelFondo` como tercer argumento (None sin fondo o con altavoces).
+
     Esta aparte de `main` para que las decisiones de `main` -el codigo de salida y
     el quedarse vivo- se puedan probar sin levantar `uvicorn`, sin abrir un puerto
     y sin pagar los 31 s de la pieza de demostracion.
     """
-    app, sesion, carril, capturas = _construir(pieza, interpretacion)
+    salida_fondo, capturador = (
+        _salida_del_fondo(altavoces, abrir_stream) if fondo is not None else (None, None)
+    )
+    app, sesion, carril, capturas = (
+        _construir(pieza, interpretacion)
+        if fondo is None
+        else _construir(pieza, interpretacion, salida_fondo=salida_fondo)
+    )
+    traza: list[tuple[float, float]] = []
     base = f"http://127.0.0.1:{puerto}"
     servidor = _levantar_el_servidor(app, puerto)
     # Lo que haya que devolver, puesto en cuanto existe: el `Ctrl+C` con que el
@@ -707,13 +1082,21 @@ def _correr_la_demostracion(
             print("El cable del gemelo no entrego audio: no hay pasada que mirar.")
             return None
         carril.iniciar(pieza, plan)
+        if fondo is not None:
+            carril.cargar_acompanamiento(fondo)
+            _decir_el_fondo(carril, altavoces)
         recolector, completada = _seguir_la_pasada(
-            base, interpretacion.duracion_s, interpretacion.repeticiones
+            base, interpretacion.duracion_s, interpretacion.repeticiones, traza=traza
         )
         veredicto = juzgar(interpretacion, recolector.registro)
         firmado = (veredicto, completada)
+        informe = (
+            _informe_del_capturador(capturador, pieza, fondo, plan, traza)
+            if capturador is not None
+            else None
+        )
         # DENTRO del try, con el servidor todavia contestando: ver el docstring.
-        al_acabar(veredicto, completada)
+        al_acabar(veredicto, completada, informe)
         return firmado
     except KeyboardInterrupt:
         print()
@@ -756,11 +1139,16 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         pieza, perfil, interpretacion, plan = armar_la_pasada(argumentos)
+        fondo = fondo_pedido(argumentos, pieza)
     except (ValueError, OSError) as error:
         print(f"No se puede montar la demostracion: {error}")
         return 2
 
-    def al_acabar(veredicto: Veredicto, completada: bool) -> None:
+    def al_acabar(
+        veredicto: Veredicto,
+        completada: bool,
+        informe_del_fondo: InformeDelFondo | None = None,
+    ) -> None:
         """Lo que el usuario lee y mira, CON EL SERVIDOR TODAVIA EN PIE.
 
         Se le pasa a `_correr_la_demostracion` para que corra dentro de su `try`:
@@ -769,12 +1157,18 @@ def main(argv: list[str] | None = None) -> int:
         contestaba. Ver el docstring de `_correr_la_demostracion`.
         """
         print()
-        print(resumen(veredicto, pieza, perfil, completada))
+        print(resumen(veredicto, pieza, perfil, completada, informe_del_fondo))
         if not argumentos.salir_al_acabar:
             _quedarse_vivo()
 
     resultado = _correr_la_demostracion(
-        pieza, interpretacion, plan, argumentos.puerto, al_acabar
+        pieza,
+        interpretacion,
+        plan,
+        argumentos.puerto,
+        al_acabar,
+        fondo=fondo,
+        altavoces=argumentos.altavoces,
     )
     if resultado is None:
         return 2
