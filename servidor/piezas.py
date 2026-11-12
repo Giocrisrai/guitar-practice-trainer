@@ -1425,11 +1425,20 @@ class SesionCarril:
         self._salida_fondo.cerrar()
 
     def _olvidar_el_fondo(self) -> None:
-        """Suelta el archivo de fondo y todo lo que se derivaba de el."""
+        """Suelta el archivo de fondo y todo lo que se derivaba de el.
+
+        **La clave del render NO se toca aqui**, y la ausencia es a proposito:
+        invalidar el render es UNA sola cosa, la generacion del fondo (ver
+        `cargar_acompanamiento`). Esta linea estuvo y se quito: era inofensiva
+        -sin `_fondo`, `_pedir_el_render` sale por la puerta de arriba y la
+        carga siguiente sube la generacion igual-, pero PARECIA una segunda
+        senal de invalidacion justo al lado de la que se quito por serlo, y una
+        linea que hay que demostrar inocente cada vez que se lee cuesta mas de
+        lo que vale.
+        """
         self._fondo = None
         self._fondo_encendido = False
         self._fondo_encendido_a_mano = False
-        self._clave_del_render = None
         self._renderizada = None
 
     def _estudio_o_falla(self) -> SesionDeEstudio:

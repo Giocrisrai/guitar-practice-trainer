@@ -494,6 +494,38 @@ def test_el_fondo_encendido_a_mano_sobrevive_al_cambio_de_entrada():
     cerrar(sesion_carril, sesion)
 
 
+def test_cargar_otra_pista_devuelve_el_fondo_al_encendido_automatico():
+    """La mano del usuario es de ESTA pista, no de la siguiente.
+
+    El anti-objetivo otra vez, un paso mas alla, y ninguna de las pruebas de
+    antes lo veia porque ninguna combinaba la mano con una SEGUNDA carga: cable
+    puesto, el usuario enciende el fondo a mano, **elige otra pista**, y si la
+    marca de «lo encendio el usuario» se heredara, esa pista nueva -que el
+    usuario nunca mando sonar- sobreviviria al cambio a microfono y volveria a
+    colarse en el informe.
+
+    Lo que lo impide es que `cargar_acompanamiento` devuelve el fondo al
+    encendido AUTOMATICO. Y es coherente con lo demas: cada carga vuelve a
+    decir de quien es la decision.
+    """
+    reloj = RelojFalso()
+    sesion_carril, sesion, _, _ = carril(reloj, entrada_es_el_cable=True)
+    sesion_carril.iniciar(pieza_de([40, 45, 50, 55]), SIN_CUENTA)
+    sesion_carril.cargar_acompanamiento(fondo_de())
+    sesion_carril.acompanamiento(encendido=True)
+
+    sesion_carril.cargar_acompanamiento(fondo_de(midis=(28, 30, 32)))
+    assert sesion_carril.estado()["acompanamiento_sonando"] is True
+
+    sesion.entrada_es_el_cable = False
+
+    assert sesion_carril.estado()["acompanamiento_sonando"] is False, (
+        "cargar otra pista vuelve a encender AUTOMATICAMENTE: la mano de antes "
+        "no se hereda a un archivo que el usuario no mando sonar con microfono"
+    )
+    cerrar(sesion_carril, sesion)
+
+
 def test_si_la_entrada_cambia_antes_de_la_primera_instantanea_el_fondo_ni_empieza():
     """La variante estrecha: entre `cargar` y la primera instantanea.
 
@@ -513,6 +545,16 @@ def test_si_la_entrada_cambia_antes_de_la_primera_instantanea_el_fondo_ni_empiez
     assert estado["acompanamiento_sonando"] is False
     assert captura_fondo.arranques == 0, "ni se llego a abrir el dispositivo"
     assert captura_fondo.escrituras == 0, "ni se escribio una muestra"
+
+    # Y la direccion contraria, que es la otra mitad de «sigue a la entrada»:
+    # el usuario enchufa el cable despues de haber cargado con microfono, y el
+    # fondo entra solo. Sin esto, una carga hecha con la entrada equivocada
+    # quedaria muda para siempre y el docstring prometeria algo que no pasa.
+    sesion.entrada_es_el_cable = True
+    assert sesion_carril.estado()["acompanamiento_sonando"] is True, (
+        "al aparecer el cable, el encendido automatico tiene que entrar solo: "
+        "no hace falta volver a cargar nada"
+    )
     cerrar(sesion_carril, sesion)
 
 
