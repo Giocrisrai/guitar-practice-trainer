@@ -96,6 +96,10 @@ class Sesion:
         self._candado_dispositivo = threading.RLock()
         self._ultimo_error_apertura: str | None = None
         self._error_anunciado: str | None = None
+        # Si la captura ABIERTA es el cable Rocksmith. Ver `entrada_es_el_cable`:
+        # se decide al abrir, que es el unico momento en que se sabe, y se lee
+        # muchas veces por segundo sin volver a enumerar nada.
+        self._entrada_es_el_cable = False
         # Muestras vistas en la vuelta anterior y cuándo se vieron, para detectar
         # que dejaron de llegar (ver TIEMPO_SIN_MUESTRAS_SILENCIO).
         self._total_visto = -1
@@ -130,6 +134,36 @@ class Sesion:
         eliminar, solo que por otra causa.
         """
         return self._captura is not None and self._hilo is not None and self._hilo.is_alive()
+
+    @property
+    def entrada_es_el_cable(self) -> bool:
+        """**LA REGLA «LA ENTRADA ES EL CABLE», DECIDIDA UNA SOLA VEZ.**
+
+        Contesta si lo que se esta capturando AHORA MISMO es el cable Rocksmith,
+        y no un microfono. De ella cuelga el acompañamiento: la pieza de fondo
+        sale por los altavoces, y con un microfono abierto vuelve a entrar por el
+        y se mezcla con lo que el alumno toca. El detector de tono ve entonces la
+        suma de las dos cosas, el carril le adjudica al alumno notas que no ha
+        tocado y el informe de la pasada deja de ser suyo. Con el cable no pasa:
+        la guitarra entra por el jack y lo que suena por los altavoces no vuelve.
+        El resultado no es un fondo peor, es una medicion falsa, y por eso la
+        pantalla lo recuerda.
+
+        **Es la UNICA fuente de esa regla**, igual que `se_esperan_notas` lo es
+        de la del aviso del cable, y por el mismo motivo: escrita dos veces -una
+        aqui y otra en el carril, o una en Python y otra en TypeScript- son dos
+        reglas que no son la misma, y cada una tendria su mutante muriendo en su
+        idioma. El carril la LEE y la publica (`acompanamiento_posible`); nadie
+        mas llama a `buscar_rocksmith` para contestarla.
+
+        Se responde con lo que se abrio y no con lo que se pretendia abrir: la
+        preferencia es `_indice_objetivo` -lo que el usuario eligio, y el cable
+        si no eligio nada-, asi que un usuario que elige a mano el microfono del
+        portatil teniendo el cable enchufado recibe False, que es la verdad.
+        Falso tambien sin captura abierta: sin entrada no hay entrada que sea el
+        cable.
+        """
+        return self._entrada_es_el_cable
 
     @property
     def latencia_ms(self) -> float:
@@ -327,7 +361,8 @@ class Sesion:
         with self._candado_dispositivo:
             if self._captura is not None:
                 return True
-            indice = self._indice_objetivo(self._listar())
+            dispositivos = self._listar()
+            indice = self._indice_objetivo(dispositivos)
             if indice is None:
                 self._ultimo_error_apertura = None
                 return False
@@ -341,6 +376,13 @@ class Sesion:
             self._ultimo_error_apertura = None
             self._error_anunciado = None
             self._captura = captura
+            # Se decide AQUI y no al preguntarlo: aqui esta la lista que se acaba
+            # de enumerar y el indice que de verdad se abrio, y enumerar
+            # dispositivos es caro comparado con analizar una ventana (ver
+            # INTERVALO_REVISION_DISPOSITIVO). Quien pregunta lo hace muchas veces
+            # por segundo desde el carril.
+            cable = buscar_rocksmith(dispositivos)
+            self._entrada_es_el_cable = cable is not None and cable.indice == indice
             self._total_visto = -1
             self._instante_muestras = time.monotonic()
             return True
@@ -365,6 +407,9 @@ class Sesion:
             captura, self._captura = self._captura, None
             captura.detener()
             self._latencia_medida_ms = None
+            # Sin captura abierta no hay entrada, asi que tampoco es el cable:
+            # dejarlo puesto diria «puedes poner el fondo» con el jack fuera.
+            self._entrada_es_el_cable = False
 
     def _dispositivo_sigue_presente(self) -> bool:
         """Verdadero si el dispositivo que se está usando sigue en la lista."""

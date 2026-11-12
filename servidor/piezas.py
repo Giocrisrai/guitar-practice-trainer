@@ -34,11 +34,14 @@ un candado la instantanea que lee el hilo HTTP, y no hace nada lento dentro del
 observador.
 """
 
+import logging
 import threading
 import time
 from dataclasses import replace
 from typing import Callable
 
+from nucleo.acompanamiento import PiezaRenderizada, renderizar
+from nucleo.acompanante import Acompanante, BloqueadoAhora
 from nucleo.piezas.compases import compases_de_la_seccion, pulsos_por_compas
 # Las dos constantes del reloj y la politica que las usa viven en el nucleo desde
 # la etapa 3d. Se importan -y con eso quedan reexportadas- para no romper a nadie
@@ -58,8 +61,11 @@ from nucleo.piezas.estudio import (
 )
 from nucleo.piezas.modelo import Pieza
 from nucleo.piezas.seguimiento import EstadoCarril
+from nucleo.piezas.voces_de_fondo import FondoDisponible, NotaDeFondo, VozDeFondo
 from nucleo.sintesis import Metronomo, SalidaAudio
 from servidor.configuracion import Configuracion
+
+_registro = logging.getLogger(__name__)
 
 # El perfil que se da por activo cuando la sesion de audio no dice cual es (ver
 # `SesionCarril._perfil_activo`). Es el mismo que trae la configuracion recien
@@ -161,6 +167,124 @@ def se_esperan_notas(
     return not (sin_senal and hubo_senal_en_la_pasada)
 
 
+# El volumen del fondo recien cargado, entre 0 y 1. Por debajo de lo que toca el
+# usuario a proposito: el fondo acompaña, y si tapa a la guitarra el alumno deja
+# de oirse los fallos, que es para lo que esta practicando.
+VOLUMEN_DEL_FONDO_POR_OMISION = 0.6
+
+# Cuanto se baja el fondo cuando lo que suena es la parte del PROPIO usuario,
+# porque el archivo no traia ninguna otra voz. Es la mitad, y la mitad porque lo
+# que se oye entonces no es un acompañamiento sino una guia: a volumen de
+# acompañamiento, el alumno no distingue su guitarra de la grabacion y cree que
+# toca limpio lo que esta tocando la maquina.
+GANANCIA_DE_TU_PARTE = 0.5
+
+
+def acompanamiento_posible(hay_fondo: bool, entrada_es_el_cable: bool) -> bool:
+    """Si encender la pieza de fondo tiene sentido ahora mismo. UN SOLO SITIO.
+
+    Dos condiciones, y las dos son necesarias:
+
+    - **Hay fondo cargado** (`SesionCarril.cargar_acompanamiento`). Sin archivo
+      no hay nada que sonar y el interruptor no haria nada.
+    - **La entrada es el cable** (`Sesion.entrada_es_el_cable`, que es donde esa
+      regla se decide y el unico sitio que llama a `buscar_rocksmith`). Con un
+      microfono abierto el fondo vuelve a entrar por el, el detector ve la suma
+      del fondo y del alumno, y el informe de la pasada deja de medir al alumno.
+
+    **No es una compuerta: es un recordatorio publicado.** Encender el
+    acompañamiento con el microfono lo hace sonar igual -manda el usuario, que
+    puede tener auriculares puestos y saber perfectamente lo que hace- y el
+    estado sigue diciendo `acompanamiento_posible: False`, de modo que el aviso
+    no se va. Convertirlo en compuerta seria discutirle al usuario el uso de sus
+    propios altavoces; callar el aviso seria dejarle creer que su informe mide lo
+    que toca.
+
+    Vive aqui y viaja PUBLICADA (`EstadoEstudio.acompanamiento_posible`) por lo
+    mismo que `se_esperan_notas`: la pantalla, el endpoint y lo que venga despues
+    leen el campo en vez de rehacer la cuenta, porque la misma regla escrita dos
+    veces nunca es la misma regla.
+    """
+    return hay_fondo and entrada_es_el_cable
+
+
+def cabezal_del_fondo(estado: EstadoEstudio | None) -> float | None:
+    """El instante EN PULSOS que el fondo debe estar sonando, o None si nada.
+
+    Es el contrato de `Acompanante.iniciar(cabezal)` visto desde el carril, y el
+    unico sitio donde se decide que es «ahora no suena nada»:
+
+    - **Sin pasada**, nada que sonar.
+    - **Durante la cuenta atras**, tampoco: la cuenta esta para que el alumno
+      entre a tiempo, y un fondo tocando el compas 1 mientras el click cuenta
+      cuatro le haria entrar encima de la nota, no antes de ella. El cabezal del
+      carril ya esta en el pulso de salida durante toda la cuenta, asi que no
+      basta con leerlo: hay que mirar la cuenta.
+    - **Con el tramo o la pieza terminados**, tampoco. Los dos motivos, igual que
+      en `se_esperan_notas`: una pieza cuyas notas acaban antes de su barra de
+      compas termina por `carril.completado` y el reloj sigue andando hasta el
+      final del tramo.
+    - **En cualquier otro caso**, el instante en pulsos, tal cual lo publica el
+      nucleo. En pulsos y no en segundos porque el factor de tempo ya esta
+      aplicado en los dos lados -el render se hace con el factor- y los pulsos
+      son lo unico que significa lo mismo en la pieza y en la pasada.
+
+    La pausa NO sale aqui: el que pausa es `_ajustar_acompanamiento`, con
+    `Acompanante.pausar()`, igual que el click. Devolver None en pausa
+    desvaneceria el fondo a silencio tras cuatro bloques y lo volveria a meter
+    con una rampa al reanudar, que es mas trabajo para el mismo resultado peor.
+    """
+    if estado is None:
+        return None
+    if estado.cuenta_atras_restante_s > 0.0:
+        return None
+    if estado.tramo_terminado or estado.carril.completado:
+        return None
+    return estado.instante_pulsos
+
+
+def voz_de_tu_parte(pieza: Pieza) -> VozDeFondo:
+    """La pieza del carril convertida en voz de fondo, para cuando no hay otra.
+
+    Un archivo de una sola pista -una tablatura de texto, un MIDI de un solo
+    instrumento- no tiene ninguna voz que el usuario no toque, asi que
+    `FondoDisponible.voces` viene vacio. Sonar su propia parte a media ganancia
+    sigue sirviendo -es la guia con la que se aprende una melodia nueva- siempre
+    que se DIGA, que es para lo que existe `acompanamiento_es_tu_parte`.
+
+    Se tira la digitacion y se queda la altura: es exactamente lo que
+    `nucleo.piezas.voces_de_fondo` hace con las pistas del archivo, porque para
+    sonar no hay que digitar nada.
+    """
+    return VozDeFondo(
+        nombre=pieza.nombre,
+        instrumento="Tu parte",
+        notas=tuple(
+            NotaDeFondo(
+                midi=float(nota.midi),
+                inicio_pulsos=nota.inicio_pulsos,
+                duracion_pulsos=nota.duracion_pulsos,
+            )
+            for nota in pieza.notas
+        ),
+    )
+
+
+def _volumen_valido(volumen: float) -> float:
+    """El volumen del fondo, comprobado. `ValueError` sale como 400.
+
+    Se rechaza en vez de recortarse porque quien lo manda es un deslizador de la
+    pantalla: un valor fuera de rango es un defecto de quien llama, y recortarlo
+    en silencio lo deja vivo.
+    """
+    volumen = float(volumen)
+    if not 0.0 <= volumen <= 1.0:
+        raise ValueError(
+            f"El volumen del acompanamiento va de 0 a 1, y pediste {volumen}"
+        )
+    return volumen
+
+
 class SesionCarril:
     """Propietaria de la pieza en curso, de su estudio y del reloj que lo mueve.
 
@@ -210,6 +334,7 @@ class SesionCarril:
         reloj: Callable[[], float] = time.monotonic,
         perfil_activo: Callable[[], str] | None = None,
         salida: SalidaAudio | None = None,
+        salida_fondo: SalidaAudio | None = None,
     ) -> None:
         self._sesion_audio = sesion_audio
         # La salida de audio del click, inyectable como en `SesionPractica`. Crear
@@ -222,6 +347,49 @@ class SesionCarril:
         # fallido tambien se anote evita reabrir el dispositivo 30 veces por
         # segundo con el cable de los altavoces desenchufado.
         self._clave_del_click: tuple[int, int] | None = None
+        # **La salida del acompañamiento es PROPIA, no la del click**, y no es
+        # una comodidad: `_parar_click` llama a `self._salida.cerrar()` SIN
+        # condiciones, y con `con_click` apagado eso ocurre en cada instantanea,
+        # treinta veces por segundo. Hoy es inocuo porque el stream ya esta en
+        # None; compartiendo la salida seria cerrarle el stream al
+        # acompañamiento treinta veces por segundo, o sea un fondo que no suena.
+        # Dos streams sobre el mismo dispositivo es justo lo que PortAudio sabe
+        # hacer, y el precio -un `abrir()` mas- se paga una vez por pasada.
+        self._salida_fondo = salida_fondo or SalidaAudio()
+        self._acompanante: Acompanante | None = None
+        # El archivo de fondo cargado por su puerta (`cargar_acompanamiento`), o
+        # None si nadie llamo. Mientras sea None el carril corre exactamente como
+        # antes de esta etapa.
+        self._fondo: FondoDisponible | None = None
+        # El interruptor y el volumen VIVOS, que no viven en `PlanDePasada` a
+        # proposito: todo cambio de plan hace `cerrar_repeticion(cuenta_como_
+        # vuelta=False)`, asi que un deslizador de volumen arrastrado serian
+        # decenas de cierres de repeticion y encender el fondo a mitad de pasada
+        # cortaria la vuelta por la mitad. Ni el volumen ni el interruptor
+        # cambian la PASADA; cambian lo que sale por los altavoces.
+        self._fondo_encendido = False
+        self._volumen_del_fondo = VOLUMEN_DEL_FONDO_POR_OMISION
+        # Sube con cada fondo nuevo, y forma parte de la clave del render. Es un
+        # contador y no el `FondoDisponible` mismo porque la clave se compara en
+        # cada instantanea: comparar dos fondos es recorrer todas sus notas
+        # treinta veces por segundo.
+        self._generacion_del_fondo = 0
+        # (generacion del fondo, factor de tempo) de lo ultimo que se mando
+        # renderizar. Es lo que decide si hay que volver a sintetizar: solo
+        # cuando cambia el archivo o el factor, nunca por mirar el estado.
+        self._clave_del_render: tuple[int, float] | None = None
+        self._renderizada: PiezaRenderizada | None = None
+        # El hilo que esta sintetizando ahora mismo, si lo hay. Nadie lo espera
+        # en produccion -el render entrega solo, y mientras no entrega el fondo
+        # escribe silencio-: se guarda para que las pruebas puedan esperarlo con
+        # un `join` en vez de dormir, que es como esta rama ha arreglado ya dos
+        # pruebas intermitentes.
+        self._hilo_del_render: threading.Thread | None = None
+        # El pulso que el fondo debe estar sonando, puesto por quien mueve el
+        # reloj y leido por la clausura del cabezal SIN esperar el candado. Ver
+        # `_cabezal_del_carril`, que es lo que de verdad decide si el fondo suena
+        # o se calla.
+        self._cabezal_pulsos: float | None = None
         self._reloj = reloj
         self._perfil_activo_inyectado = perfil_activo
         self._pieza: Pieza | None = None
@@ -401,6 +569,15 @@ class SesionCarril:
             self._sesion_audio.quitar_observador(self._observar)
             with self._candado:
                 self._parar_click()
+                # **El fondo se suelta con la pieza**, y de ahi el orden que
+                # tiene que seguir quien quiera las dos cosas: primero
+                # `iniciar(pieza, plan)` -que detiene lo anterior- y despues
+                # `cargar_acompanamiento(fondo)`. Un fondo que sobreviviera al
+                # `detener()` sonaria encima de la pieza SIGUIENTE, que es otra
+                # cancion y casi nunca el mismo tempo.
+                self._parar_acompanamiento()
+                self._olvidar_el_fondo()
+                self._cabezal_pulsos = None
                 self._estudio = None
                 # Con el conductor se va todo lo que llevaba: el reloj, las
                 # marcas del final y la sugerencia del tempo. El historial no,
@@ -580,7 +757,20 @@ class SesionCarril:
             if self._cuadro_con_senal(resultado):
                 self._hubo_senal = True
             self._instante = conductor.instante
-        conductor.observar(resultado, instante_analisis)
+        estado = conductor.observar(resultado, instante_analisis)
+        # El cabezal del fondo se refresca tambien aqui, y no solo en la
+        # instantanea: el audio llega cada 21 ms y la instantanea cada 33, asi
+        # que sin esto el fondo iria a tirones de un tercio de bloque. No se
+        # pregunta mas a menudo porque no serviria: el reloj de la pasada SOLO
+        # se mueve en estos dos sitios, asi que entre dos avisos el cabezal vale
+        # exactamente lo mismo se pregunte cuando se pregunte. Eso es lo que
+        # permite que la clausura lea un float en vez de entrar en el nucleo.
+        with self._candado:
+            # Y solo si el conductor sigue siendo el de esta pasada: un cuadro
+            # en vuelo puede aterrizar despues de `detener()`, y dejaria un
+            # cabezal vivo apuntando a una pieza que ya no esta.
+            if self._conductor is conductor:
+                self._cabezal_pulsos = cabezal_del_fondo(estado)
 
     def _mirar(self, ahora: float, ausente: bool) -> EstadoEstudio | None:
         """Le pasa al conductor el tiempo y la señal, y adopta lo que decida.
@@ -634,9 +824,10 @@ class SesionCarril:
         aplica la interfaz al empezar la pasada siguiente. Vale None cuando no hay
         nada que sugerir, que es casi siempre.
         """
+        self._cabezal_pulsos = cabezal_del_fondo(estado)
         if estado is None:
             return {
-                **_ESTUDIO_APAGADO.a_dict(),
+                **replace(_ESTUDIO_APAGADO, **self._campos_del_fondo()).a_dict(),
                 "pausado": False,
                 # Sin pasada SI se esperan notas: el afinador. Ver
                 # `se_esperan_notas`, que es quien lo decide tambien aqui.
@@ -650,8 +841,14 @@ class SesionCarril:
         # ademas el conductor (`al_cambiar_repeticion`), y que se solapen no
         # cuesta nada: con la misma clave este metodo no reabre nada.
         self._ajustar_click(estado)
+        # Y el acompañamiento en la misma instantanea y por lo mismo: aqui se
+        # atiende el factor de tempo nuevo, la pausa y el fin del tramo. No
+        # rearranca por repeticion, al contrario que el click: el acompañante no
+        # lleva reloj propio, asi que no acumula deriva que haya que borrar
+        # dando la vuelta. Es la ventaja de leer el cabezal en cada bloque.
+        self._ajustar_acompanamiento(estado)
         return {
-            **estado.a_dict(),
+            **replace(estado, **self._campos_del_fondo()).a_dict(),
             "pausado": self._pausado,
             # La MISMA llamada que contesta a `/api/diagnostico` por la propiedad
             # `esperando_notas`: las dos mitades del aviso del cable no pueden
@@ -804,6 +1001,330 @@ class SesionCarril:
         self._clave_del_click = None
         if cerrar_salida:
             self._salida.cerrar()
+
+    # -- el acompañamiento: la pieza de fondo mientras el usuario toca --------
+
+    def cargar_acompanamiento(
+        self,
+        fondo: FondoDisponible | None,
+        volumen: float = VOLUMEN_DEL_FONDO_POR_OMISION,
+    ) -> None:
+        """**La puerta PROPIA del acompañamiento**, y lo enciende al cargarlo.
+
+        No pasa por `iniciar(pieza, plan)`, y eso es una decision y no un
+        descuido: `iniciar` es la puerta unica del carril y su firma no cambia.
+        Si el fondo entrara por ella, el carril tendria que saber de que archivo
+        salio su pieza -hoy no lo sabe y no le hace falta-, y todo el que ya
+        llama a `iniciar` (el gemelo, los generadores de ejercicios, las piezas
+        de prueba) tendria que aprender un parametro que no usa.
+
+        **El orden es `iniciar` y DESPUES esto**: `iniciar` detiene lo anterior,
+        y `detener` suelta el fondo con la pieza (ver `detener`).
+
+        `fondo=None` lo apaga y lo olvida, que es lo que hace falta cuando el
+        usuario deselecciona el archivo de fondo.
+
+        Cargar ENCIENDE, porque cargarlo es haberlo pedido; para dejarlo puesto y
+        callado esta el interruptor vivo de `acompanamiento(encendido=False)`. No
+        suena por eso solo: tiene que haber salida de audio, pasada en marcha y
+        buffer renderizado, y nada de eso lo decide esta llamada.
+
+        Un volumen fuera de [0, 1] es `ValueError`, que sale como 400 igual que
+        un plan imposible.
+        """
+        volumen = _volumen_valido(volumen)
+        with self._candado:
+            if fondo is None:
+                self._parar_acompanamiento()
+                self._olvidar_el_fondo()
+                return
+            # El fondo nuevo invalida el buffer de el anterior, y el contador de
+            # generacion es lo que hace que la instantanea siguiente mande
+            # renderizar sin tener que comparar dos archivos nota a nota.
+            self._fondo = fondo
+            self._generacion_del_fondo += 1
+            self._clave_del_render = None
+            self._renderizada = None
+            self._volumen_del_fondo = volumen
+            self._fondo_encendido = True
+            if self._acompanante is not None:
+                # El acompañante vivo se queda en silencio -su pieza cargada es
+                # la vieja- hasta que el render nuevo aterrice. Lo unico que se
+                # le puede decir ya es a que volumen va a entrar.
+                self._acompanante.ganancia(self._ganancia_del_fondo())
+
+    def acompanamiento(
+        self, encendido: bool | None = None, volumen: float | None = None
+    ) -> dict:
+        """El interruptor y el volumen, VIVOS. Devuelve el estado publicado.
+
+        **Ninguno de los dos va en `PlanDePasada`**, y el motivo es medible:
+        todo cambio de plan pasa por `SesionDeEstudio.cambiar_plan`, que hace
+        `cerrar_repeticion(cuenta_como_vuelta=False)` para volcar lo tocado antes
+        de tirar el seguidor. Un deslizador de volumen arrastrado de 0,2 a 0,8
+        son decenas de cierres de repeticion -y decenas de reconstrucciones del
+        seguidor si ademas tocara el factor-, y encender el fondo a mitad de
+        pasada le partiria la vuelta al alumno. Ni el volumen ni el interruptor
+        cambian la pasada: cambian lo que sale por los altavoces.
+
+        Los dos son explicitos y no interruptores de los de «dale la vuelta a lo
+        que haya», por lo mismo que `pausa(activa)`: dos clics desde dos
+        pestañas no pueden dejar el fondo en el estado contrario al que las dos
+        pidieron.
+
+        El volumen NO vuelve a renderizar: el render se hace a ganancia 1 y el
+        volumen entra por `Acompanante.ganancia()`, que lo aplica suavizado en el
+        bloque siguiente. Renderizar una pieza de tres minutos por cada paso del
+        deslizador seria mover un deslizador con segundos de retardo.
+        """
+        with self._candado:
+            if encendido is not None:
+                self._fondo_encendido = bool(encendido)
+            if volumen is not None:
+                self._volumen_del_fondo = _volumen_valido(volumen)
+                if self._acompanante is not None:
+                    self._acompanante.ganancia(self._ganancia_del_fondo())
+        return self.estado()
+
+    def _campos_del_fondo(self) -> dict:
+        """Los tres campos del acompañamiento que viajan en el estado.
+
+        Un solo sitio los decide, y los dos caminos de `_instantanea` -con pieza
+        y sin ella- llaman AQUI en vez de escribirlos cada uno. Es la misma
+        leccion de `se_esperan_notas`, aplicada dentro de un solo archivo:
+        bastan dos copias en el mismo idioma para que empiecen a discrepar.
+        """
+        fondo = self._fondo
+        return {
+            # Lo que SUENA, no lo que se pidio: sin salida de audio el
+            # interruptor esta puesto y esto es False, para que la pantalla
+            # escriba «sin fondo» en vez de un interruptor que no hace nada.
+            # Mismo criterio que `click_sonando`.
+            "acompanamiento_sonando": (
+                self._acompanante is not None and self._acompanante.sonando
+            ),
+            "acompanamiento_posible": acompanamiento_posible(
+                fondo is not None, self._entrada_es_el_cable()
+            ),
+            "acompanamiento_es_tu_parte": fondo is not None and not fondo.voces,
+        }
+
+    def _entrada_es_el_cable(self) -> bool:
+        """Lo que diga la sesion de audio, que es quien decide esa regla.
+
+        Aqui NO se busca el cable: `Sesion.entrada_es_el_cable` es el unico sitio
+        que llama a `buscar_rocksmith` para contestarlo, y esto solo lo lee para
+        publicarlo. Una sesion de audio que no lleve la propiedad -un doble de
+        prueba, un flujo de audio futuro- no es el cable: afirmarlo callaria el
+        recordatorio sin saber nada, y el recordatorio existe precisamente para
+        los casos en que la entrada no es la que se cree.
+        """
+        return bool(getattr(self._sesion_audio, "entrada_es_el_cable", False))
+
+    def _ganancia_del_fondo(self) -> float:
+        """El volumen pedido, a la mitad cuando lo que suena es tu propia parte.
+
+        Se aplica como ganancia del acompañante y NO como ganancia del render,
+        que va siempre a 1: asi mover el deslizador no vuelve a sintetizar nada.
+        """
+        if self._fondo is not None and not self._fondo.voces:
+            return self._volumen_del_fondo * GANANCIA_DE_TU_PARTE
+        return self._volumen_del_fondo
+
+    def _cabezal_del_carril(self) -> float | None:
+        """El cabezal que lee el acompañante, SIN ESPERAR NUNCA el candado.
+
+        **Esta clausura la llama el hilo de audio una vez por bloque -cada 21
+        ms-, y si se bloquea, se oye.** Por eso intenta el candado con
+        `blocking=False` y lanza `BloqueadoAhora` cuando lo encuentra ocupado:
+        el acompañante trata esa excepcion repitiendo el ultimo instante
+        conocido durante `REPETICIONES_MAXIMAS` bloques seguidos (~85 ms) y
+        desvaneciendose despues, que es una degradacion suave y acotada.
+
+        Esperar el candado no seria una degradacion suave, seria un abrazo
+        mortal: `_parar_acompanamiento` corre CON el candado tomado y hace
+        `Acompanante.detener()`, que es un `join(timeout=1.0)` sobre este mismo
+        hilo. Con `blocking=True` el hilo de audio estaria esperando el candado
+        que el que lo quiere parar tiene en la mano: el join venceria al segundo,
+        `detener()` devolveria el control como si el fondo estuviera parado y
+        quedaria un hilo huerfano escribiendo sobre una salida que la linea
+        siguiente cierra. Cambiar `blocking=False` por un `with self._candado:`
+        es exactamente ese defecto, y es el primer mutante de esta tarea.
+
+        Lo que se lee es un `float | None` y nada mas: ni se entra en el nucleo
+        -cuyo candado tambien podria estar ocupado- ni se construye ningun
+        estado. El valor lo dejan puestos `_instantanea` y `_observar`, que son
+        los dos unicos sitios donde el reloj de la pasada se mueve, asi que leer
+        la foto es tan actual como preguntarle al estudio y cuesta nanosegundos.
+        """
+        if not self._candado.acquire(blocking=False):
+            raise BloqueadoAhora()
+        try:
+            return self._cabezal_pulsos
+        finally:
+            self._candado.release()
+
+    def _ajustar_acompanamiento(self, estado: EstadoEstudio) -> None:
+        """Arranca, para o pausa el fondo segun el estado. BAJO candado.
+
+        Calcada de `_ajustar_click`, incluidas las dos cosas que la etapa 3c
+        aprendio: se llama desde la instantanea y NO desde `_observar` -el hilo
+        de analisis no puede pagar un `join`-, y **sin salida de audio la pasada
+        sigue en pie**, porque quedarse sin fondo degrada la experiencia y no la
+        impide.
+
+        Tres diferencias con el click, todas por la misma razon -el acompañante
+        no lleva reloj propio-:
+
+        1. **No rearranca en cada repeticion.** El metronomo lo hace para borrar
+           la deriva de su reloj y para que la cuenta atras se oiga desde su
+           primer pulso; aqui no hay reloj que derive y la cuenta atras la
+           resuelve `cabezal_del_fondo` devolviendo None.
+        2. **Un tempo nuevo no rearranca nada**: vuelve a renderizar, y el buffer
+           nuevo entra en caliente con `Acompanante.cargar()`.
+        3. **El render va en un hilo aparte** y hasta que el buffer este, el
+           fondo escribe silencio. Sintetizar tres minutos de musica dentro de la
+           instantanea dejaria el WebSocket mudo varios segundos.
+        """
+        estudio = self._estudio
+        pieza = self._pieza
+        if (
+            estudio is None
+            or pieza is None
+            or self._fondo is None
+            or not self._fondo_encendido
+        ):
+            self._parar_acompanamiento()
+            return
+        # Igual que el click, y el `and not estado.en_bucle` igual de defensivo:
+        # acabada la pasada sin bucle, el fondo seguiria solo mientras el usuario
+        # mira el informe.
+        if estado.tramo_terminado and not estado.en_bucle:
+            self._parar_acompanamiento()
+            return
+        self._pedir_el_render(pieza, estudio)
+        if self._acompanante is None and not self._arrancar_acompanante():
+            return
+        # Las dos pausas, las mismas que el click: la del usuario y la de la
+        # falta de señal. Con `pausar()` y no con `detener()`, para no pagar el
+        # `join` en cada pulsacion del boton -y para no perder el buffer, que
+        # volver a cargar es gratis pero volver a renderizar no-.
+        if self._pausado or estado.en_pausa:
+            self._acompanante.pausar()
+        else:
+            self._acompanante.reanudar()
+
+    def _arrancar_acompanante(self) -> bool:
+        """Abre la salida propia y echa a andar el hilo. False si no se pudo.
+
+        No deja la salida abierta cuando el hilo no arranca, por lo mismo que el
+        click: seria retener el dispositivo sin usarlo.
+        """
+        if not self._salida_fondo.abrir():
+            return False
+        acompanante = Acompanante(salida=self._salida_fondo)
+        if self._renderizada is not None:
+            acompanante.cargar(self._renderizada)
+        acompanante.ganancia(self._ganancia_del_fondo())
+        if not acompanante.iniciar(self._cabezal_del_carril):
+            self._salida_fondo.cerrar()
+            return False
+        self._acompanante = acompanante
+        return True
+
+    def _pedir_el_render(self, pieza: Pieza, estudio: SesionDeEstudio) -> None:
+        """Manda sintetizar el fondo, SOLO si cambio el archivo o el factor.
+
+        La clave es `(generacion del fondo, factor de tempo)`, y es lo unico que
+        separa un render por pasada de un render en cada instantanea: esto lo
+        llama la instantanea treinta veces por segundo, y sintetizar tres minutos
+        de musica treinta veces por segundo no es que vaya lento, es que no
+        termina nunca.
+
+        El tempo sale de la PIEZA y el factor del PLAN, que es la unica
+        combinacion que mueve el fondo al compas del carril: el tempo de
+        `FondoDisponible` es informativo y puede no ser el mismo (ver el
+        docstring de `nucleo.acompanamiento`).
+        """
+        fondo = self._fondo
+        if fondo is None:
+            return
+        clave = (self._generacion_del_fondo, estudio.plan.factor_tempo)
+        if clave == self._clave_del_render:
+            return
+        self._clave_del_render = clave
+        # Sin voces en el archivo suena la parte del propio usuario, a media
+        # ganancia y DICIENDOLO (`acompanamiento_es_tu_parte`).
+        voces = fondo.voces or (voz_de_tu_parte(pieza),)
+        hilo = threading.Thread(
+            target=self._renderizar,
+            args=(clave, voces, pieza.tempo, estudio.plan.factor_tempo),
+            daemon=True,
+        )
+        self._hilo_del_render = hilo
+        hilo.start()
+
+    def _renderizar(
+        self,
+        clave: tuple[int, float],
+        voces: tuple[VozDeFondo, ...],
+        tempo: int,
+        factor_tempo: float,
+    ) -> None:
+        """Sintetiza fuera del hilo de la instantanea y entrega si sigue valiendo.
+
+        La sintesis corre SIN candado -es lo lento, y retenerlo aqui dejaria la
+        clausura del cabezal fallando durante todo el render, o sea el fondo
+        desvanecido justo al empezar-. Solo la entrega lo toma, y comprueba antes
+        que la clave siga siendo la vigente: un render que se queda por el camino
+        -el usuario movio el tempo dos veces seguidas- no puede pisar al que
+        venia detras.
+
+        Una pieza que no cabe (`MUESTRAS_MAXIMAS`) o un tempo imposible dejan la
+        pasada sin fondo y en pie, y lo dicen en el registro UNA vez: es el mismo
+        trato que el tempo que el metronomo rechaza.
+        """
+        try:
+            renderizada = renderizar(
+                voces,
+                tempo=tempo,
+                factor_tempo=factor_tempo,
+                frecuencia_muestreo=self._salida_fondo.frecuencia_muestreo,
+            )
+        except ValueError as error:
+            _registro.error("La pieza de fondo no se pudo renderizar: %s", error)
+            return
+        with self._candado:
+            if clave != self._clave_del_render:
+                return
+            self._renderizada = renderizada
+            if self._acompanante is not None:
+                self._acompanante.cargar(renderizada)
+
+    def _parar_acompanamiento(self) -> None:
+        """Para el fondo y cierra SU salida. Seguro de llamar sin fondo.
+
+        **El buffer renderizado NO se tira**, al contrario que el metronomo con
+        su clave: apagar y encender el interruptor es gratis y volver a
+        sintetizar tres minutos de musica no. Lo que invalida el buffer es
+        cambiar de archivo o de factor, y eso lo llevan `cargar_acompanamiento` y
+        la clave del render.
+
+        Cierra `self._salida_fondo`, que es SUYA: por eso puede hacerlo sin
+        condiciones treinta veces por segundo -con el fondo apagado el stream ya
+        esta en None y no hay nada que cerrar- sin tocarle el stream al click.
+        """
+        if self._acompanante is not None:
+            self._acompanante.detener()
+        self._acompanante = None
+        self._salida_fondo.cerrar()
+
+    def _olvidar_el_fondo(self) -> None:
+        """Suelta el archivo de fondo y todo lo que se derivaba de el."""
+        self._fondo = None
+        self._fondo_encendido = False
+        self._clave_del_render = None
+        self._renderizada = None
 
     def _estudio_o_falla(self) -> SesionDeEstudio:
         """La sesion de estudio en marcha, o el `ValueError` que sale como 400.

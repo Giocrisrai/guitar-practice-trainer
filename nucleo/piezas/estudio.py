@@ -238,6 +238,16 @@ class EstadoEstudio:
     interfaz de la etapa 3a ya lee `instante_s`, `indice_actual`, `total`,
     `completado` y `tocadas` del paquete del WebSocket, y anidarlos obligaria a
     tocar `useCarril.ts` sin ningun motivo.
+
+    **Los tres campos del acompañamiento los rellena el SERVIDOR y no el nucleo**,
+    y por eso -solo ellos- llevan valor por omision. El nucleo no sabe de
+    archivos de fondo, de tarjetas de sonido ni de cables, asi que
+    `SesionDeEstudio.estado` los deja como estan y `SesionCarril._instantanea`
+    pone los de verdad con `replace` antes de publicar. Viajan AQUI, y no como
+    tres claves sueltas que el servidor añada al diccionario, para que haya un
+    solo sitio que los escriba en el paquete: la leccion de `esperando_notas`
+    -una regla escrita en dos sitios no es la misma regla- aplicada a la forma
+    del estado.
     """
 
     carril: EstadoCarril
@@ -257,6 +267,19 @@ class EstadoEstudio:
     compas_variable: bool
     ritmo_aproximado: bool
     tramo_terminado: bool
+    # Lo que SUENA de fondo, no lo que se pidio: sin salida de audio, o sin
+    # archivo de fondo cargado, el interruptor puede estar puesto y esto es
+    # False (mismo criterio que `click_sonando` en el servidor).
+    acompanamiento_sonando: bool = False
+    # Si encender el fondo tiene sentido ahora mismo: hay fondo cargado Y la
+    # entrada es el cable. Con el microfono el fondo entra por el y se
+    # retroalimenta, asi que esto es False y la pantalla lo recuerda; NO es una
+    # compuerta, porque el usuario manda y puede encenderlo igual.
+    acompanamiento_posible: bool = False
+    # El archivo no traia ninguna otra voz y lo que suena es la parte del propio
+    # usuario, a media ganancia. Hay que decirlo: si no, el alumno cree que esta
+    # oyendo el acompañamiento y esta oyendose a si mismo.
+    acompanamiento_es_tu_parte: bool = False
 
     def a_dict(self) -> dict:
         return {
@@ -277,6 +300,9 @@ class EstadoEstudio:
             "compas_variable": self.compas_variable,
             "ritmo_aproximado": self.ritmo_aproximado,
             "tramo_terminado": self.tramo_terminado,
+            "acompanamiento_sonando": self.acompanamiento_sonando,
+            "acompanamiento_posible": self.acompanamiento_posible,
+            "acompanamiento_es_tu_parte": self.acompanamiento_es_tu_parte,
             # `completado` del carril es "se acabo la PIEZA"; para quien practica
             # un tramo, lo que se acabo es el tramo. Se publica con el mismo
             # nombre porque es lo que la interfaz de la etapa 3a ya lee.
