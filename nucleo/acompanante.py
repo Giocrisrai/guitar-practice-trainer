@@ -31,6 +31,7 @@ que suene. Asi el acompañante no puede derivar del carril ni por accidente,
 porque no tiene con que.
 """
 
+import logging
 import threading
 from typing import Callable
 
@@ -39,10 +40,18 @@ import numpy as np
 from nucleo.acompanamiento import PiezaRenderizada
 from nucleo.sintesis import INTERVALO_SONDEO_S, SalidaAudio
 
+_registro = logging.getLogger(__name__)
+
 # Cuantas muestras lleva cada escritura por omision. A 48 kHz son 21,3 ms: lo
 # bastante corto para que un salto del cabezal se oiga enseguida y lo bastante
 # largo para que el hilo no se pase el dia entrando y saliendo de PortAudio.
 BLOQUE_POR_OMISION = 1024
+
+# Cuantos bloques seguidos se puede repetir el ultimo cabezal conocido antes de
+# degradar a silencio. Ver `BloqueadoAhora`: cuatro bloques del tamaño por
+# omision son 85 ms, lo justo para cubrir un candado que se suelta enseguida y
+# demasiado poco para que la repeticion se oiga como un bucle.
+REPETICIONES_MAXIMAS = 4
 
 
 class BloqueadoAhora(Exception):
@@ -57,7 +66,18 @@ class BloqueadoAhora(Exception):
     la sesion y falla porque el hilo de analisis esta dentro. Esperar el candado
     dejaria la tarjeta sin alimentar durante un bloque entero, y escribir ceros
     seria un agujero audible en medio de la pieza. Repetir el ultimo instante
-    conocido es, como mucho, un bloque de 21 ms que suena dos veces.
+    conocido es, para UN bloque, 21 ms que suenan dos veces y no se perciben.
+
+    **Pero la repeticion tiene techo, porque N seguidas no son N veces lo
+    mismo.** Si el candado se queda ocupado un segundo, con el bloque por
+    omision salen ~47 copias consecutivas del mismo fragmento de 21 ms: eso no
+    se oye como musica repetida, se oye como un bucle cerrado, un zumbido
+    periodico a ~47 Hz. Y el hilo no se frena por si solo: va tan rapido como la
+    tarjeta acepte. Asi que tras `REPETICIONES_MAXIMAS` bloqueos CONSECUTIVOS el
+    acompañante deja de repetir y escribe silencio, que es lo menos malo de los
+    tres: mejor un hueco que un zumbido que no estaba en la pieza. En cuanto el
+    cabezal vuelve a contestar, la cuenta se reinicia y la pieza sigue donde el
+    carril diga.
     """
 
 
@@ -96,11 +116,26 @@ class Acompanante:
         self._candado = threading.Lock()
         self._renderizada: PiezaRenderizada | None = None
         self._ganancia_pedida = 1.0
-        # La ganancia que de verdad salio en la ultima muestra escrita. Solo la
-        # toca el hilo, asi que no necesita candado.
+        # La ganancia que de verdad salio en la ultima muestra ESCRITA, y de
+        # donde arranca la rampa siguiente. Va bajo el mismo candado que la
+        # pedida, y no porque «solo la toque el hilo»: en la ventana del hilo
+        # huerfano -el que sobrevive al `join(timeout=1.0)` vencido- puede haber
+        # dos hilos pasando por el commit, y el candado es lo que garantiza que
+        # la pareja (pedida, aplicada) que el bloque siguiente fotografia sea
+        # coherente en vez de media de cada uno.
         self._ganancia_aplicada = 1.0
         self._cabezal: Callable[[], float | None] | None = None
         self._ultimo_instante: float | None = None
+        # Bloqueos CONSECUTIVOS del cabezal, para el techo de repeticiones (ver
+        # `BloqueadoAhora`). No es un reloj: no avanza solo, no influye en DONDE
+        # suena la pieza y un solo cabezal bueno lo pone a cero. Lo unico que
+        # decide es si el bloque repite el ultimo instante o escribe silencio.
+        self._repeticiones_seguidas = 0
+        # Tipos de error del cabezal ya anunciados, para no escribir una linea
+        # por bloque. Mismo criterio que `servidor/sesion.py` con los
+        # observadores que fallan: a 47 bloques por segundo, un fallo
+        # persistente llenaria la terminal.
+        self._fallos_cabezal_anunciados: set[str] = set()
         # Contador de generacion: `detener()` lo incrementa antes de tocar
         # cualquier otra cosa. Protege contra el hilo huerfano que sobrevive a un
         # `join(timeout=...)` vencido (ver `detener()` y `_trabajar()`).
@@ -128,7 +163,18 @@ class Acompanante:
 
     @property
     def cabezales_repetidos(self) -> int:
-        """Cuantas veces el cabezal lanzo `BloqueadoAhora` y se repitio el ultimo."""
+        """Cuantas veces el cabezal NO dio un instante nuevo.
+
+        Suma los dos modos de fallo, porque la degradacion es la misma: la
+        `BloqueadoAhora` esperada (el candado de la sesion estaba ocupado) y
+        cualquier otra excepcion de la clausura ajena. Lo que los distingue es el
+        registro: la segunda deja una linea de error y la primera no, porque la
+        primera es normal y la segunda es un defecto.
+
+        No cuenta lo que haga un hilo huerfano despues de que `detener()` haya
+        devuelto el control: ese incremento aterrizaria sobre el contador ya
+        reiniciado de la pasada siguiente.
+        """
         return self._repetidos
 
     def cargar(self, renderizada: PiezaRenderizada) -> None:
@@ -153,6 +199,17 @@ class Acompanante:
         `cabezal()` devuelve el instante de la pieza en pulsos, o `None` si ahora
         mismo no hay nada que suene (cuenta atras, pasada terminada, sin pasada).
         Puede lanzar `BloqueadoAhora` si no se puede leer sin esperar.
+
+        Reinicia lo que es de la pasada -el cabezal, sus contadores, la cuenta de
+        repeticiones seguidas- y limpia LAS DOS banderas: sin `_pausado.clear()`,
+        un `pausar(); detener(); iniciar()` arrancaria un hilo que dice `sonando`
+        True y no alimenta la tarjeta jamas.
+
+        Lo que NO reinicia es `_ganancia_aplicada`, y es a proposito: es una
+        propiedad de lo ultimo que salio por el altavoz, no de la pasada.
+        Volverla a 1,0 soltaria, con la ganancia en 0,2, un bloque de 21 ms
+        rampando desde 1,0 -hasta cinco veces el volumen pedido- en cada
+        arranque: el usuario le da a Empezar y recibe un golpe de volumen.
         """
         if self.sonando:
             return True
@@ -164,6 +221,7 @@ class Acompanante:
         self._ultimo_instante = None
         self._escritas = 0
         self._repetidos = 0
+        self._repeticiones_seguidas = 0
         self._hilo = threading.Thread(target=self._trabajar, daemon=True)
         self._hilo.start()
         return True
@@ -207,6 +265,13 @@ class Acompanante:
         Lo que NO hay aqui es un contador de posicion. Si el cabezal contesta dos
         veces el mismo pulso, se escribe dos veces el mismo audio; si salta, el
         audio salta. No hay ningun estado del que el audio pueda derivar.
+
+        **Todo lo que el bloque deja escrito en el objeto se APUNTA al final**,
+        detras de la segunda comprobacion de generacion: las muestras contadas,
+        la ganancia que de verdad salio, el ultimo cabezal bueno y la cuenta de
+        repeticiones. Es la otra mitad del contrato del huerfano: el hilo que
+        sobrevive al `join(timeout=1.0)` vencido no escribe un bloque mas, y
+        tampoco deja huella en los contadores de la pasada siguiente.
         """
         generacion = self._generacion
         cabezal = self._cabezal
@@ -218,32 +283,111 @@ class Acompanante:
             with self._candado:
                 renderizada = self._renderizada
                 pedida = self._ganancia_pedida
-            instante = self._preguntar(cabezal)
-            bloque = self._con_ganancia(self._rodaja(renderizada, instante), pedida)
+                desde = self._ganancia_aplicada
+            instante, fallo = self._preguntar(cabezal)
+            bloque = self._con_ganancia(self._rodaja(renderizada, instante), desde, pedida)
             if self._parar.is_set() or self._generacion != generacion:
                 return
             aceptado = self._salida.reproducir(bloque)
             if self._parar.is_set() or self._generacion != generacion:
                 return
-            if aceptado:
-                self._escritas += bloque.size
+            self._apuntar(instante, fallo, aceptado, bloque.size, pedida)
 
-    def _preguntar(self, cabezal: Callable[[], float | None] | None) -> float | None:
+    def _preguntar(
+        self, cabezal: Callable[[], float | None] | None
+    ) -> tuple[float | None, bool]:
         """El instante que suena ahora, preguntandolo CADA bloque.
 
-        Si el cabezal no se puede leer sin esperar, se reutiliza el ultimo
-        conocido: ver `BloqueadoAhora`. Antes del primer cabezal bueno no hay
-        nada que repetir y se devuelve `None`, que es silencio.
+        Devuelve el instante y si el cabezal FALLO, para que el que apunta el
+        resultado del bloque -`_apuntar`, ya pasada la comprobacion de
+        generacion- sepa que contar. Aqui no se toca ni un contador: esta
+        funcion la ejecuta tambien el hilo huerfano, que todavia no sabe que lo
+        es.
+
+        Dos modos de fallo, misma degradacion: reutilizar el ultimo instante
+        conocido mientras quede techo (ver `BloqueadoAhora`).
+
+        1. `BloqueadoAhora`: lo esperado, el candado de la sesion ocupado. No se
+           registra, porque es normal y pasaria 47 veces por segundo.
+        2. Cualquier otra excepcion: un defecto de la clausura ajena, que la
+           escribe la Task 5. **No puede matar el hilo**, por lo mismo que una
+           escritura fallida no lo mata: quedarse sin fondo degrada la
+           experiencia, y el hilo es daemon, asi que nadie se enteraria hasta que
+           el usuario notara que la pieza dejo de sonar. Se registra una vez por
+           tipo de error.
+
+        Antes del primer cabezal bueno no hay nada que repetir y se devuelve
+        `None`, que es silencio.
         """
         if cabezal is None:
-            return None
+            return None, False
         try:
-            instante = cabezal()
+            return cabezal(), False
         except BloqueadoAhora:
+            return self._instante_repetido(), True
+        except Exception as error:  # el cabezal es codigo ajeno: no nos tumba
+            self._anunciar_fallo_cabezal(error)
+            return self._instante_repetido(), True
+
+    def _instante_repetido(self) -> float | None:
+        """El ultimo cabezal conocido, o `None` si ya se agoto el techo.
+
+        El techo es lo que convierte un bucle cerrado audible en un hueco: ver
+        `BloqueadoAhora`. Se mira la cuenta ya apuntada, sin tocarla.
+        """
+        if self._repeticiones_seguidas >= REPETICIONES_MAXIMAS:
+            return None
+        return self._ultimo_instante
+
+    def _anunciar_fallo_cabezal(self, error: Exception) -> None:
+        """Registra el fallo de la clausura la primera vez que se ve ese tipo.
+
+        Se recuerda por tipo de error y no por mensaje, igual que
+        `servidor/sesion.py` con los observadores: un error cuyo texto cambia en
+        cada bloque escribiria ~47 lineas por segundo y haria crecer el conjunto
+        sin cota. El mensaje del primero si se imprime, que es el que sirve para
+        diagnosticar.
+        """
+        clave = type(error).__name__
+        if clave in self._fallos_cabezal_anunciados:
+            return
+        self._fallos_cabezal_anunciados.add(clave)
+        _registro.error(
+            "El cabezal de la pieza de fondo fallo: %s: %s. Se repite el ultimo "
+            "instante conocido y, pasadas %d veces seguidas, se escribe silencio.",
+            clave,
+            error,
+            REPETICIONES_MAXIMAS,
+        )
+
+    def _apuntar(
+        self,
+        instante: float | None,
+        fallo: bool,
+        aceptado: bool,
+        muestras: int,
+        pedida: float,
+    ) -> None:
+        """Deja apuntado lo que ese bloque dejo hecho. Solo para el hilo vigente.
+
+        Se llama DESPUES de la segunda comprobacion de generacion, y en eso esta
+        todo el asunto: nada de lo que un hilo huerfano calcule llega hasta aqui.
+
+        `_ganancia_aplicada` solo avanza si la salida ACEPTO el bloque. Darla por
+        avanzada en un bloque que nadie oyo -rechazado por la tarjeta- dejaria la
+        rampa consumida y el cambio de ganancia entraria como escalon en el
+        siguiente, que es justo el chasquido que la rampa existe para evitar.
+        """
+        if fallo:
             self._repetidos += 1
-            return self._ultimo_instante
-        self._ultimo_instante = instante
-        return instante
+            self._repeticiones_seguidas += 1
+        else:
+            self._repeticiones_seguidas = 0
+            self._ultimo_instante = instante
+        if aceptado:
+            with self._candado:
+                self._ganancia_aplicada = pedida
+            self._escritas += muestras
 
     def _rodaja(
         self, renderizada: PiezaRenderizada | None, instante: float | None
@@ -262,25 +406,37 @@ class Acompanante:
             return np.zeros(self.bloque, dtype=np.float32)
         return renderizada.rodaja(float(instante), self.bloque)
 
-    def _con_ganancia(self, bloque: np.ndarray, pedida: float) -> np.ndarray:
+    def _con_ganancia(self, bloque: np.ndarray, desde: float, pedida: float) -> np.ndarray:
         """Aplica la ganancia, y un CAMBIO de ganancia como rampa dentro del bloque.
 
         Multiplicar de golpe mete un salto del tamaño entero del cambio entre dos
         muestras consecutivas, y un escalon asi es un chasquido audible: bajar el
         fondo con un deslizador sonaria a interruptor. La rampa reparte el cambio
-        por las 1024 muestras del bloque (21 ms), que no se percibe como tal.
+        por las 1024 muestras del bloque (21 ms), que no se percibe como tal, y
+        ocupa el bloque ENTERO: una rampa que se agotara en el primer octavo
+        seria ocho veces mas abrupta por el mismo cambio.
 
-        Trabaja en sitio porque `bloque` siempre es un array recien hecho -lo
-        acaba de devolver `rodaja` o `np.zeros`- y nadie mas lo tiene.
+        No guarda nada: el que apunta que la ganancia avanzo es `_apuntar`, y
+        solo si la salida acepto el bloque. Recibe `desde` y `pedida` en la misma
+        foto tomada bajo candado, asi que la rampa de un bloque siempre va de
+        donde acabo la anterior QUE SE OYO a lo que se pide ahora.
+
+        **Trabaja EN SITIO, y eso depende de un modulo ajeno:**
+        `PiezaRenderizada.rodaja` (`nucleo/acompanamiento.py`) construye un
+        `np.zeros` nuevo en cada llamada y copia dentro, nunca devuelve una vista
+        del buffer de la pieza. Si algun dia devolviera una vista, este `*=`
+        multiplicaria el buffer CARGADO muestra a muestra, bloque tras bloque y
+        de forma acumulativa: la pieza se iria apagando -o reventando- sola, con
+        la copia compartida por todas las pasadas y sin nada en este modulo que
+        lo delatara. Es la razon, no solo la conclusion: si esa invariante de
+        `rodaja` cambia, lo primero que hay que hacer aqui es copiar.
         """
-        desde = self._ganancia_aplicada
         if desde == pedida:
             if pedida != 1.0:
                 bloque *= np.float32(pedida)
             return bloque
         rampa = np.linspace(desde, pedida, bloque.size, dtype=np.float32)
         bloque *= rampa
-        self._ganancia_aplicada = pedida
         return bloque
 
     def detener(self) -> None:

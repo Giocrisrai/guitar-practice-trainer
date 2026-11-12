@@ -23,6 +23,7 @@ escritura, por su `StreamCapturado` metido en una `SalidaAudio` de verdad):
 el sandbox de desarrollo no puede abrir audio.
 """
 
+import logging
 import threading
 import time
 
@@ -30,7 +31,7 @@ import numpy as np
 import pytest
 
 from nucleo.acompanamiento import PiezaRenderizada, renderizar
-from nucleo.acompanante import Acompanante, BloqueadoAhora
+from nucleo.acompanante import REPETICIONES_MAXIMAS, Acompanante, BloqueadoAhora
 from nucleo.gemelo.salida import SalidaCapturada, StreamCapturado
 from nucleo.piezas.voces_de_fondo import NotaDeFondo, VozDeFondo
 from nucleo.sintesis import SalidaAudio
@@ -487,6 +488,116 @@ def test_un_bloqueo_sin_cabezal_previo_escribe_silencio_y_no_lanza():
     assert np.all(filas[1:] == np.float32(0.5))
 
 
+def test_un_candado_ocupado_sin_fin_no_deja_el_mismo_bloque_en_bucle():
+    """Pasado el techo de repeticiones se escribe silencio, no un bucle cerrado.
+
+    Repetir UN bloque de 21 ms es inaudible. Repetirlo sin techo no: un candado
+    de sesion ocupado un segundo da ~47 copias seguidas del mismo fragmento, que
+    no se oye como musica sino como un zumbido periodico. Tras
+    `REPETICIONES_MAXIMAS` bloqueos consecutivos el acompañante deja de repetir y
+    escribe silencio, y el hilo sigue vivo esperando que el cabezal vuelva.
+
+    La cuenta esperada se hace a mano: el bloque bueno, despues exactamente
+    `REPETICIONES_MAXIMAS` copias suyas, y de ahi en adelante ceros.
+    """
+    bloque = 128
+    renderizada = _pieza_constante(0.5)
+
+    def respuesta(numero: int) -> float:
+        if numero == 1:
+            return 0.0
+        raise BloqueadoAhora("la sesion se quedo ocupada (simulado)")
+
+    cabezal = CabezalFalso(respuesta)
+    acompanante, captura = _arrancado(cabezal, renderizada, bloque)
+    try:
+        assert cabezal.esperar_llamadas(REPETICIONES_MAXIMAS + 6) is True
+        assert acompanante.sonando is True, "el techo no puede matar el hilo"
+    finally:
+        acompanante.detener()
+
+    filas = _por_bloques(captura, bloque)
+    hasta_el_techo = 1 + REPETICIONES_MAXIMAS
+    assert len(filas) > hasta_el_techo, "no se llego a pasar del techo"
+    assert np.all(filas[:hasta_el_techo] == np.float32(0.5)), (
+        "antes del techo hay que repetir el ultimo cabezal, no abrir un agujero"
+    )
+    silencio = filas[hasta_el_techo:]
+    assert np.array_equal(silencio, np.zeros_like(silencio)), (
+        "pasado el techo se sigue repitiendo el mismo bloque: eso es el zumbido"
+    )
+    assert acompanante.cabezales_repetidos >= REPETICIONES_MAXIMAS + 1
+
+
+def test_una_excepcion_cualquiera_del_cabezal_no_mata_el_hilo(caplog):
+    """La clausura ajena lanza `RuntimeError` y el fondo sigue sonando.
+
+    El cabezal lo escribe la Task 5, no este modulo, asi que un defecto ajeno no
+    puede apagar la pieza de fondo en silencio y sin rastro. Es el mismo
+    contrato que una escritura que falla -que tampoco mata el hilo y tiene su
+    propia prueba-: degradar, nunca tumbar. El bloque de la excepcion reutiliza
+    el ultimo cabezal conocido, igual que `BloqueadoAhora`, y el fallo queda en
+    el registro para que haya por donde empezar a mirar.
+    """
+    bloque = 128
+    renderizada = _pieza_constante(0.5)
+
+    def respuesta(numero: int) -> float:
+        if numero == 2:
+            raise RuntimeError("la clausura de la Task 5 se equivoco")
+        return 0.0
+
+    cabezal = CabezalFalso(respuesta)
+    with caplog.at_level(logging.ERROR, logger="nucleo.acompanante"):
+        acompanante, captura = _arrancado(cabezal, renderizada, bloque)
+        try:
+            assert cabezal.esperar_llamadas(6) is True
+            assert acompanante.sonando is True, (
+                "una excepcion de la clausura ajena mato el hilo del fondo"
+            )
+        finally:
+            acompanante.detener()
+
+    assert "RuntimeError" in caplog.text, "el fallo del cabezal no dejo rastro"
+    assert "la clausura de la Task 5 se equivoco" in caplog.text
+
+    filas = _por_bloques(captura, bloque)
+    assert len(filas) >= 5
+    assert np.all(filas[:5] == np.float32(0.5)), (
+        "el bloque de la excepcion abrio un agujero en vez de repetir el ultimo"
+    )
+
+
+def test_un_cabezal_roto_en_cada_bloque_se_registra_una_sola_vez(caplog):
+    """A 47 bloques por segundo, una linea por bloque llenaria la terminal.
+
+    Es la misma regla que `servidor/sesion.py` ya aplica con los observadores
+    que fallan: se anuncia la primera vez que se ve ese tipo de error y no mas.
+    Y el hilo sigue vivo, degradando a silencio cuando pasa el techo.
+    """
+    bloque = 128
+
+    def respuesta(numero: int) -> float:
+        raise RuntimeError("la clausura ajena se atraganto")
+
+    cabezal = CabezalFalso(respuesta)
+    with caplog.at_level(logging.ERROR, logger="nucleo.acompanante"):
+        acompanante, captura = _arrancado(cabezal, _pieza_constante(0.5), bloque)
+        try:
+            assert cabezal.esperar_llamadas(REPETICIONES_MAXIMAS + 6) is True
+            assert acompanante.sonando is True
+        finally:
+            acompanante.detener()
+
+    assert caplog.text.count("la clausura ajena se atraganto") == 1
+
+    filas = _por_bloques(captura, bloque)
+    assert len(filas) >= 3
+    assert np.array_equal(filas, np.zeros_like(filas)), (
+        "sin un cabezal bueno previo no hay nada que repetir: es silencio"
+    )
+
+
 def test_la_ganancia_se_aplica_suavizada_dentro_del_bloque():
     """De 1,0 a 0,0: el bloque del cambio es una rampa, no un escalon.
 
@@ -561,6 +672,132 @@ def test_la_ganancia_pedida_antes_de_arrancar_sale_ya_en_el_primer_bloque():
     # El primer bloque sube de 1,0 a 0,25 en rampa; del segundo en adelante ya
     # esta plano en el valor pedido.
     assert np.all(filas[1:] == np.float32(0.25))
+
+
+def test_la_rampa_de_ganancia_ocupa_el_bloque_entero():
+    """La rampa reparte el cambio por TODAS las muestras del bloque.
+
+    Una rampa que se agotara en el primer octavo y siguiera plana cumpliria todo
+    lo que pide `test_la_ganancia_se_aplica_suavizada_dentro_del_bloque` (empieza
+    en el valor viejo, acaba en el nuevo, monotona, salto maximo pequeño) siendo
+    ocho veces mas abrupta. Lo que la fija es el paso ENTRE MUESTRAS SEGUIDAS,
+    calculado aqui a mano: el cambio entero dividido por las `bloque - 1`
+    fronteras que hay dentro del bloque. Nada de `np.linspace`, que es el camino
+    de codigo que se prueba.
+    """
+    valor = 1.0
+    desde = 1.0
+    hasta = 0.2
+    bloque = 1024
+    captura = SalidaCapturada(frecuencia_muestreo=MUESTREO)
+    assert captura.abrir() is True
+    acompanante = Acompanante(salida=captura.salida, bloque=bloque)
+    acompanante.cargar(_pieza_constante(valor))
+    # Pedida antes de arrancar: asi el bloque de la rampa es el PRIMERO y la
+    # prueba no tiene que adivinar en cual cayo.
+    acompanante.ganancia(hasta)
+    cabezal = CabezalFalso(lambda numero: 0.0)
+    assert acompanante.iniciar(cabezal) is True
+    try:
+        assert cabezal.esperar_llamadas(3) is True
+    finally:
+        acompanante.detener()
+
+    filas = _por_bloques(captura, bloque)
+    assert len(filas) >= 2
+    fila = filas[0].astype(np.float64)
+
+    paso = valor * (hasta - desde) / (bloque - 1)
+    diferencias = np.diff(fila)
+    assert float(diferencias.min()) == pytest.approx(paso, abs=1e-5), (
+        "hay un tramo de la rampa mas abrupto que el reparto uniforme"
+    )
+    assert float(diferencias.max()) == pytest.approx(paso, abs=1e-5), (
+        "hay un tramo plano: la rampa no llega al final del bloque"
+    )
+    # Y a mitad de bloque va justo a mitad de camino, no ya en el valor nuevo.
+    assert float(fila[bloque // 2]) == pytest.approx(
+        valor * (desde + hasta) / 2.0, abs=1e-3
+    )
+
+
+def test_una_escritura_rechazada_no_consume_la_rampa_de_ganancia():
+    """Si el bloque de la rampa no se escribe, la rampa se vuelve a hacer.
+
+    Dar la rampa por consumida en un bloque que nadie oyo deja el cambio de
+    ganancia entrando como ESCALON en el bloque siguiente, que es exactamente el
+    chasquido que la rampa existe para evitar. Aqui la ganancia se pide antes de
+    arrancar (asi la rampa es el bloque 0) y la salida rechaza justo esa
+    escritura (`fallar_en=0`), de modo que el primer bloque GRABADO tiene que
+    seguir siendo una rampa entera de 1,0 a 0,0.
+    """
+    valor = 1.0
+    bloque = 256
+    captura = SalidaCapturada(frecuencia_muestreo=MUESTREO, fallar_en=0)
+    assert captura.abrir() is True
+    acompanante = Acompanante(salida=captura.salida, bloque=bloque)
+    acompanante.cargar(_pieza_constante(valor))
+    acompanante.ganancia(0.0)
+    cabezal = CabezalFalso(lambda numero: 0.0)
+    assert acompanante.iniciar(cabezal) is True
+    try:
+        assert cabezal.esperar_llamadas(5) is True
+        assert acompanante.sonando is True
+    finally:
+        acompanante.detener()
+
+    filas = _por_bloques(captura, bloque)
+    assert len(filas) >= 2, "el rechazo no puede dejar de grabar los que siguen"
+    assert filas[0][0] == pytest.approx(valor, abs=1e-6), (
+        "el primer bloque oido empieza ya en la ganancia nueva: la rampa se "
+        "consumio en el bloque que la tarjeta rechazo, y esto es el escalon"
+    )
+    assert filas[0][-1] == pytest.approx(0.0, abs=1e-6)
+    assert np.all(filas[1:] == np.float32(0.0))
+
+
+def test_arrancar_de_nuevo_no_rampa_otra_vez_desde_la_ganancia_vieja():
+    """`iniciar()` NO reinicia la ganancia aplicada: seria una rafaga de 5x.
+
+    Con la ganancia en 0,2, un `iniciar()` que volviera a creerse en 1,0 soltaria
+    un bloque de 21 ms rampando desde 1,0, o sea hasta cinco veces el volumen
+    pedido, EN CADA ARRANQUE: el usuario le da a Empezar y recibe un golpe de
+    volumen. La ganancia aplicada es una propiedad de lo que ya salio por el
+    altavoz, no de la pasada, y por eso sobrevive al arranque.
+    """
+    bloque = 256
+    pedida = 0.2
+    captura = SalidaCapturada(frecuencia_muestreo=MUESTREO)
+    assert captura.abrir() is True
+    acompanante = Acompanante(salida=captura.salida, bloque=bloque)
+    acompanante.cargar(_pieza_constante(1.0))
+    acompanante.ganancia(pedida)
+    primero = CabezalFalso(lambda numero: 0.0)
+    assert acompanante.iniciar(primero) is True
+    try:
+        assert primero.esperar_llamadas(4) is True
+    finally:
+        acompanante.detener()
+
+    # La frontera entre las dos pasadas, medida en muestras ya grabadas.
+    frontera = captura.muestras.size
+    assert frontera % bloque == 0, "una escritura quedo a medias: no es posible"
+
+    segundo = CabezalFalso(lambda numero: 0.0)
+    assert acompanante.iniciar(segundo) is True
+    try:
+        assert segundo.esperar_llamadas(3) is True
+    finally:
+        acompanante.detener()
+
+    nuevas = captura.muestras[frontera:]
+    enteros = nuevas.size // bloque
+    assert enteros >= 2
+    filas = nuevas[: enteros * bloque].reshape(enteros, bloque)
+    assert np.all(filas[0] == np.float32(pedida)), (
+        "el arranque nuevo rampo desde 1,0: eso es una rafaga de cinco veces el "
+        "volumen pedido en cada Empezar"
+    )
 
 
 # --------------------------------------------------------------------------
@@ -725,6 +962,85 @@ def test_detener_mientras_el_cabezal_esta_bloqueado_no_escribe_el_bloque_en_vuel
         "comprobacion de generacion de ANTES de reproducir()"
     )
     assert acompanante.muestras_escritas == 0
+
+
+def test_el_huerfano_no_cuenta_un_cabezal_bloqueado_despues_de_detener():
+    """La otra mitad del contrato del huerfano: no solo no escribe, no CUENTA.
+
+    `Metronomo` promete que el hilo que sobrevive a un `join(timeout=1.0)`
+    vencido «se retira sin emitir un click mas, sin contarlo». Aqui el tercer
+    camino -el cabezal, codigo ajeno que puede tardar mas que el join- tiene que
+    cumplir lo mismo con `cabezales_repetidos`: si cuenta despues de que
+    `detener()` devolvio, y entre medias hubo un `iniciar()`, el incremento
+    aterriza sobre el contador ya reiniciado de la pasada nueva y la metrica que
+    la Task 5 usa para decir «la sesion va ahogada» miente.
+    """
+    bloque = 256
+    captura = SalidaCapturada(frecuencia_muestreo=MUESTREO)
+    assert captura.abrir() is True
+    acompanante = Acompanante(salida=captura.salida, bloque=bloque)
+    acompanante.cargar(_pieza_constante(0.5))
+
+    dentro = threading.Event()
+    soltar = threading.Event()
+
+    def respuesta(numero: int) -> float:
+        dentro.set()
+        soltar.wait(LIMITE_S)
+        raise BloqueadoAhora("la sesion seguia ocupada (simulado)")
+
+    cabezal = CabezalFalso(respuesta)
+    assert acompanante.iniciar(cabezal) is True
+    hilo = acompanante._hilo  # el huerfano: `detener()` suelta su referencia
+    assert dentro.wait(LIMITE_S) is True
+
+    arranque = time.monotonic()
+    acompanante.detener()
+    assert time.monotonic() - arranque >= 1.0, "el join(timeout=1.0) no vencio"
+    assert acompanante.cabezales_repetidos == 0
+
+    # Ahora el cabezal contesta -lanzando- con el hilo ya huerfano.
+    soltar.set()
+    assert hilo is not None
+    hilo.join(timeout=LIMITE_S)
+    assert hilo.is_alive() is False, "el hilo huerfano no se retiro"
+
+    assert acompanante.cabezales_repetidos == 0, (
+        "el huerfano conto un cabezal bloqueado despues de que detener() "
+        "devolviera el control: falta la comprobacion de generacion antes de contar"
+    )
+    assert acompanante.muestras_escritas == 0
+    assert captura.bloques == ()
+
+
+def test_pausar_detener_y_volver_a_iniciar_vuelve_a_sonar():
+    """`iniciar()` limpia la pausa, y por eso no deja un hilo mudo para siempre.
+
+    `pausar()` sobrevive a `detener()` -es una bandera, no estado del hilo-, asi
+    que si `iniciar()` no la limpiara la secuencia `pausar(); detener();
+    iniciar()` arrancaria un hilo que dice `sonando` True y no alimenta la
+    tarjeta jamas. Es el defecto mas caro de diagnosticar del modulo: todo
+    parece bien y no se oye nada.
+    """
+    bloque = 128
+    cabezal = CabezalFalso(lambda numero: 0.0)
+    acompanante, captura = _arrancado(cabezal, _pieza_constante(0.5), bloque)
+    assert cabezal.esperar_llamadas(2) is True
+    acompanante.pausar()
+    acompanante.detener()
+    assert acompanante.pausado is True, "la pausa es lo que iniciar() tiene que limpiar"
+
+    otro = CabezalFalso(lambda numero: 0.0)
+    assert acompanante.iniciar(otro) is True
+    try:
+        assert otro.esperar_llamadas(3) is True, (
+            "el hilo arranco pausado: sonando es True y no suena nada"
+        )
+        assert acompanante.pausado is False
+    finally:
+        acompanante.detener()
+
+    assert acompanante.muestras_escritas >= 2 * bloque
 
 
 def test_pausar_no_pregunta_el_cabezal_ni_escribe_y_reanudar_no_reabre_el_stream():
