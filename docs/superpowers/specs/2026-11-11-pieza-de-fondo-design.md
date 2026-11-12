@@ -170,7 +170,9 @@ detalles:
    porque a él lo indexa el cabezal.
 
 Lo que **sí** se reutiliza, y no se copia: la guarda del mínimo
-(`interprete._duracion_minima_s`, `nucleo/gemelo/interprete.py:407-424`).
+(`duracion_minima_s`, hoy en `nucleo/gemelo/cuerda.py:114`, que es adonde la
+subió la Task 2; cuando se escribió esta especificación vivía como
+`interprete._duracion_minima_s`).
 `cuerda_pulsada` **lanza** si la nota no llega a un periodo
 (`nucleo/gemelo/cuerda.py:84-97`), así que esa guarda es obligatoria y tener dos
 copias de ella sería exactamente el defecto que la 3d persiguió toda la etapa.
@@ -398,7 +400,9 @@ lo de abajo se verifica **sin altavoces y sin guitarra**, con la salida inyectad
   nada porque no lleva reloj». Al contrario. Leer el cabezal exige el candado de
   la sesión, y ese candado lo retiene el hilo HTTP mientras `_ajustar_click`
   espera a un `stream.write()` en vuelo — un coste que el propio código ya tiene
-  medido y documentado (`servidor/piezas.py:707-721`). Si el hilo del
+  medido y documentado (hoy en el docstring de
+  `SesionCarril._ajustar_click`, `servidor/piezas.py:943`; la cita original
+  apuntaba a las líneas 707-721, que el código ya movió). Si el hilo del
   acompañamiento se queda esperando ese candado, se queda sin escribir su bloque y
   eso **se oye**. Decisión: el hilo del acompañamiento **nunca espera** el candado.
   Lo intenta sin bloquear y, si está ocupado, reutiliza el último cabezal conocido
