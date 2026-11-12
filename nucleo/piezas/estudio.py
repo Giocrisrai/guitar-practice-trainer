@@ -271,6 +271,15 @@ class EstadoEstudio:
     # archivo de fondo cargado, el interruptor puede estar puesto y esto es
     # False (mismo criterio que `click_sonando` en el servidor).
     acompanamiento_sonando: bool = False
+    # El interruptor PEDIDO, que no es lo mismo que lo que suena. Con el pestillo
+    # de la entrada echado -el microfono-, con la pasada acabada, sin salida de
+    # audio o mientras el render no esta, el fondo esta ENCENDIDO Y CALLADO: este
+    # campo vale True y `acompanamiento_sonando` False. Viaja publicado porque la
+    # casilla de la pantalla lo necesita para no mentir: siguiendo a lo que suena,
+    # en ese estado sale apagada y el unico clic posible manda `encendido: True`,
+    # o sea que no hay forma de apagar de verdad lo que ya esta encendido. Lo que
+    # suena lo dice la frase de al lado, que si lo mira.
+    acompanamiento_encendido: bool = False
     # Si encender el fondo tiene sentido ahora mismo: hay fondo cargado Y la
     # entrada es el cable. Con el microfono el fondo entra por el y se
     # retroalimenta, asi que esto es False y la pantalla lo recuerda; NO es una
@@ -326,6 +335,7 @@ class EstadoEstudio:
             "ritmo_aproximado": self.ritmo_aproximado,
             "tramo_terminado": self.tramo_terminado,
             "acompanamiento_sonando": self.acompanamiento_sonando,
+            "acompanamiento_encendido": self.acompanamiento_encendido,
             "acompanamiento_posible": self.acompanamiento_posible,
             "acompanamiento_es_tu_parte": self.acompanamiento_es_tu_parte,
             "acompanamiento_voces": self.acompanamiento_voces,

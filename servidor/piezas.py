@@ -1214,6 +1214,12 @@ class SesionCarril:
             "acompanamiento_sonando": (
                 self._acompanante is not None and self._acompanante.sonando
             ),
+            # Y lo PEDIDO al lado de lo que suena, porque no son lo mismo y la
+            # casilla de la pantalla tiene que poder decir «encendido y callado».
+            # Es `_fondo_encendido` tal cual -el interruptor-, sin el pestillo de
+            # la entrada ni el dispositivo: quien quiera saber si se oye mira el
+            # campo de arriba.
+            "acompanamiento_encendido": self._fondo_encendido,
             "acompanamiento_posible": acompanamiento_posible(
                 fondo is not None, self._entrada_es_el_cable()
             ),

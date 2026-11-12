@@ -91,7 +91,8 @@ const ESTUDIO_BASE = {
   en_pausa: false, compas_variable: false,
   ritmo_aproximado: false, tramo_terminado: false, click_sonando: false,
   factor_sugerido: null, esperando_notas: true,
-  acompanamiento_sonando: false, acompanamiento_posible: false,
+  acompanamiento_sonando: false, acompanamiento_encendido: false,
+  acompanamiento_posible: false,
   acompanamiento_es_tu_parte: false, acompanamiento_voces: 0,
   acompanamiento_excluidas: [], acompanamiento_volumen: 0.6,
 };
@@ -1068,12 +1069,14 @@ describe("Carril: los controles de la pasada", () => {
   it("el interruptor del fondo llega al servidor por su propia puerta, y el aviso se ve", async () => {
     const fetchFalso = fetchConOrdenes();
     await montarEnMarcha(fetchFalso);
-    // La entrada es un micrófono: el servidor lo dice y deja el fondo callado.
+    // La entrada es un micrófono y el fondo está apagado del todo: ni suena ni
+    // está pedido.
     enviarEstado(
       enCurso({
         acompanamiento_voces: 2,
         acompanamiento_posible: false,
         acompanamiento_sonando: false,
+        acompanamiento_encendido: false,
       }),
     );
     const casilla = (await screen.findByLabelText("Acompañamiento")) as HTMLInputElement;
@@ -1097,6 +1100,7 @@ describe("Carril: los controles de la pasada", () => {
         acompanamiento_voces: 2,
         acompanamiento_posible: false,
         acompanamiento_sonando: true,
+        acompanamiento_encendido: true,
       }),
     );
     await vi.waitFor(() =>
@@ -1120,6 +1124,7 @@ describe("Carril: los controles de la pasada", () => {
         acompanamiento_voces: 2,
         acompanamiento_posible: true,
         acompanamiento_sonando: true,
+        acompanamiento_encendido: true,
         acompanamiento_volumen: 0.6,
       }),
     );

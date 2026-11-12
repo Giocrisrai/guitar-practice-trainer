@@ -352,13 +352,17 @@ export function ControlesEstudio({
       {hayFondo && (
         <div className="control-estudio control-acompanamiento">
           <label>
-            {/* Lo que SUENA, no lo que se pidió: con la entrada equivocada el
-                pestillo del servidor lo deja callado y la casilla sale apagada,
-                igual que el click sin salida de audio. La regla de cuándo suena
-                NO se decide aquí: llega publicada. */}
+            {/* Lo PEDIDO, y no lo que suena. Los dos estados existen a la vez:
+                con el micrófono elegido el servidor deja el fondo encendido y
+                CALLADO, y una casilla que siguiera a `acompanamiento_sonando`
+                saldría apagada ahí —de modo que el único clic alcanzable sería
+                `encendido: true`, el que pone el fondo encima del micrófono, y
+                apagarlo de verdad no tendría gesto—. Que no se oiga lo dice la
+                frase de abajo, que para eso mira `acompanamiento_sonando`.
+                Ninguna de las dos reglas se decide aquí: llegan publicadas. */}
             <input
               type="checkbox"
-              checked={estado.acompanamiento_sonando}
+              checked={estado.acompanamiento_encendido}
               onChange={(evento) =>
                 void alAjustarAcompanamiento({ encendido: evento.target.checked })
               }

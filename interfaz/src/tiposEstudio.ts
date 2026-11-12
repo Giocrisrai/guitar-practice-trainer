@@ -53,9 +53,16 @@ export interface EstadoEstudio extends EstadoCarril {
   /** Si el fondo SUENA ahora mismo, no si está pedido: sin salida de audio, sin
    * buffer renderizado o con el pestillo de la entrada echado, esto es `false`
    * aunque el interruptor esté puesto. Mismo criterio que `click_sonando`. Es lo
-   * que marca la casilla en pantalla, porque un interruptor encendido que no hace
-   * nada sería mentir. */
+   * que dice la FRASE de al lado de la casilla («…pero ahora mismo no suena
+   * nada»); la casilla en sí sigue a `acompanamiento_encendido`. */
   acompanamiento_sonando: boolean;
+  /** El interruptor PEDIDO, que no es lo que suena. Con el micrófono elegido el
+   * fondo se queda encendido y CALLADO: esto es `true` y `acompanamiento_sonando`
+   * es `false`. Es lo que marca la casilla, porque una casilla que siguiera a lo
+   * que suena saldría apagada en ese estado y su único clic posible mandaría
+   * `encendido: true` —justo el que pone el fondo encima del micrófono— sin que
+   * exista forma de apagarlo de verdad. Que no se oiga lo dice la frase. */
+  acompanamiento_encendido: boolean;
   /** Si encender el fondo tiene sentido ahora mismo: hay fondo cargado Y la
    * entrada es el cable. Lo decide el servidor (`acompanamiento_posible`, en
    * `servidor/piezas.py`) y **no se recalcula aquí**, por lo mismo que

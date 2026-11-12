@@ -487,6 +487,52 @@ def test_con_el_microfono_cargar_no_enciende_el_fondo():
     cerrar(con_cable, sesion_cable)
 
 
+def test_el_estado_publica_el_interruptor_PEDIDO_al_lado_de_lo_que_suena():
+    """Encendido y callado son dos cosas, y las dos viajan.
+
+    Con el microfono elegido, el fondo cargado se queda ENCENDIDO Y CALLADO: el
+    pestillo de M6 no apaga el interruptor, decide si suena. La pantalla
+    necesita los dos campos porque marcan cosas distintas -la casilla sigue a lo
+    pedido y la frase a lo que suena-, y con uno solo la casilla saldria apagada
+    en este estado: el unico clic posible seria «encender», que es justo el que
+    pone el fondo encima del microfono, y apagarlo de verdad no tendria gesto.
+
+    **El estado de partida es el fondo pedido y callado**, que es el unico en el
+    que los dos campos difieren: con el cable los dos valen True y publicar uno
+    u otro seria indistinguible.
+    """
+    reloj = RelojFalso()
+    sesion_carril, sesion, _, _ = carril(reloj, entrada_es_el_cable=False)
+    sesion_carril.iniciar(pieza_de([40, 45, 50, 55]), SIN_CUENTA)
+    assert sesion_carril.estado()["acompanamiento_encendido"] is False, (
+        "sin fondo cargado no hay interruptor que valga"
+    )
+
+    sesion_carril.cargar_acompanamiento(fondo_de())
+    estado = avanzar_mirando(sesion_carril, reloj, 0.5)
+    assert estado["acompanamiento_encendido"] is True, (
+        "cargar deja el interruptor PUESTO: el pestillo de la entrada decide si "
+        "suena, no si esta pedido"
+    )
+    assert estado["acompanamiento_sonando"] is False, "y callado, que es el pestillo"
+
+    # Apagarlo de verdad: el gesto que la pantalla no tenia.
+    estado = sesion_carril.acompanamiento(encendido=False)
+    assert estado["acompanamiento_encendido"] is False
+    assert estado["acompanamiento_sonando"] is False
+
+    # Y encendido a mano con el microfono: suena Y esta pedido, los dos True.
+    estado = sesion_carril.acompanamiento(encendido=True)
+    assert estado["acompanamiento_encendido"] is True
+    assert estado["acompanamiento_sonando"] is True
+    assert estado["acompanamiento_posible"] is False, "el aviso no se va"
+
+    # Soltar el fondo apaga tambien lo pedido: no queda un interruptor huerfano.
+    sesion_carril.cargar_acompanamiento(None)
+    assert sesion_carril.estado()["acompanamiento_encendido"] is False
+    cerrar(sesion_carril, sesion)
+
+
 def test_cambiar_a_microfono_a_mitad_de_pasada_calla_el_fondo_automatico():
     """**El pestillo de M6 se mira en CADA instantanea, no solo al cargar.**
 

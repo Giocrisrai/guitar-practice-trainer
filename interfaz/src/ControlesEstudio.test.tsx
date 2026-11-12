@@ -20,7 +20,8 @@ const ESTADO: EstadoEstudio = {
   en_pausa: false, compas_variable: false,
   ritmo_aproximado: false, tramo_terminado: false, click_sonando: false,
   factor_sugerido: null, esperando_notas: true,
-  acompanamiento_sonando: false, acompanamiento_posible: false,
+  acompanamiento_sonando: false, acompanamiento_encendido: false,
+  acompanamiento_posible: false,
   acompanamiento_es_tu_parte: false, acompanamiento_voces: 0,
   acompanamiento_excluidas: [], acompanamiento_volumen: 0.6,
 };
@@ -613,6 +614,7 @@ describe("el acompañamiento", () => {
     acompanamiento_voces: 2,
     acompanamiento_posible: true,
     acompanamiento_sonando: true,
+    acompanamiento_encendido: true,
   };
   /** Lo mismo cargado, pero la entrada es un micrófono: el servidor lo deja
    * callado (`acompanamiento_sonando: false`) y avisa (`posible: false`). */
@@ -620,6 +622,16 @@ describe("el acompañamiento", () => {
     acompanamiento_voces: 2,
     acompanamiento_posible: false,
     acompanamiento_sonando: false,
+    // Cargar el fondo deja el interruptor PUESTO; con el microfono elegido el
+    // pestillo del servidor lo deja encendido y callado, que es justo el estado
+    // en el que la casilla y la frase dicen cosas distintas.
+    acompanamiento_encendido: true,
+  };
+  /** El mismo microfono, pero con el fondo apagado de verdad: ni suena ni esta
+   * pedido. Es el otro lado de la casilla, y sin el «siempre marcada» pasaria. */
+  const CON_MICROFONO_APAGADO: Partial<EstadoEstudio> = {
+    ...CON_MICROFONO,
+    acompanamiento_encendido: false,
   };
 
   const interruptor = (nombre = "Acompañamiento") =>
@@ -628,8 +640,8 @@ describe("el acompañamiento", () => {
   const aviso = (container: HTMLElement) =>
     container.querySelector(".aviso-acompanamiento")?.textContent ?? null;
 
-  it("el interruptor sale apagado cuando la entrada no es el cable", () => {
-    const { container, alAjustarAcompanamiento } = pintar(CON_MICROFONO);
+  it("con el micrófono y el fondo APAGADO, la casilla sale apagada y el clic enciende", () => {
+    const { container, alAjustarAcompanamiento } = pintar(CON_MICROFONO_APAGADO);
     expect(interruptor().checked).toBe(false);
 
     // Y el aviso dice las dos cosas que hacen falta para decidir: qué pasa si lo
@@ -642,6 +654,24 @@ describe("el acompañamiento", () => {
     // Puede encenderlo igual: es su equipo. El control no es una compuerta.
     fireEvent.click(interruptor());
     expect(alAjustarAcompanamiento.mock.calls).toEqual([[{ encendido: true }]]);
+  });
+
+  it("el fondo ENCENDIDO Y CALLADO sale marcado, y el clic lo apaga de verdad", () => {
+    // El estado exacto del anti-objetivo y el que la casilla describía mal:
+    // cargar el fondo deja el interruptor puesto, el pestillo del micrófono lo
+    // deja callado, y una casilla que siguiera a lo que SUENA saldría apagada.
+    // El único clic alcanzable sería entonces `encendido: true` —el que pone el
+    // fondo encima del micrófono— y apagar de verdad no tendría gesto.
+    const { container, alAjustarAcompanamiento } = pintar(CON_MICROFONO);
+    expect(interruptor().checked).toBe(true);
+
+    // Que no se oiga lo dice la frase, no la casilla: las dos verdades caben.
+    const dicho = container.querySelector(".voces-del-fondo")?.textContent ?? "";
+    expect(dicho).toContain("no suena");
+    expect(aviso(container)).toContain("micrófono");
+
+    fireEvent.click(interruptor());
+    expect(alAjustarAcompanamiento.mock.calls).toEqual([[{ encendido: false }]]);
   });
 
   it("con el cable puesto el interruptor sale encendido y no hay nada que avisar", () => {
@@ -690,6 +720,7 @@ describe("el acompañamiento", () => {
       acompanamiento_voces: 0,
       acompanamiento_posible: true,
       acompanamiento_sonando: true,
+      acompanamiento_encendido: true,
     });
     expect(interruptor("Guía").checked).toBe(true);
     expect(screen.queryByLabelText("Acompañamiento")).toBeNull();
