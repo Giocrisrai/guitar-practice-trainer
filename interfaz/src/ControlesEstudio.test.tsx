@@ -715,6 +715,94 @@ describe("el acompañamiento", () => {
     expect(fuera).toContain("es percusión");
   });
 
+  it("con el fondo CALLADO no se dice que suena", () => {
+    // El estado exacto del anti-objetivo: hay dos voces cargadas y el pestillo
+    // del servidor las tiene calladas porque la entrada es un micrófono.
+    // `acompanamiento_voces` son las voces CARGADAS y el servidor las publica
+    // igual, así que la frase afirmaba «Suenan 2 voces de fondo» al lado de una
+    // casilla sin marcar. Todas las pruebas de esta frase partían de un fondo
+    // que suena, que es donde el que mira `sonando` y el que no coinciden.
+    const { container } = pintar(CON_MICROFONO);
+    const dicho = container.querySelector(".voces-del-fondo")?.textContent ?? "";
+    expect(dicho).toContain("Hay 2 voces de fondo cargadas");
+    expect(dicho).toContain("no suena");
+    expect(dicho).not.toContain("Suenan");
+  });
+
+  it("la guía callada tampoco se da por sonando", () => {
+    // La otra rama de la misma frase, y con el mismo estado de partida: si solo
+    // se arregla la de las voces, esta sigue diciendo «suena tu propia parte».
+    const { container } = pintar({
+      acompanamiento_es_tu_parte: true,
+      acompanamiento_voces: 0,
+      acompanamiento_posible: false,
+      acompanamiento_sonando: false,
+    });
+    const dicho = container.querySelector(".voces-del-fondo")?.textContent ?? "";
+    expect(dicho).toContain("no suena");
+    expect(dicho).not.toContain("suena tu propia parte");
+  });
+
+  it("con VARIAS pistas fuera se dicen todas, y la cuenta es la de verdad", () => {
+    // Con una sola excluida de partida, «pintar todas» y «pintar la primera»
+    // dicen lo mismo, y la rama plural no se ejerce nunca. Hacen falta dos.
+    const { container } = pintar({
+      ...CON_CABLE,
+      acompanamiento_excluidas: [
+        { pista: "Batería", motivo: "es percusión y no tiene altura" },
+        { pista: "Voz", motivo: "no tiene notas en este tramo" },
+      ],
+    });
+    const fuera = container.querySelector(".voces-excluidas")?.textContent ?? "";
+    expect(fuera).toContain("2 pistas se quedaron fuera");
+    expect(fuera).toContain("Batería");
+    expect(fuera).toContain("es percusión");
+    expect(fuera).toContain("Voz");
+    expect(fuera).toContain("no tiene notas");
+  });
+
+  it("el aviso se anuncia: es un role=alert, no un párrafo cualquiera", () => {
+    // Aparece a mitad de sesión —al cambiar de entrada— y nadie está mirando ese
+    // rincón. Sin anunciarlo, para quien usa lector de pantalla es decoración.
+    pintar(CON_MICROFONO);
+    expect(screen.getByRole("alert").textContent).toContain("micrófono");
+  });
+
+  it("el deslizador del fondo va del 0 % al 100 % en pasos del 5 %", () => {
+    pintar(CON_CABLE);
+    expect(volumen().getAttribute("min")).toBe("0");
+    expect(volumen().getAttribute("max")).toBe("100");
+    expect(volumen().getAttribute("step")).toBe("5");
+  });
+
+  it("el fondo se puede callar del todo: el 0 % se manda", () => {
+    // El cero es el valor que ninguna otra prueba recorre, y es el que importa:
+    // es la forma de callar el fondo sin apagarlo. Un `min` más alto lo haría
+    // imposible, y un cero tratado como «no hay valor» no mandaría nada.
+    const { alAjustarAcompanamiento } = pintar(CON_CABLE);
+    fireEvent.change(volumen(), { target: { value: "0" } });
+    expect(volumen().value).toBe("0");
+    fireEvent.pointerUp(volumen());
+    expect(alAjustarAcompanamiento.mock.calls).toEqual([[{ volumen: 0 }]]);
+  });
+
+  it("con el teclado también: las flechas mueven el volumen y al soltar se manda", () => {
+    const { alAjustarAcompanamiento } = pintar(CON_CABLE);
+    fireEvent.change(volumen(), { target: { value: "30" } });
+    expect(alAjustarAcompanamiento).not.toHaveBeenCalled();
+    fireEvent.keyUp(volumen(), { key: "ArrowLeft" });
+    expect(alAjustarAcompanamiento.mock.calls).toEqual([[{ volumen: 0.3 }]]);
+  });
+
+  it("perder el foco a mitad del gesto del volumen lo confirma", () => {
+    const { alAjustarAcompanamiento } = pintar(CON_CABLE);
+    fireEvent.change(volumen(), { target: { value: "35" } });
+    fireEvent.blur(volumen());
+    expect(alAjustarAcompanamiento.mock.calls).toEqual([[{ volumen: 0.35 }]]);
+    // Confirmado es confirmado: tampoco aquí se vuelve al valor del servidor.
+    expect(volumen().value).toBe("35");
+  });
+
   it("una sola voz se dice en singular y sin pistas fuera no se dice nada", () => {
     const { container } = pintar({ ...CON_CABLE, acompanamiento_voces: 1 });
     expect(container.querySelector(".voces-del-fondo")?.textContent).toContain(

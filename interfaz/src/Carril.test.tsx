@@ -1087,6 +1087,49 @@ describe("Carril: los controles de la pasada", () => {
     });
     // No va por `/api/piezas/plan`: un cambio de plan cierra la repetición.
     expect(cuerpoDe(fetchFalso, "/api/piezas/acompanamiento")).toEqual({ encendido: true });
+
+    // **Y ahora desde el fondo SONANDO**, que es el estado que distingue un
+    // cableado vivo de uno que tira el argumento y manda siempre `true`. La
+    // mitad de arriba sola es la forma exacta del mutante que ya sobrevivió un
+    // piso más abajo: desde el fondo apagado los dos mandan lo mismo.
+    enviarEstado(
+      enCurso({
+        acompanamiento_voces: 2,
+        acompanamiento_posible: false,
+        acompanamiento_sonando: true,
+      }),
+    );
+    await vi.waitFor(() =>
+      expect((screen.getByLabelText("Acompañamiento") as HTMLInputElement).checked).toBe(
+        true,
+      ),
+    );
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Acompañamiento"));
+    });
+    expect(cuerpoDe(fetchFalso, "/api/piezas/acompanamiento")).toEqual({ encendido: false });
+  });
+
+  it("el volumen del fondo también llega al servidor por su propia puerta", async () => {
+    // El volumen no recorría el camino real en ninguna prueba: el deslizador
+    // estaba probado en su archivo y nadie comprobaba que `Carril` lo cableara.
+    const fetchFalso = fetchConOrdenes();
+    await montarEnMarcha(fetchFalso);
+    enviarEstado(
+      enCurso({
+        acompanamiento_voces: 2,
+        acompanamiento_posible: true,
+        acompanamiento_sonando: true,
+        acompanamiento_volumen: 0.6,
+      }),
+    );
+    const deslizador = await screen.findByLabelText("Volumen del fondo");
+    await act(async () => {
+      fireEvent.change(deslizador, { target: { value: "30" } });
+      fireEvent.pointerUp(deslizador);
+    });
+    // De 0 a 1, que es lo que pide el endpoint, y sin tocar el plan.
+    expect(cuerpoDe(fetchFalso, "/api/piezas/acompanamiento")).toEqual({ volumen: 0.3 });
   });
 
   it("un clic fuera del tramo manda el plan y luego el salto, al servidor", async () => {

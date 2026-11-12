@@ -21,6 +21,34 @@ function porciento(factor: number): number {
 }
 
 /**
+ * Qué hay de fondo y si está sonando, en una frase.
+ *
+ * **Las dos cosas, y es lo que faltaba:** `acompanamiento_voces` son las voces
+ * CARGADAS, y el servidor las publica igual con el fondo callado. La frase decía
+ * «Suenan 2 voces de fondo» al lado de una casilla sin marcar, justo en el estado
+ * del anti-objetivo —micrófono, el pestillo del servidor callando el fondo—, que
+ * es precisamente donde lo pedido y lo que suena se separan. Es la misma mentira
+ * que el bloque del click evita mirando `click_sonando` y no `con_click`.
+ *
+ * Lo que suena lo dice `acompanamiento_sonando` y nada más: aquí no se deduce de
+ * la cuenta de voces ni del interruptor.
+ */
+function textoDelFondo(estado: EstadoEstudio): string {
+  const suena = estado.acompanamiento_sonando;
+  if (estado.acompanamiento_es_tu_parte) {
+    return suena
+      ? "La canción no traía otras pistas: suena tu propia parte como guía, más bajita."
+      : "La canción no traía otras pistas: la guía sería tu propia parte, más bajita, pero ahora mismo no suena.";
+  }
+  const cuantas = estado.acompanamiento_voces;
+  // El verbo y el sustantivo concuerdan con la cuenta: «Suenan 1 voz» canta.
+  const voces = `${cuantas} ${cuantas === 1 ? "voz" : "voces"}`;
+  return suena
+    ? `${cuantas === 1 ? "Suena" : "Suenan"} ${voces} de fondo.`
+    : `Hay ${voces} de fondo cargada${cuantas === 1 ? "" : "s"}, pero ahora mismo no suena nada.`;
+}
+
+/**
  * El rango que sirve para saltar a un compás que cae FUERA del bucle.
  *
  * El servidor valida el salto contra el tramo del plan y no contra la pieza: un
@@ -354,17 +382,11 @@ export function ControlesEstudio({
           />
           <span className="lectura">{volumenMostrado} %</span>
 
-          {/* Cuántas voces suenan y cuántas no. Un fondo al que le falta el bajo
-              sin que nada lo diga parece roto, y quien lee la cuenta necesita
-              saber si faltan dos voces o si nunca las hubo. */}
-          <span className="voces-del-fondo">
-            {estado.acompanamiento_es_tu_parte
-              ? "La canción no traía otras pistas: suena tu propia parte como guía, más bajita."
-              : // El verbo concuerda con la cuenta: «Suenan 1 voz» canta.
-                `${estado.acompanamiento_voces === 1 ? "Suena" : "Suenan"} ${
-                  estado.acompanamiento_voces
-                } ${estado.acompanamiento_voces === 1 ? "voz" : "voces"} de fondo.`}
-          </span>
+          {/* Qué hay de fondo, si suena, y qué se quedó fuera. Un fondo al que
+              le falta el bajo sin que nada lo diga parece roto, y quien lee la
+              cuenta necesita saber si faltan dos voces o si nunca las hubo. Lo
+              de «si suena» lo decide `textoDelFondo`, no esta línea. */}
+          <span className="voces-del-fondo">{textoDelFondo(estado)}</span>
           {excluidas.length > 0 && (
             <span className="voces-excluidas">
               {excluidas.length === 1
@@ -388,7 +410,11 @@ export function ControlesEstudio({
               La condición es el campo publicado, tal cual. Aquí no se busca el
               cable ni se deduce nada: la lección de `esperando_notas`. */}
           {!estado.acompanamiento_posible && (
-            <p className="aviso-acompanamiento">
+            // `role="alert"` y no un `<p>` a secas: este texto es lo que evita
+            // que el programa se puntúe a sí mismo, y aparece a mitad de sesión
+            // —al cambiar de entrada— sin que nadie esté mirando ese rincón. Sin
+            // anunciarlo, para quien usa lector de pantalla es decoración.
+            <p className="aviso-acompanamiento" role="alert">
               La entrada no es el cable: lo que suene de fondo entra otra vez por el
               micrófono y el informe lo cuenta como notas tuyas. Con auriculares no pasa.
             </p>
