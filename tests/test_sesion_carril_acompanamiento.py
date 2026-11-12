@@ -412,6 +412,19 @@ def test_con_el_microfono_cargar_no_enciende_el_fondo():
     assert captura_fondo.arranques == 0, "ni se toco el dispositivo de salida"
     assert captura_fondo.escrituras == 0, "ni se escribio una muestra"
 
+    # **Y si aparece el cable, el fondo entra SOLO**, que es la otra mitad de
+    # «el encendido automatico sigue a la entrada» y la direccion que nadie
+    # miraba: quien carga con el microfono y despues enchufa el cable no tiene
+    # que volver a cargar nada. Guardar el pestillo al cargar -en vez de
+    # mirarlo vivo- dejaria esta carga muda para siempre.
+    sesion.entrada_es_el_cable = True
+    assert con_microfono.estado()["acompanamiento_sonando"] is True, (
+        "al aparecer el cable, el fondo cargado con microfono tiene que entrar "
+        "solo: el encendido automatico sigue a la entrada en los DOS sentidos"
+    )
+    sesion.entrada_es_el_cable = False
+    assert con_microfono.estado()["acompanamiento_sonando"] is False
+
     # Y encenderlo a mano SI suena: es su equipo y su decision (puede tener
     # auriculares puestos, que es cuando no hay realimentacion ninguna).
     assert con_microfono.acompanamiento(encendido=True)["acompanamiento_sonando"] is True
@@ -545,16 +558,6 @@ def test_si_la_entrada_cambia_antes_de_la_primera_instantanea_el_fondo_ni_empiez
     assert estado["acompanamiento_sonando"] is False
     assert captura_fondo.arranques == 0, "ni se llego a abrir el dispositivo"
     assert captura_fondo.escrituras == 0, "ni se escribio una muestra"
-
-    # Y la direccion contraria, que es la otra mitad de «sigue a la entrada»:
-    # el usuario enchufa el cable despues de haber cargado con microfono, y el
-    # fondo entra solo. Sin esto, una carga hecha con la entrada equivocada
-    # quedaria muda para siempre y el docstring prometeria algo que no pasa.
-    sesion.entrada_es_el_cable = True
-    assert sesion_carril.estado()["acompanamiento_sonando"] is True, (
-        "al aparecer el cable, el encendido automatico tiene que entrar solo: "
-        "no hace falta volver a cargar nada"
-    )
     cerrar(sesion_carril, sesion)
 
 
