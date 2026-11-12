@@ -2412,3 +2412,46 @@ def test_con_captura_el_aviso_dice_capturado(monkeypatch, capsys):
     assert "Fondo capturado" in salida
     assert "por los altavoces" not in salida
     assert "NO abrio" not in salida
+
+
+@pytest.mark.parametrize(
+    "sin_localizar, saturados, dice",
+    [(3, 0, "0 bloques saturados"), (0, 2, "0 sin localizar")],
+)
+def test_la_atencion_sale_con_cualquiera_de_las_dos_cuentas(sin_localizar, saturados, dice):
+    """Basta UNA de las dos cuentas distinta de cero para que salga la atencion."""
+    texto = _lineas_texto(
+        InformeDelFondo(
+            1000, 12.0, 50, bloques_sin_localizar=sin_localizar, bloques_saturados=saturados
+        )
+    )
+
+    assert "ATENCION" in texto
+    assert dice in texto
+
+
+def test_el_informe_del_fondo_trae_las_tres_cuentas_de_la_medida():
+    """Del capturador al informe: un bloque saturado y uno ajeno llegan a sus campos.
+
+    Un bloque cortado 0,495 s por delante del cabezal (saturado) y un ruido ajeno
+    (sin localizar), mas uno bueno: las tres cuentas distintas, para que ninguna
+    se pueda intercambiar o perder por el camino sin que se note.
+    """
+    referencia = _referencia()
+    pps = 1.5
+    ticks = iter(range(0, 1000))
+    capturador = StreamCapturadoAlRitmo(
+        reloj=lambda: 1.0 + float(next(ticks)) * 0.0, esperar=lambda s: None
+    )
+    for bloque in _bloques_cortados(referencia, [1.0]):  # bueno
+        capturador.write(bloque)
+    for bloque in _bloques_cortados(referencia, [1.495]):  # saturado
+        capturador.write(bloque)
+    capturador.write((np.random.default_rng(5).standard_normal(TAM_BLOQUE) * 0.1).astype(np.float32))
+
+    informe = informe_del_fondo(capturador, referencia, pps, _traza_recta(pps))
+
+    assert informe.bloques_medidos == 1
+    assert informe.bloques_saturados == 1
+    assert informe.bloques_sin_localizar == 1
+    assert informe.desfase_maximo_ms == pytest.approx(0.0, abs=0.1)
