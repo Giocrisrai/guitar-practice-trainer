@@ -20,6 +20,7 @@ import socket
 import statistics
 import subprocess
 import sys
+import threading
 import time
 import types
 import urllib.error
@@ -1675,15 +1676,27 @@ FS_FONDO = 48000
 TAM_BLOQUE = 1024
 
 
-def _referencia(segundos: float = 4.0) -> np.ndarray:
-    """Una pieza renderizada de mentira: ruido con semilla, que no se parece a si mismo.
+_REFERENCIA_REAL: list[np.ndarray] = []
 
-    Ruido y no senoidal: una onda periodica se parece a si misma desplazada un
-    periodo y haria ambigua la localizacion, que es justo lo que se quiere medir.
+
+def _referencia() -> np.ndarray:
+    """La pieza de demostracion RENDERIZADA DE VERDAD, a 48 kHz y pico 1.
+
+    **Ya no es ruido blanco**, que es el unico regimen sin ambiguedad: el fondo
+    real es cuasi-periodico y hay posiciones vecinas que se le parecen casi tanto
+    como la buena. El localizador se prueba en el caso dificil. Se renderiza una
+    vez por proceso.
     """
-    return np.random.default_rng(7).standard_normal(int(segundos * FS_FONDO)).astype(
-        np.float32
-    ) * 0.2
+    if not _REFERENCIA_REAL:
+        pieza = pieza_de_demostracion()
+        _REFERENCIA_REAL.append(
+            renderizar(
+                (voz_de_tu_parte(pieza),),
+                tempo=pieza.tempo,
+                frecuencia_muestreo=FS_FONDO,
+            ).muestras
+        )
+    return _REFERENCIA_REAL[0]
 
 
 def _bloques_cortados(referencia, inicios_s, ganancia=0.6):
@@ -1714,11 +1727,11 @@ def test_el_desfase_se_mide_contra_el_cabezal_y_no_contra_donde_el_fondo_cree_es
     # Escrito a la hora 1,000 (cabezal en 1,000 s) pero cortado del 1,040 s.
     bloques = _bloques_cortados(referencia, [1.040])
 
-    peor, medidos, sin_localizar = desfase_contra_el_cabezal(
+    peor, medidos, sin_localizar, saturados = desfase_contra_el_cabezal(
         bloques, [1.000], referencia, FS_FONDO, pps, traza
     )
 
-    assert medidos == 1 and sin_localizar == 0
+    assert (medidos, sin_localizar, saturados) == (1, 0, 0)
     assert peor == pytest.approx(40.0, abs=0.1), "el desfase es contra el cabezal"
 
 
@@ -1728,7 +1741,7 @@ def test_el_desfase_tiene_signo_y_se_queda_con_el_peor():
     pps = 1.5
     bloques = _bloques_cortados(referencia, [0.510, 1.475, 2.000])
 
-    peor, medidos, _ = desfase_contra_el_cabezal(
+    peor, medidos, _, _ = desfase_contra_el_cabezal(
         bloques, [0.500, 1.500, 2.000], referencia, FS_FONDO, pps, _traza_recta(pps)
     )
 
@@ -1741,11 +1754,11 @@ def test_un_bloque_que_no_se_parece_a_la_pieza_no_se_mide_se_cuenta_aparte():
     referencia = _referencia()
     ajeno = (np.random.default_rng(99).standard_normal(TAM_BLOQUE) * 0.1).astype(np.float32)
 
-    peor, medidos, sin_localizar = desfase_contra_el_cabezal(
+    resultado = desfase_contra_el_cabezal(
         [ajeno], [1.0], referencia, FS_FONDO, 1.5, _traza_recta(1.5)
     )
 
-    assert (peor, medidos, sin_localizar) == (None, 0, 1)
+    assert tuple(resultado) == (None, 0, 1, 0)
 
 
 def test_el_silencio_no_se_mide():
@@ -1756,7 +1769,7 @@ def test_el_silencio_no_se_mide():
         [silencio], [1.0], _referencia(), FS_FONDO, 1.5, _traza_recta(1.5)
     )
 
-    assert resultado == (None, 0, 0)
+    assert tuple(resultado) == (None, 0, 0, 0)
 
 
 def test_las_muestras_escritas_salen_del_capturador_y_el_desfase_del_cabezal():
@@ -2054,6 +2067,9 @@ def test_una_pasada_de_verdad_con_fondo_captura_muestras_y_mide_el_desfase():
     assert informe is not None
     assert informe.muestras_escritas > 48000, "el fondo no sono: no se escribio ni un segundo"
     assert informe.bloques_medidos > 20
+    # La cota solo vale si NADA cayo fuera de lo medible: un bloque saturado o sin
+    # localizar es justo un desfase grande que la cifra no ve.
+    assert informe.bloques_saturados == 0 and informe.bloques_sin_localizar == 0
     assert informe.desfase_maximo_ms is not None
     assert abs(informe.desfase_maximo_ms) < 150.0
 
@@ -2077,11 +2093,11 @@ def test_la_ventana_con_relleno_de_ceros_no_produce_localizaciones_falsas():
     pps = 1.5
     traza = [(t, 0.10 * pps) for t in np.arange(0.0, 2.0, 0.01)]
 
-    peor, medidos, sin_localizar = desfase_contra_el_cabezal(
+    peor, medidos, sin_localizar, saturados = desfase_contra_el_cabezal(
         _bloques_cortados(referencia, [0.10]), [1.0], referencia, FS_FONDO, pps, traza
     )
 
-    assert (medidos, sin_localizar) == (1, 0)
+    assert (medidos, sin_localizar, saturados) == (1, 0, 0)
     assert peor == pytest.approx(0.0, abs=0.1)
 
 
@@ -2148,7 +2164,7 @@ def test_sin_lecturas_del_cabezal_no_hay_nada_que_medir_y_no_revienta():
         _bloques_cortados(referencia, [1.0]), [1.0], referencia, FS_FONDO, 1.5, []
     )
 
-    assert resultado == (None, 0, 0)
+    assert tuple(resultado) == (None, 0, 0, 0)
 
 
 def test_la_vuelta_del_bucle_no_se_interpola_como_si_fuera_un_cabezal_que_avanza():
@@ -2163,9 +2179,236 @@ def test_la_vuelta_del_bucle_no_se_interpola_como_si_fuera_un_cabezal_que_avanza
     pps = 1.5
     traza = [(0.99, 3.0 * pps), (1.01, 0.0)]
 
-    peor, medidos, _ = desfase_contra_el_cabezal(
+    peor, medidos, _, _ = desfase_contra_el_cabezal(
         _bloques_cortados(referencia, [3.0]), [1.0], referencia, FS_FONDO, pps, traza
     )
 
     assert medidos == 1
     assert peor == pytest.approx(0.0, abs=0.1)
+
+
+# ---------------------------------------------------------------------------
+# Ronda de la revision: la medida dice lo que es, dice cuando satura, y
+# `--altavoces` queda cableado en el camino real sin abrir audio.
+# ---------------------------------------------------------------------------
+
+
+def test_un_desfase_grande_se_mide_y_no_se_recorta():
+    """300 ms de desfase publican 300 ms: ni se recorta a un tope ni se achica la ventana.
+
+    Estado de partida: el desfase real (300 ms) esta MUY por encima de lo que
+    mediria un tope de +-100 ms o una ventana de 50 ms, que es donde los dos
+    mutantes se distinguen del original.
+    """
+    referencia = _referencia()
+    pps = 1.5
+
+    peor, medidos, _, saturados = desfase_contra_el_cabezal(
+        _bloques_cortados(referencia, [1.300]), [1.000], referencia, FS_FONDO, pps,
+        _traza_recta(pps),
+    )
+
+    assert (medidos, saturados) == (1, 0)
+    assert peor == pytest.approx(300.0, abs=0.1)
+
+
+@pytest.mark.parametrize("desplazamiento_s", [0.495, 0.600, 1.000])
+def test_un_desfase_mayor_que_la_ventana_no_se_publica_como_dato(desplazamiento_s):
+    """**El techo de la medida, declarado.** +495, +600 y +1000 ms: ninguno es un dato.
+
+    El revisor midio sobre la pieza real que +600 ms publicaba +498,8 ms (el borde
+    de la ventana) sin avisar. Ahora el bloque se cuenta como saturado o como sin
+    localizar, y NO entra en el peor: una aserciones `< 150` sobre esta cifra no
+    puede aprobar un desfase de medio segundo.
+    """
+    referencia = _referencia()
+    pps = 1.5
+
+    peor, medidos, sin_localizar, saturados = desfase_contra_el_cabezal(
+        _bloques_cortados(referencia, [1.0 + desplazamiento_s]), [1.0], referencia,
+        FS_FONDO, pps, _traza_recta(pps),
+    )
+
+    assert medidos == 0, "un desfase fuera de la ventana no se puede medir"
+    assert peor is None
+    assert saturados + sin_localizar == 1, "el bloque tiene que contarse en algun sitio"
+
+
+def test_el_borde_saturado_se_dice_en_el_informe_y_la_salvedad_siempre():
+    """Los saturados y los sin localizar salen en una linea de ATENCION; la salvedad, siempre."""
+    sano = _lineas_texto(
+        InformeDelFondo(1000, 12.0, 50, bloques_sin_localizar=0, bloques_saturados=0)
+    )
+    roto = _lineas_texto(
+        InformeDelFondo(1000, 12.0, 50, bloques_sin_localizar=3, bloques_saturados=2)
+    )
+
+    for texto in (sano, roto):
+        assert "consistencia interna" in texto
+        assert "NO es sincronia audible" in texto
+        assert "HTTP" in texto
+    assert "ATENCION" not in sano
+    assert "ATENCION" in roto
+    assert "2 bloques saturados" in roto and "3 sin localizar" in roto
+
+
+def _lineas_texto(informe) -> str:
+    return resumen(_veredicto(), pieza_de_demostracion(), PERFECTO, True, informe)
+
+
+def test_la_hora_de_cada_lectura_es_el_punto_medio_de_la_peticion(monkeypatch):
+    """La lectura HTTP tarda 40 ms: la hora apuntada es la del MEDIO, ni el inicio ni el final."""
+    horas = iter([10.0, 10.04])
+    monkeypatch.setattr(
+        "herramientas.gemelo.time", types.SimpleNamespace(monotonic=lambda: next(horas))
+    )
+    monkeypatch.setattr(
+        "herramientas.gemelo._leer_json", lambda url: {"instante_pulsos": 3.0}
+    )
+    traza = []
+
+    from herramientas.gemelo import _leer_estado
+
+    _leer_estado("http://127.0.0.1:1", traza)
+
+    assert traza == [(pytest.approx(10.02), 3.0)]
+
+
+def test_las_notas_repetidas_no_son_identicas_y_por_eso_el_metodo_no_las_confunde():
+    """**El supuesto que sostiene al localizador, escrito y probado.**
+
+    `renderizar` deriva la semilla de cada nota de su indice: dos notas iguales de
+    compases distintos NO suenan identicas. Si el fondo viniera algun dia de
+    muestras grabadas -dos notas iguales identicas-, esta prueba falla y el
+    localizador publicaria desfases de compases enteros con total confianza.
+    """
+    voz = VozDeFondo(
+        "dos iguales",
+        "guitarra",
+        (NotaDeFondo(40.0, 0.0, 2.0), NotaDeFondo(40.0, 8.0, 2.0)),
+    )
+    pieza = renderizar((voz,), tempo=60, frecuencia_muestreo=FS_FONDO)
+    primera = pieza.muestras[: 8000]
+    segunda = pieza.muestras[8 * FS_FONDO : 8 * FS_FONDO + 8000]
+
+    assert float(np.abs(primera).max()) > 0.01 and float(np.abs(segunda).max()) > 0.01
+    assert not np.allclose(primera, segunda, atol=1e-4)
+
+
+# -- `--altavoces` por el camino REAL, sin abrir audio ------------------------
+
+
+class StreamEspia:
+    """Un stream de mentira que cuenta, avisa de la primera escritura y no guarda nada."""
+
+    def __init__(self) -> None:
+        self.arranques = 0
+        self.escrituras = 0
+        self.escribio = threading.Event()
+
+    def start(self) -> None:
+        self.arranques += 1
+
+    def write(self, muestras) -> None:
+        self.escrituras += 1
+        self.escribio.set()
+        # Un dispositivo real bloquea hasta que hay hueco; sin esto el hilo giraria.
+        threading.Event().wait(0.005)
+
+    def stop(self) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+
+def _correr_con_el_carril_real(monkeypatch, capsys, altavoces, abrir_stream):
+    """Corre `_correr_la_demostracion` con carril y sesion REALES, sin servidor ni espera.
+
+    Solo se sustituye lo que abre el puerto. El «seguimiento» llama a
+    `carril.estado()` -que es lo que arranca el acompañante- y, si hay stream
+    espia, espera con un `Event` a que escriba (no con un sleep).
+    """
+    construidos = []
+
+    def construir(pieza, interpretacion, salida_fondo=None):
+        resultado = _construir(pieza, interpretacion, salida_fondo=salida_fondo)
+        construidos.append(resultado)
+        return resultado
+
+    monkeypatch.setattr("herramientas.gemelo._construir", construir)
+    monkeypatch.setattr(
+        "herramientas.gemelo._levantar_el_servidor", lambda app, puerto: ServidorDeMentira()
+    )
+    monkeypatch.setattr("herramientas.gemelo._esperar_al_servidor", lambda base: True)
+
+    def seguir(base, duracion_s, repeticiones=1, traza=None):
+        construidos[0][2].estado()
+        espia = getattr(abrir_stream, "espia", None)
+        if espia is not None:
+            assert espia.escribio.wait(timeout=10.0), (
+                "el fondo nunca escribio por la salida que se le pidio"
+            )
+        return RecolectorDeLaSesion(), True
+
+    monkeypatch.setattr("herramientas.gemelo._seguir_la_pasada", seguir)
+    pieza = pieza_de_demostracion()
+    _correr_la_demostracion(
+        pieza,
+        interpretar(pieza, PERFECTO, ultimo_compas=1),
+        PlanDePasada(ultimo_compas=1),
+        8420,
+        al_acabar=lambda *args: None,
+        fondo=FondoDisponible((), pieza.tempo, ()),
+        altavoces=altavoces,
+        abrir_stream=abrir_stream,
+    )
+    return capsys.readouterr().out
+
+
+def test_altavoces_escribe_por_la_salida_que_se_le_da_y_lo_dice(monkeypatch, capsys):
+    """**La bandera que el coordinador no puede ejecutar, cableada de punta a punta.**
+
+    Con `altavoces=True` el acompañante REAL del carril REAL abre y escribe por el
+    stream inyectado (el que haria el altavoz), el aviso dice «por los
+    altavoces» y no «capturado», y no aparece ningun aviso de salida rota. Los
+    mutantes -que `--altavoces` capture en silencio, o que el aviso mienta- se
+    notan aqui: si el stream espia no llega a escribir, la espera de 10 s falla.
+    """
+    espia = StreamEspia()
+
+    def abrir(**argumentos):
+        return espia
+
+    abrir.espia = espia
+
+    salida = _correr_con_el_carril_real(monkeypatch, capsys, True, abrir)
+
+    assert espia.arranques == 1 and espia.escrituras >= 1
+    assert "Fondo por los altavoces" in salida
+    assert "capturado" not in salida
+    assert "NO abrio" not in salida
+
+
+def test_una_salida_que_no_abre_se_dice_con_su_error(monkeypatch, capsys):
+    """Los altavoces desenchufados: la pasada sigue y el escaparate DICE por que no sono."""
+    pedidos = []
+
+    def abrir(**argumentos):
+        pedidos.append(argumentos)
+        raise OSError("sin altavoces (simulado)")
+
+    salida = _correr_con_el_carril_real(monkeypatch, capsys, True, abrir)
+
+    assert len(pedidos) == 1, "un intento por fondo: el pestillo no se rompe"
+    assert "AVISO: la salida del fondo NO abrio" in salida
+    assert "sin altavoces (simulado)" in salida
+
+
+def test_con_captura_el_aviso_dice_capturado(monkeypatch, capsys):
+    """La otra mitad del aviso: sin `--altavoces` dice «capturado» y no «por los altavoces»."""
+    salida = _correr_con_el_carril_real(monkeypatch, capsys, False, None)
+
+    assert "Fondo capturado" in salida
+    assert "por los altavoces" not in salida
+    assert "NO abrio" not in salida

@@ -58,6 +58,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import NamedTuple
 from pathlib import Path
 
 import numpy as np
@@ -144,10 +145,18 @@ AVISO_DESDE_MS = 230.0
 
 
 # Cuanto se busca, a cada lado del cabezal, donde sono de verdad un bloque del
-# fondo. Medio segundo es ~20 bloques: mas que cualquier desfase sano -la cadena
-# publica el cabezal cada ~30 ms- y lo bastante corto para que la busqueda no
-# confunda dos notas iguales de compases distintos.
+# fondo. **ES UN TECHO DURO DE MEDIDA**: un bloque cuyo desfase real pasa de
+# aqui no se puede medir. Si su mejor parecido cae en el borde de la ventana se
+# cuenta como SATURADO (la cifra real es mayor y el informe lo dice); si no se
+# parece a nada se cuenta como SIN LOCALIZAR. Lo que NO puede hacer nadie es
+# distinguir un desfase mayor que la ventana de un impostor que caiga dentro de
+# ella: por eso la prueba de punta a punta exige cero de las dos cuentas ademas
+# de la cota.
 VENTANA_DE_BUSQUEDA_S = 0.5
+
+# Un mejor parecido a menos de esto del borde de la ventana se da por saturado:
+# el pico verdadero puede estar fuera.
+MARGEN_DE_SATURACION_S = 0.01
 
 # Entre dos lecturas del cabezal que distan mas que esto no se interpola: es una
 # vuelta del bucle (el cabezal salta atras) o una pausa, y la recta entre las dos
@@ -155,8 +164,13 @@ VENTANA_DE_BUSQUEDA_S = 0.5
 SALTO_MAXIMO_SIN_INTERPOLAR_S = 0.25
 
 # Lo que tiene que parecerse un bloque escrito a la pieza renderizada para darlo
-# por localizado (correlacion normalizada). Un bloque que no llega es un bloque
-# que no suena a la pieza, y se cuenta aparte en vez de medirse mal.
+# por localizado (correlacion normalizada). **Este umbral NO DISCRIMINA
+# POSICIONES**: sobre el material real decenas de posiciones lo pasan por
+# bloque, y el pico bueno (1,0000) convive con impostores a 0,9998-0,9999 a
+# +5/+8/+12/+23 ms, dentro de la misma nota. Solo sirve para descartar lo que
+# no se parece a la pieza en ninguna parte (un bloque ajeno); la posicion la da el
+# maximo, y la resolucion practica sobre material real es del orden de algunas
+# decenas de ms, no de la fraccion de ms que la cifra aparenta.
 PARECIDO_MINIMO = 0.9
 
 # Por debajo de esta energia un bloque es silencio y no se puede localizar: el
@@ -174,14 +188,34 @@ class InformeDelFondo:
         escrito y donde estaba el CABEZAL cuando se escribio; positivo es que el
         fondo sonaba por delante del cabezal. `None` si no se pudo medir ningun
         bloque.
-    bloques_medidos / bloques_sin_localizar: cuantos bloques con sonido se
-        midieron y cuantos no se parecian a la pieza renderizada.
+    bloques_medidos / bloques_sin_localizar / bloques_saturados: cuantos bloques
+        con sonido se midieron, cuantos no se parecian a la pieza renderizada y
+        cuantos cayeron en el borde de la ventana (desfase real MAYOR que la
+        cifra: ver `VENTANA_DE_BUSQUEDA_S`).
+
+    **LA CIFRA NO ES SINCRONIA AUDIBLE: ES CONSISTENCIA INTERNA.** El acompañante
+    construye cada bloque preguntandole al cabezal del carril, y la traza lee ESE
+    MISMO cabezal por HTTP: un error comun a las dos patas -un fondo desplazado
+    respecto a lo que se oye en la sala- es invisible por construccion. Y es la
+    misma propiedad que la hace robusta bajo carga: las dos patas se retrasan
+    juntas. Medir sincronia de verdad necesita el hardware. Ademas la cifra
+    INCLUYE el retraso de lectura HTTP (8-30 ms, la mitad del numero).
     """
 
     muestras_escritas: int
     desfase_maximo_ms: float | None
     bloques_medidos: int
     bloques_sin_localizar: int
+    bloques_saturados: int = 0
+
+
+class MedidaDelDesfase(NamedTuple):
+    """Lo que devuelve `desfase_contra_el_cabezal`: el peor y las tres cuentas."""
+
+    peor_ms: float | None
+    medidos: int
+    sin_localizar: int
+    saturados: int
 
 
 class StreamCapturadoAlRitmo(StreamCapturado):
@@ -263,8 +297,23 @@ def desfase_contra_el_cabezal(
     frecuencia_muestreo: int,
     pulsos_por_segundo: float,
     traza: list[tuple[float, float]],
-) -> tuple[float | None, int, int]:
+) -> MedidaDelDesfase:
     """El peor desfase entre donde sono cada bloque escrito y donde estaba el cabezal.
+
+    **ESTO ES CONSISTENCIA INTERNA, NO SINCRONIA AUDIBLE.** El acompañante pide
+    cada bloque al cabezal del carril y `traza` es ese mismo cabezal leido por
+    HTTP: un error comun a las dos patas no se ve. Y la cifra INCLUYE el retraso
+    de la lectura HTTP (8-30 ms). Ademas, la resolucion practica sobre material
+    real es de algunas decenas de ms (ver `PARECIDO_MINIMO`), y el techo es la
+    ventana (`VENTANA_DE_BUSQUEDA_S`): lo que la pasa se cuenta como saturado o
+    sin localizar, nunca se publica como dato.
+
+    **Una limitacion que HOY no muerde y mañana si.** Las notas repetidas no se
+    confunden entre compases porque `renderizar` deriva la semilla de cada nota
+    de su indice: dos notas iguales de compases distintos NO son identicas, y los
+    impostores caen dentro de la misma nota. Si algun dia el fondo viniera de
+    muestras grabadas, dos notas iguales SI serian identicas y este metodo
+    publicaria desfases de compases enteros con total confianza.
 
     `bloques` y `horas` son lo que CAPTURO la salida; `traza` son las lecturas
     `(hora, instante en pulsos)` del cabezal tal como las publica el servidor; y
@@ -278,17 +327,21 @@ def desfase_contra_el_cabezal(
     las dos lecturas que rodean esa hora (salvo si son de un salto: bucle o
     pausa, donde se toma la anterior).
 
-    Devuelve `(peor desfase en ms con signo, medidos, sin localizar)`. Positivo:
-    el bloque era de un punto de la pieza POSTERIOR al cabezal.
+    Devuelve `MedidaDelDesfase(peor en ms con signo, medidos, sin localizar,
+    saturados)`. Positivo: el bloque era de un punto de la pieza POSTERIOR al
+    cabezal. Los saturados NO entran en el peor: su cifra seria el borde de la
+    ventana presentado como dato.
     """
     if not traza or not len(referencia):
-        return None, 0, 0
+        return MedidaDelDesfase(None, 0, 0, 0)
     tiempos = np.array([hora for hora, _ in traza])
     segundos = np.array([pulsos / pulsos_por_segundo for _, pulsos in traza])
     ventana = int(VENTANA_DE_BUSQUEDA_S * frecuencia_muestreo)
     peor: float | None = None
     medidos = 0
     sin_localizar = 0
+    saturados = 0
+    margen = int(MARGEN_DE_SATURACION_S * frecuencia_muestreo)
     for bloque, hora in zip(bloques, horas):
         n = len(bloque)
         if n == 0 or float(np.dot(bloque, bloque)) < ENERGIA_MINIMA_DEL_BLOQUE:
@@ -334,12 +387,15 @@ def desfase_contra_el_cabezal(
         if parecido[mejor] < PARECIDO_MINIMO:
             sin_localizar += 1
             continue
+        if mejor < margen or mejor > len(parecido) - 1 - margen:
+            saturados += 1
+            continue
         encontrado = (desde + mejor) / frecuencia_muestreo
         desfase_ms = (encontrado - esperado) * 1000.0
         medidos += 1
         if peor is None or abs(desfase_ms) > abs(peor):
             peor = desfase_ms
-    return peor, medidos, sin_localizar
+    return MedidaDelDesfase(peor, medidos, sin_localizar, saturados)
 
 
 def informe_del_fondo(
@@ -352,7 +408,7 @@ def informe_del_fondo(
     muestras = capturador.muestras
     cortes = np.cumsum((0,) + capturador.bloques)
     bloques = [muestras[cortes[i] : cortes[i + 1]] for i in range(len(cortes) - 1)]
-    peor, medidos, sin_localizar = desfase_contra_el_cabezal(
+    medida = desfase_contra_el_cabezal(
         bloques,
         list(capturador.horas),
         referencia,
@@ -360,7 +416,13 @@ def informe_del_fondo(
         pulsos_por_segundo,
         traza,
     )
-    return InformeDelFondo(len(muestras), peor, medidos, sin_localizar)
+    return InformeDelFondo(
+        len(muestras),
+        medida.peor_ms,
+        medida.medidos,
+        medida.sin_localizar,
+        medida.saturados,
+    )
 
 
 def leer_bucle(texto: str) -> tuple[int, int]:
@@ -569,25 +631,34 @@ def resumen(
 
 
 def _lineas_del_fondo(fondo: InformeDelFondo) -> list[str]:
-    """Las dos lineas del fondo: muestras escritas y desfase maximo."""
+    """Las lineas del fondo: muestras escritas y desfase maximo, con su salvedad.
+
+    La salvedad se escribe DONDE SE LEE LA CIFRA: es consistencia interna y no
+    sincronia audible, e incluye el retraso HTTP de la lectura.
+    """
     if fondo.desfase_maximo_ms is None:
         desfase = "sin medir (ningun bloque con sonido se pudo comparar con el cabezal)"
     else:
         desfase = (
             f"{fondo.desfase_maximo_ms:+.1f} ms el peor contra el cabezal "
-            f"({fondo.bloques_medidos} bloques medidos"
-            + (
-                f", {fondo.bloques_sin_localizar} sin localizar"
-                if fondo.bloques_sin_localizar
-                else ""
-            )
-            + ")"
+            f"({fondo.bloques_medidos} bloques medidos)"
         )
-    return [
+    lineas = [
         f"  fondo   : {fondo.muestras_escritas} muestras escritas (capturadas, "
         "no por los altavoces)",
         f"  fondo   : desfase {desfase}",
+        "            (consistencia interna: compara lo escrito con el MISMO "
+        "cabezal que lo pidio, NO es sincronia audible; incluye 8-30 ms de "
+        "retraso de lectura HTTP)",
     ]
+    if fondo.bloques_saturados or fondo.bloques_sin_localizar:
+        lineas.append(
+            f"  fondo   : ATENCION, la cifra puede ser MENOR que el desfase real: "
+            f"{fondo.bloques_saturados} bloques saturados (desfase fuera de "
+            f"+-{VENTANA_DE_BUSQUEDA_S * 1000:.0f} ms) y "
+            f"{fondo.bloques_sin_localizar} sin localizar"
+        )
+    return lineas
 
 
 def segundos_de_cuenta_atras(
@@ -1095,6 +1166,15 @@ def _correr_la_demostracion(
             if capturador is not None
             else None
         )
+        # **Una salida que no abrio se dice, con altavoces o sin ellos**:
+        # `acompanamiento_posible` solo mira la entrada, y un dispositivo que no
+        # abre deja la pasada en pie y muda sin una linea que lo explique. El
+        # error queda en la salida (`abrir` lo guarda y no reintenta).
+        if salida_fondo is not None and salida_fondo.ultimo_error is not None:
+            print(
+                "  AVISO: la salida del fondo NO abrio, asi que no sono nada: "
+                f"{salida_fondo.ultimo_error}"
+            )
         # DENTRO del try, con el servidor todavia contestando: ver el docstring.
         al_acabar(veredicto, completada, informe)
         return firmado
