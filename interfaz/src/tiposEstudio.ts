@@ -50,6 +50,33 @@ export interface EstadoEstudio extends EstadoCarril {
   /** Lo que SUENA, no lo que se pidió: `false` sin salida de audio aunque el plan
    * diga `con_click`. */
   click_sonando: boolean;
+  /** Si el fondo SUENA ahora mismo, no si está pedido: sin salida de audio, sin
+   * buffer renderizado o con el pestillo de la entrada echado, esto es `false`
+   * aunque el interruptor esté puesto. Mismo criterio que `click_sonando`. Es lo
+   * que marca la casilla en pantalla, porque un interruptor encendido que no hace
+   * nada sería mentir. */
+  acompanamiento_sonando: boolean;
+  /** Si encender el fondo tiene sentido ahora mismo: hay fondo cargado Y la
+   * entrada es el cable. Lo decide el servidor (`acompanamiento_posible`, en
+   * `servidor/piezas.py`) y **no se recalcula aquí**, por lo mismo que
+   * `esperando_notas`: la misma regla escrita dos veces nunca es la misma regla.
+   *
+   * **No es una compuerta, es un recordatorio.** El usuario puede encender el
+   * fondo a mano con el micrófono abierto —es su equipo, y con auriculares no hay
+   * realimentación—, y entonces esto SIGUE valiendo `false` mientras suena, para
+   * que el aviso no se vaya. Un aviso que se va en cuanto obedeces no es un aviso. */
+  acompanamiento_posible: boolean;
+  /** La canción no traía otras pistas, así que lo que suena de fondo es la parte
+   * PROPIA del usuario como guía, a media ganancia. Hay que decirlo: si no, el
+   * alumno cree que oye el acompañamiento y se está oyendo a sí mismo. */
+  acompanamiento_es_tu_parte: boolean;
+  /** Cuántas voces AJENAS suenan detrás. Cero sin fondo y cero también cuando lo
+   * que suena es la propia parte (`acompanamiento_es_tu_parte`). */
+  acompanamiento_voces: number;
+  /** Las pistas que el archivo traía y que no pueden sonar, con el motivo ya
+   * escrito para el usuario. Se dice porque un fondo al que le falta el bajo sin
+   * que nada lo diga parece roto. */
+  acompanamiento_excluidas: PistaExcluida[];
   /** Tempo que el servidor propone para la pasada siguiente, o `null` si no hay
    * nada que sugerir (casi siempre). Va en LAS DOS DIRECCIONES: dos pasadas
    * seguidas por encima del 90 % de notas limpias lo suben un paso, y una sola
@@ -57,6 +84,24 @@ export interface EstadoEstudio extends EstadoCarril {
    * `factor_tempo` para saber si es subir o bajar. Es una propuesta: nunca se
    * aplica sola. */
   factor_sugerido: number | null;
+}
+
+/** Una pista del archivo que NO suena de fondo, con el motivo ya escrito para el
+ * usuario. El servidor la manda con nombre (`{pista, motivo}`) y no como par, para
+ * que quien la pinte escriba `excluida.motivo` y no `excluida[1]`. */
+export interface PistaExcluida {
+  pista: string;
+  motivo: string;
+}
+
+/** Lo que acepta `POST /api/piezas/acompanamiento`: el interruptor, el volumen, o
+ * los dos. Es un PARCHE —lo que no viaja no se mueve—, y va por su propia puerta
+ * y no por `/api/piezas/plan` porque todo cambio de plan cierra la repetición: un
+ * deslizador de volumen arrastrado serían decenas de vueltas partidas. */
+export interface AjusteAcompanamiento {
+  encendido?: boolean;
+  /** De 0 a 1, no en porcentaje: fuera de ese rango es un 400. */
+  volumen?: number;
 }
 
 /** Una sección de la pieza ya convertida en rango de compases (base 1). */

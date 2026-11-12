@@ -267,6 +267,13 @@ body {
 }
 .sugerencia-tempo { border-color: var(--afinada); }
 .aviso-click, .aviso-pausa-usuario { color: var(--desviada); font-size: 13px; }
+/* El aviso del fondo ocupa su propia linea entera: es lo que separa un informe
+   que mide al alumno de uno que mide al programa, y no puede quedar de coletilla
+   al lado de un deslizador. */
+.aviso-acompanamiento {
+  flex-basis: 100%; margin: 4px 0 0; color: var(--desviada); font-size: 13px;
+}
+.voces-del-fondo, .voces-excluidas { color: var(--tenue); font-size: 13px; }
 .cuenta-atras { font-size: 24px; font-weight: 600; font-variant-numeric: tabular-nums; }
 
 /* El informe de la pasada */

@@ -91,6 +91,9 @@ const ESTUDIO_BASE = {
   en_pausa: false, compas_variable: false,
   ritmo_aproximado: false, tramo_terminado: false, click_sonando: false,
   factor_sugerido: null, esperando_notas: true,
+  acompanamiento_sonando: false, acompanamiento_posible: false,
+  acompanamiento_es_tu_parte: false, acompanamiento_voces: 0,
+  acompanamiento_excluidas: [],
 };
 
 /** El carril apagado: las mismas claves que con pieza (`_CARRIL_APAGADO`). */
@@ -995,7 +998,7 @@ describe("Carril: los controles de la pasada", () => {
           secciones_en_compases: SECCIONES,
         });
       }
-      if (/\/api\/piezas\/(plan|saltar|pausa)$/.test(direccion)) {
+      if (/\/api\/piezas\/(plan|saltar|pausa|acompanamiento)$/.test(direccion)) {
         return rechazo === null
           ? responder(ESTADO_APAGADO)
           : responder({ detail: rechazo }, false, 400);
@@ -1054,6 +1057,36 @@ describe("Carril: los controles de la pasada", () => {
       fireEvent.pointerUp(screen.getByLabelText("Tempo"));
     });
     expect(cuerpoDe(fetchFalso, "/api/piezas/plan")).toEqual({ factor_tempo: 0.7 });
+  });
+
+  /**
+   * El control del fondo, por el CAMINO REAL y no por la propiedad del
+   * componente: la etapa anterior aprendió que un control bien probado en su
+   * archivo y mal cableado en el de arriba no hace nada. Y de paso, que el aviso
+   * que el servidor publica llega hasta la pantalla.
+   */
+  it("el interruptor del fondo llega al servidor por su propia puerta, y el aviso se ve", async () => {
+    const fetchFalso = fetchConOrdenes();
+    await montarEnMarcha(fetchFalso);
+    // La entrada es un micrófono: el servidor lo dice y deja el fondo callado.
+    enviarEstado(
+      enCurso({
+        acompanamiento_voces: 2,
+        acompanamiento_posible: false,
+        acompanamiento_sonando: false,
+      }),
+    );
+    const casilla = (await screen.findByLabelText("Acompañamiento")) as HTMLInputElement;
+    expect(casilla.checked).toBe(false);
+    expect(document.querySelector(".aviso-acompanamiento")?.textContent).toContain(
+      "micrófono",
+    );
+
+    await act(async () => {
+      fireEvent.click(casilla);
+    });
+    // No va por `/api/piezas/plan`: un cambio de plan cierra la repetición.
+    expect(cuerpoDe(fetchFalso, "/api/piezas/acompanamiento")).toEqual({ encendido: true });
   });
 
   it("un clic fuera del tramo manda el plan y luego el salto, al servidor", async () => {

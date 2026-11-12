@@ -306,6 +306,7 @@ export function Carril({ peticion = null }: PropiedadesCarril) {
     cambiarPlan,
     saltar,
     pausar,
+    acompanamiento,
     machacar,
     leerInforme,
   } = useCarril(undefined, peticion === null);
@@ -582,6 +583,7 @@ export function Carril({ peticion = null }: PropiedadesCarril) {
           alCambiarPlan={cambiarPlan}
           alPausar={(activa) => void pausar(activa)}
           alSaltar={(compas) => void saltar(compas)}
+          alAjustarAcompanamiento={acompanamiento}
         />
       )}
 

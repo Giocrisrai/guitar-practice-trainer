@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { detenerPiezaAlSalir } from "./detencionAlSalir";
 import { crearReloj, type Reloj } from "./relojCarril";
 import type {
+  AjusteAcompanamiento,
   EstadoEstudio,
   Historial,
   Informe,
@@ -139,6 +140,15 @@ export interface SesionCarril {
   /** La pausa del usuario, explícita (`activa`) y no un interruptor. No es el
    * `pausado` del estado, que es falta de señal. */
   pausar(activa: boolean): Promise<boolean>;
+  /**
+   * El interruptor y el volumen de la pieza de fondo. Los dos opcionales: es un
+   * parche, y lo que no viaja se queda como estaba.
+   *
+   * Va por `POST /api/piezas/acompanamiento` y NO por `/plan` a propósito: todo
+   * cambio de plan cierra la repetición en el núcleo, así que arrastrar el
+   * volumen por el plan le partiría la vuelta al alumno.
+   */
+  acompanamiento(ajuste: AjusteAcompanamiento): Promise<boolean>;
   /**
    * Machacar un compás: arma un bucle de ESE compás y lo arranca. Son dos
    * órdenes y el orden importa: el servidor rechaza con 400 un salto a un compás
@@ -418,7 +428,7 @@ export function useCarril(
   }, [soltarLaPieza]);
 
   /**
-   * El molde de las tres órdenes: un POST con cuerpo JSON y nada que guardar.
+   * El molde de las órdenes: un POST con cuerpo JSON y nada que guardar.
    * El estado nuevo llega por el WebSocket. Un rechazo del servidor (400) no se
    * pierde en la consola: queda en `error`, que la pantalla enseña.
    */
@@ -449,6 +459,11 @@ export function useCarril(
   );
   const pausar = useCallback(
     (activa: boolean) => pedir("/api/piezas/pausa", { activa }),
+    [pedir]
+  );
+
+  const acompanamiento = useCallback(
+    (ajuste: AjusteAcompanamiento) => pedir("/api/piezas/acompanamiento", ajuste),
     [pedir]
   );
 
@@ -577,6 +592,7 @@ export function useCarril(
     cambiarPlan,
     saltar,
     pausar,
+    acompanamiento,
     machacar,
     leerInforme,
   };

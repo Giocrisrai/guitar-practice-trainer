@@ -3,7 +3,12 @@ import type { ReactElement } from "react";
 import { describe, expect, it, vi } from "vitest";
 
 import { ControlesEstudio } from "./ControlesEstudio";
-import type { EstadoEstudio, Plan, SeccionEnCompases } from "./tiposEstudio";
+import type {
+  AjusteAcompanamiento,
+  EstadoEstudio,
+  Plan,
+  SeccionEnCompases,
+} from "./tiposEstudio";
 
 /** Una pasada de 12 compases, entera, a tempo escrito, sin bucle. */
 const ESTADO: EstadoEstudio = {
@@ -15,6 +20,9 @@ const ESTADO: EstadoEstudio = {
   en_pausa: false, compas_variable: false,
   ritmo_aproximado: false, tramo_terminado: false, click_sonando: false,
   factor_sugerido: null, esperando_notas: true,
+  acompanamiento_sonando: false, acompanamiento_posible: false,
+  acompanamiento_es_tu_parte: false, acompanamiento_voces: 0,
+  acompanamiento_excluidas: [],
 };
 
 const SECCIONES: SeccionEnCompases[] = [
@@ -26,10 +34,12 @@ function pintar(
   estado: Partial<EstadoEstudio> = {},
   secciones: SeccionEnCompases[] = [],
   respuestaDelPlan: Promise<boolean> | void = undefined,
+  respuestaDelFondo: Promise<boolean> | void = undefined,
 ) {
   const alCambiarPlan = vi.fn((_plan: Plan) => respuestaDelPlan);
   const alPausar = vi.fn();
   const alSaltar = vi.fn();
+  const alAjustarAcompanamiento = vi.fn((_ajuste: AjusteAcompanamiento) => respuestaDelFondo);
   const resultado = render(
     <ControlesEstudio
       estado={{ ...ESTADO, ...estado }}
@@ -37,9 +47,10 @@ function pintar(
       alCambiarPlan={alCambiarPlan}
       alPausar={alPausar}
       alSaltar={alSaltar}
+      alAjustarAcompanamiento={alAjustarAcompanamiento}
     />,
   );
-  return { alCambiarPlan, alPausar, alSaltar, ...resultado };
+  return { alCambiarPlan, alPausar, alSaltar, alAjustarAcompanamiento, ...resultado };
 }
 
 const casilla = (nombre: string) => screen.getByLabelText(nombre) as HTMLInputElement;
@@ -54,6 +65,7 @@ function repintar(
     alCambiarPlan: (plan: Plan) => Promise<boolean> | void;
     alPausar: (activa: boolean) => void;
     alSaltar: (compas: number) => void;
+    alAjustarAcompanamiento: (ajuste: AjusteAcompanamiento) => Promise<boolean> | void;
   },
 ) {
   rerender(
@@ -63,6 +75,7 @@ function repintar(
       alCambiarPlan={manejadores.alCambiarPlan}
       alPausar={manejadores.alPausar}
       alSaltar={manejadores.alSaltar}
+      alAjustarAcompanamiento={manejadores.alAjustarAcompanamiento}
     />,
   );
 }
@@ -83,16 +96,8 @@ describe("el tempo", () => {
   });
 
   it("el deslizador sigue al estado: si el servidor mueve el tempo, se mueve", () => {
-    const { rerender, alCambiarPlan, alPausar, alSaltar } = pintar({ factor_tempo: 0.7 });
-    rerender(
-      <ControlesEstudio
-        estado={{ ...ESTADO, factor_tempo: 0.85 }}
-        secciones={[]}
-        alCambiarPlan={alCambiarPlan}
-        alPausar={alPausar}
-        alSaltar={alSaltar}
-      />,
-    );
+    const { rerender, ...manejadores } = pintar({ factor_tempo: 0.7 });
+    repintar(rerender, { factor_tempo: 0.85 }, manejadores);
     expect(deslizador().value).toBe("85");
   });
 
@@ -586,5 +591,195 @@ describe("pulsar un compás", () => {
     const { container } = pintar({ compas_variable: false });
     expect(compas(1)).toBeDefined();
     expect(container.querySelector(".aviso-compases")).toBeNull();
+  });
+});
+
+/**
+ * El control de la pieza de fondo y, sobre todo, SU AVISO.
+ *
+ * El anti-objetivo de la etapa está aquí: si la entrada es el micrófono del
+ * portátil, el fondo vuelve a entrar por ella, el detector de ataques lo cobra
+ * como notas del alumno y el informe se llena de aciertos que no tocó nadie —y no
+ * se nota, porque los números salen—. Por eso el aviso no es decorativo y por eso
+ * no se va cuando el usuario enciende el fondo de todos modos.
+ *
+ * Ninguna de estas pruebas decide en TypeScript cuándo hay que avisar: todas
+ * parten de los campos que el servidor PUBLICA (`acompanamiento_posible` y
+ * compañía), que es la lección que `esperando_notas` dejó en la etapa anterior.
+ */
+describe("el acompañamiento", () => {
+  /** Dos voces ajenas cargadas y el cable puesto: el caso bueno. */
+  const CON_CABLE: Partial<EstadoEstudio> = {
+    acompanamiento_voces: 2,
+    acompanamiento_posible: true,
+    acompanamiento_sonando: true,
+  };
+  /** Lo mismo cargado, pero la entrada es un micrófono: el servidor lo deja
+   * callado (`acompanamiento_sonando: false`) y avisa (`posible: false`). */
+  const CON_MICROFONO: Partial<EstadoEstudio> = {
+    acompanamiento_voces: 2,
+    acompanamiento_posible: false,
+    acompanamiento_sonando: false,
+  };
+
+  const interruptor = (nombre = "Acompañamiento") =>
+    screen.getByLabelText(nombre) as HTMLInputElement;
+  const volumen = () => screen.getByLabelText("Volumen del fondo") as HTMLInputElement;
+  const aviso = (container: HTMLElement) =>
+    container.querySelector(".aviso-acompanamiento")?.textContent ?? null;
+
+  it("el interruptor sale apagado cuando la entrada no es el cable", () => {
+    const { container, alAjustarAcompanamiento } = pintar(CON_MICROFONO);
+    expect(interruptor().checked).toBe(false);
+
+    // Y el aviso dice las dos cosas que hacen falta para decidir: qué pasa si lo
+    // enciendes, y cómo evitarlo.
+    const texto = aviso(container) ?? "";
+    expect(texto).toContain("micrófono");
+    expect(texto).toContain("notas tuyas");
+    expect(texto).toContain("auriculares");
+
+    // Puede encenderlo igual: es su equipo. El control no es una compuerta.
+    fireEvent.click(interruptor());
+    expect(alAjustarAcompanamiento.mock.calls).toEqual([[{ encendido: true }]]);
+  });
+
+  it("con el cable puesto el interruptor sale encendido y no hay nada que avisar", () => {
+    // La otra mitad de la anterior: sin ella, un interruptor clavado en apagado
+    // la pasaría igual.
+    const { container } = pintar(CON_CABLE);
+    expect(interruptor().checked).toBe(true);
+    expect(aviso(container)).toBeNull();
+  });
+
+  it("encenderlo con el micrófono deja el recordatorio puesto", () => {
+    // Arranca con el fondo YA SONANDO y la entrada todavía equivocada, que es el
+    // estado exacto en el que un aviso condicionado a «y no suena» se callaría:
+    // el servidor deja `acompanamiento_posible` en false a propósito mientras
+    // suena, justo para que el recordatorio no se vaya.
+    const { container, rerender, ...manejadores } = pintar({
+      ...CON_MICROFONO,
+      acompanamiento_sonando: true,
+    });
+    expect(interruptor().checked).toBe(true);
+    expect(aviso(container)).toContain("micrófono");
+
+    // Y sigue puesto paquete tras paquete: no es un destello al encender.
+    repintar(rerender, { ...CON_MICROFONO, acompanamiento_sonando: true }, manejadores);
+    expect(aviso(container)).toContain("micrófono");
+
+    // Solo se va cuando el servidor dice que la entrada ya es el cable.
+    repintar(rerender, CON_CABLE, manejadores);
+    expect(aviso(container)).toBeNull();
+  });
+
+  it("con la pista propia el control se llama Guía y no Acompañamiento", () => {
+    const { container } = pintar({
+      acompanamiento_es_tu_parte: true,
+      acompanamiento_voces: 0,
+      acompanamiento_posible: true,
+      acompanamiento_sonando: true,
+    });
+    expect(interruptor("Guía").checked).toBe(true);
+    expect(screen.queryByLabelText("Acompañamiento")).toBeNull();
+    // Y se dice por qué: lo que vuelve es lo que estás tocando tú, más bajito.
+    expect(container.querySelector(".voces-del-fondo")?.textContent).toContain(
+      "tu propia parte",
+    );
+  });
+
+  it("dice cuántas voces suenan y cuántas se quedaron fuera, con el motivo", () => {
+    const { container } = pintar({
+      ...CON_CABLE,
+      acompanamiento_excluidas: [
+        { pista: "Batería", motivo: "es percusión y no tiene altura" },
+      ],
+    });
+    expect(container.querySelector(".voces-del-fondo")?.textContent).toContain(
+      "Suenan 2 voces",
+    );
+    const fuera = container.querySelector(".voces-excluidas")?.textContent ?? "";
+    expect(fuera).toContain("1 pista se quedó fuera");
+    expect(fuera).toContain("Batería");
+    expect(fuera).toContain("es percusión");
+  });
+
+  it("una sola voz se dice en singular y sin pistas fuera no se dice nada", () => {
+    const { container } = pintar({ ...CON_CABLE, acompanamiento_voces: 1 });
+    expect(container.querySelector(".voces-del-fondo")?.textContent).toContain(
+      "Suena 1 voz",
+    );
+    expect(container.querySelector(".voces-excluidas")).toBeNull();
+  });
+
+  it("sin fondo cargado no hay control, ni interruptor ni aviso", () => {
+    // `acompanamiento_posible` también es false cuando no hay NADA que sonar, y
+    // ahí el aviso del micrófono no viene a cuento: no hay nada que pueda entrar
+    // por él. El estado de base es justo ese.
+    const { container } = pintar();
+    expect(screen.queryByLabelText("Acompañamiento")).toBeNull();
+    expect(screen.queryByLabelText("Volumen del fondo")).toBeNull();
+    expect(aviso(container)).toBeNull();
+  });
+
+  it("el deslizador de volumen no parpadea al soltar", () => {
+    // Mismo defecto que la 3d arregló en el de tempo: al soltar se adopta el
+    // valor EN EL ACTO, sin esperar a que la petición conteste. La petición se
+    // queda en vuelo a propósito —nunca se resuelve— porque el parpadeo vive
+    // exactamente en ese hueco.
+    const enVuelo = new Promise<boolean>(() => {});
+    const { rerender, alAjustarAcompanamiento, ...resto } = pintar(
+      CON_CABLE,
+      [],
+      undefined,
+      enVuelo,
+    );
+    const manejadores = { alAjustarAcompanamiento, ...resto };
+    const vistos = [Number(volumen().value)];
+    for (const valor of [65, 75, 85]) {
+      fireEvent.change(volumen(), { target: { value: String(valor) } });
+      vistos.push(Number(volumen().value));
+    }
+    fireEvent.pointerUp(volumen());
+    vistos.push(Number(volumen().value));
+    // Llega otro paquete del servidor: no trae el volumen (no lo publica), así
+    // que no puede mover el deslizador ni hacia delante ni hacia atrás.
+    repintar(rerender, CON_CABLE, manejadores);
+    vistos.push(Number(volumen().value));
+
+    expect(vistos).toEqual([60, 65, 75, 85, 85, 85]);
+    for (let i = 1; i < vistos.length; i += 1) {
+      expect(vistos[i]).toBeGreaterThanOrEqual(vistos[i - 1]);
+    }
+    expect(alAjustarAcompanamiento.mock.calls).toEqual([[{ volumen: 0.85 }]]);
+  });
+
+  it("mientras se arrastra el volumen no se manda nada, y se ve lo que se lleva", () => {
+    const { alAjustarAcompanamiento } = pintar(CON_CABLE);
+    fireEvent.change(volumen(), { target: { value: "25" } });
+    expect(alAjustarAcompanamiento).not.toHaveBeenCalled();
+    expect(volumen().value).toBe("25");
+  });
+
+  it("si el gesto del volumen se cancela se descarta: ni se manda ni queda pegado", () => {
+    const { alAjustarAcompanamiento } = pintar(CON_CABLE);
+    fireEvent.change(volumen(), { target: { value: "25" } });
+    fireEvent.pointerCancel(volumen());
+    expect(alAjustarAcompanamiento).not.toHaveBeenCalled();
+    expect(volumen().value).toBe("60");
+  });
+
+  it("si el servidor rechaza el volumen, el deslizador vuelve al anterior", async () => {
+    const { alAjustarAcompanamiento } = pintar(
+      CON_CABLE,
+      [],
+      undefined,
+      Promise.resolve(false),
+    );
+    fireEvent.change(volumen(), { target: { value: "85" } });
+    fireEvent.pointerUp(volumen());
+    expect(volumen().value).toBe("85");
+    expect(alAjustarAcompanamiento).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(volumen().value).toBe("60"));
   });
 });

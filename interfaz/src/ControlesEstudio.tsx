@@ -1,13 +1,31 @@
 import { useState } from "react";
 
 import { RejillaCompases } from "./RejillaCompases";
-import type { EstadoEstudio, Plan, SeccionEnCompases } from "./tiposEstudio";
+import type {
+  AjusteAcompanamiento,
+  EstadoEstudio,
+  Plan,
+  SeccionEnCompases,
+} from "./tiposEstudio";
 
 /** Los límites del deslizador, en porcentaje. Son los del núcleo
  * (`FACTOR_MINIMO` y `FACTOR_MAXIMO` en estudio.py), que es quien rechaza lo de fuera. */
 const TEMPO_MINIMO_PORCIENTO = 40;
 const TEMPO_MAXIMO_PORCIENTO = 100;
 const PASO_TEMPO_PORCIENTO = 5;
+
+/**
+ * El volumen con el que el servidor carga el fondo, en porcentaje
+ * (`VOLUMEN_DEL_FONDO_POR_OMISION` en servidor/piezas.py).
+ *
+ * Es el PUNTO DE PARTIDA del deslizador y nada más: el volumen vivo NO viaja en
+ * el estado publicado —los cinco campos del fondo que llegan son otros—, así que
+ * aquí no hay nada que seguir y lo que se ve después de la primera orden es lo
+ * que el usuario puso. Si algún día el servidor lo publica, este deslizador debe
+ * pasar a leerlo como el de tempo lee `factor_tempo`, y esta constante sobra.
+ */
+const VOLUMEN_DEL_FONDO_POR_OMISION_PORCIENTO = 60;
+const PASO_VOLUMEN_PORCIENTO = 5;
 
 function porciento(factor: number): number {
   return Math.round(factor * 100);
@@ -42,6 +60,9 @@ interface PropiedadesControles {
   alCambiarPlan: (plan: Plan) => Promise<boolean> | void;
   alPausar: (activa: boolean) => void;
   alSaltar: (compas: number) => void;
+  /** El interruptor y el volumen del fondo. Como `alCambiarPlan`, manda SOLO lo
+   * que cambia y devuelve si el servidor lo aceptó (`void` se toma por aceptado). */
+  alAjustarAcompanamiento: (ajuste: AjusteAcompanamiento) => Promise<boolean> | void;
 }
 
 /**
@@ -69,6 +90,7 @@ export function ControlesEstudio({
   alCambiarPlan,
   alPausar,
   alSaltar,
+  alAjustarAcompanamiento,
 }: PropiedadesControles) {
   /**
    * El porcentaje que se VE mientras el deslizador está agarrado; `null` cuando no
@@ -110,6 +132,21 @@ export function ControlesEstudio({
       ? mandado.porciento
       : porciento(estado.factor_tempo));
 
+  /** El gesto en curso del deslizador del fondo; `null` si no se arrastra nada. */
+  const [arrastreVolumen, setArrastreVolumen] = useState<number | null>(null);
+  /**
+   * El volumen del fondo que se VE, en porcentaje.
+   *
+   * Es local porque el servidor no publica el volumen vivo (ver
+   * `VOLUMEN_DEL_FONDO_POR_OMISION_PORCIENTO`), y se adopta EN EL ACTO al soltar,
+   * antes de saber si la orden llegó. Es la lección del deslizador de tempo de la
+   * 3d: esperar a la respuesta para adoptarlo devuelve el deslizador al valor
+   * anterior durante el viaje de la petición, y ese retroceso a la vista es el
+   * parpadeo. Solo retrocede si el servidor RECHAZA, que es cuando el valor
+   * anterior volvió a ser la verdad.
+   */
+  const [volumenFondo, setVolumenFondo] = useState(VOLUMEN_DEL_FONDO_POR_OMISION_PORCIENTO);
+
   /** Manda SOLO lo que cambia: el servidor conserva el resto del plan vigente. */
   const mandar = (cambios: Plan) => alCambiarPlan(cambios);
 
@@ -131,6 +168,27 @@ export function ControlesEstudio({
     void Promise.resolve(respuesta).then((aceptado) => {
       if (aceptado === false) setMandado(null);
     });
+  };
+
+  const volumenMostrado = arrastreVolumen ?? volumenFondo;
+
+  const descartarVolumen = () => setArrastreVolumen(null);
+
+  const soltarVolumen = () => {
+    if (arrastreVolumen === null) return;
+    const pedido = arrastreVolumen;
+    const anterior = volumenFondo;
+    setArrastreVolumen(null);
+    // SE ADOPTA YA, no al contestar: mover esta línea dentro del `then` es
+    // exactamente el parpadeo que la 3d arregló en el de tempo.
+    setVolumenFondo(pedido);
+    // El volumen viaja de 0 a 1, como lo pide el endpoint; el deslizador habla
+    // en porcentaje porque es lo que el usuario lee.
+    void Promise.resolve(alAjustarAcompanamiento({ volumen: pedido / 100 })).then(
+      (aceptado) => {
+        if (aceptado === false) setVolumenFondo(anterior);
+      },
+    );
   };
 
   /** Pedir un salto: si el compás cae fuera del tramo, primero se mueve el rango. */
@@ -170,6 +228,25 @@ export function ControlesEstudio({
    * los dos números ya viajan en el estado.
    */
   const verbo = sugerido !== null && sugerido < estado.factor_tempo ? "Bajar" : "Subir";
+
+  /**
+   * Si hay algo que ofrecer: un archivo de fondo cargado, con voces ajenas o con
+   * la propia parte como guía.
+   *
+   * NO es `acompanamiento_posible`, y la diferencia es el motivo de que esto
+   * exista: ese campo es `hay fondo Y la entrada es el cable`, así que vale
+   * `false` tanto cuando no hay nada que sonar como cuando sí lo hay y la entrada
+   * es un micrófono. En el primer caso no hay control que enseñar; en el segundo
+   * hay control, apagado, y sobre todo hay un aviso que dar. Esto no rehace la
+   * regla del servidor: la lee de los campos que publica (`es_tu_parte` es
+   * `hay fondo y sin voces ajenas`, así que los dos juntos son «hay fondo»).
+   */
+  const hayFondo = estado.acompanamiento_voces > 0 || estado.acompanamiento_es_tu_parte;
+  /** Lo que suena no se llama igual: sin otras pistas, lo que vuelve es tu propia
+   * parte más bajita, y llamar a eso «Acompañamiento» hace creer al alumno que
+   * oye a otro tocando lo que en realidad está tocando él. */
+  const nombreDelFondo = estado.acompanamiento_es_tu_parte ? "Guía" : "Acompañamiento";
+  const excluidas = estado.acompanamiento_excluidas;
 
   return (
     <div className="controles-estudio">
@@ -237,6 +314,81 @@ export function ControlesEstudio({
           <span className="aviso-click">Sin click: no hay salida de audio.</span>
         )}
       </div>
+
+      {hayFondo && (
+        <div className="control-estudio control-acompanamiento">
+          <label>
+            {/* Lo que SUENA, no lo que se pidió: con la entrada equivocada el
+                pestillo del servidor lo deja callado y la casilla sale apagada,
+                igual que el click sin salida de audio. La regla de cuándo suena
+                NO se decide aquí: llega publicada. */}
+            <input
+              type="checkbox"
+              checked={estado.acompanamiento_sonando}
+              onChange={(evento) =>
+                void alAjustarAcompanamiento({ encendido: evento.target.checked })
+              }
+            />
+            {nombreDelFondo}
+          </label>
+
+          <label htmlFor="estudio-volumen-fondo">Volumen del fondo</label>
+          <input
+            id="estudio-volumen-fondo"
+            type="range"
+            min={0}
+            max={100}
+            step={PASO_VOLUMEN_PORCIENTO}
+            value={volumenMostrado}
+            onChange={(evento) => setArrastreVolumen(Number(evento.target.value))}
+            onPointerUp={soltarVolumen}
+            onKeyUp={soltarVolumen}
+            onPointerCancel={descartarVolumen}
+            onBlur={soltarVolumen}
+          />
+          <span className="lectura">{volumenMostrado} %</span>
+
+          {/* Cuántas voces suenan y cuántas no. Un fondo al que le falta el bajo
+              sin que nada lo diga parece roto, y quien lee la cuenta necesita
+              saber si faltan dos voces o si nunca las hubo. */}
+          <span className="voces-del-fondo">
+            {estado.acompanamiento_es_tu_parte
+              ? "La canción no traía otras pistas: suena tu propia parte como guía, más bajita."
+              : // El verbo concuerda con la cuenta: «Suenan 1 voz» canta.
+                `${estado.acompanamiento_voces === 1 ? "Suena" : "Suenan"} ${
+                  estado.acompanamiento_voces
+                } ${estado.acompanamiento_voces === 1 ? "voz" : "voces"} de fondo.`}
+          </span>
+          {excluidas.length > 0 && (
+            <span className="voces-excluidas">
+              {excluidas.length === 1
+                ? "1 pista se quedó fuera"
+                : `${excluidas.length} pistas se quedaron fuera`}
+              : {excluidas.map((e) => `${e.pista} (${e.motivo})`).join("; ")}.
+            </span>
+          )}
+
+          {/* EL AVISO, y es el anti-objetivo de la etapa entera: si la entrada no
+              es el cable, el fondo vuelve a entrar por ella, el detector de
+              ataques lo cobra como notas tuyas y el informe se llena de aciertos
+              que no tocó nadie —sin que se note, porque los números salen—.
+
+              Se enseña SIEMPRE que `acompanamiento_posible` es `false`, también
+              —sobre todo— mientras el fondo suena: el usuario puede encenderlo a
+              mano, es su equipo y su decisión, y el servidor deja el campo quieto
+              a propósito para que el recordatorio no se vaya. Un aviso que
+              desaparece en cuanto le desobedeces no es un aviso.
+
+              La condición es el campo publicado, tal cual. Aquí no se busca el
+              cable ni se deduce nada: la lección de `esperando_notas`. */}
+          {!estado.acompanamiento_posible && (
+            <p className="aviso-acompanamiento">
+              La entrada no es el cable: lo que suene de fondo entra otra vez por el
+              micrófono y el informe lo cuenta como notas tuyas. Con auriculares no pasa.
+            </p>
+          )}
+        </div>
+      )}
 
       {secciones.length > 0 && (
         <div className="control-estudio">
