@@ -1026,6 +1026,41 @@ def test_el_acompanamiento_se_pausa_con_la_pasada():
     cerrar(sesion_carril, sesion)
 
 
+def test_acabada_la_pasada_el_fondo_SUELTA_el_dispositivo():
+    """Terminado el tramo y sin bucle, el fondo se detiene y cierra su stream.
+
+    `cabezal_del_fondo` ya devuelve `None` cuando la pasada se acabo, asi que
+    sin esta guarda nadie se pondria rojo: el acompañante seguiria vivo
+    escribiendo silencio por un dispositivo abierto mientras el usuario lee el
+    informe. Lo que se mira, por tanto, **no es que no suene musica -no sonaria
+    igual- sino el dispositivo**: un stream abierto de por vida es lo que la
+    guarda evita.
+
+    El estado de partida es el fondo SONANDO con el dispositivo abierto, que es
+    donde la guarda y su ausencia se distinguen; de partir de la pasada ya
+    terminada, las dos harian lo mismo.
+    """
+    reloj = RelojFalso()
+    sesion_carril, sesion, captura_fondo, _ = carril(reloj)
+    # Cuatro notas en un 4/4 a 60 ppm: la pieza y el tramo acaban a los 4 s.
+    sesion_carril.iniciar(pieza_de([40, 45, 50, 55]), SIN_CUENTA)
+    sesion_carril.cargar_acompanamiento(fondo_de())
+    assert sesion_carril.estado()["acompanamiento_sonando"] is True
+    assert captura_fondo.arranques == 1 and captura_fondo.cierres == 0
+
+    estado = avanzar_mirando(sesion_carril, reloj, 4.5)
+
+    assert estado["tramo_terminado"] is True, "la pasada tenia que haber acabado"
+    assert estado["en_bucle"] is False, "sin bucle, que es la mitad que decide"
+    assert estado["acompanamiento_sonando"] is False, "el fondo sigue sonando solo"
+    assert sesion_carril._acompanante is None, "el hilo del fondo sigue vivo"
+    assert captura_fondo.cierres == 1, (
+        "el dispositivo del fondo se quedo abierto despues de la pasada: "
+        f"{captura_fondo.arranques} aperturas y {captura_fondo.cierres} cierres"
+    )
+    cerrar(sesion_carril, sesion)
+
+
 def test_el_render_usa_el_tempo_de_la_PIEZA_y_no_el_del_fondo():
     """El fondo se sintetiza al tempo del carril, aunque el archivo diga otro.
 
@@ -1263,7 +1298,7 @@ def test_lo_que_se_publica_es_el_volumen_PEDIDO_y_no_la_ganancia():
     """Con la propia parte como guia la ganancia va a la mitad; el deslizador no.
 
     `_ganancia_del_fondo` multiplica por `GANANCIA_DE_TU_PARTE`, y publicar eso
-    movería el deslizador solo al cargar una guia: el usuario veria un 0,5 que no
+    moveria el deslizador solo al cargar una guia: el usuario veria un 0,5 que no
     puso nunca. Que la guia suena mas bajita se dice con
     `acompanamiento_es_tu_parte`, que es otro campo y otra frase.
 
