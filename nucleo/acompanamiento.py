@@ -72,10 +72,13 @@ COLA_DE_LA_FIGURA = 1.3
 #   pico ~= 35 MB (interprete y numpy)
 #         + 0,58 MB por segundo de audio TOTAL  (12 B/muestra: la mezcla
 #           float64 y el float32 que sale de ella)
-#         + 0,8 a 1,2 MB por segundo de LA NOTA MAS LARGA (de 16 a 24 B/muestra
-#           entre la onda de la nota y las copias de normalizarla; el ritmo baja
-#           hacia los 16 cuando la nota es tan grande que cada temporal se le
-#           devuelve al sistema al liberarlo)
+#         + 0,75 a 1,2 MB por segundo de LA NOTA MAS LARGA (de 15 a 24
+#           B/muestra entre la onda de la nota y las copias de normalizarla; el
+#           ritmo baja cuando la nota es tan grande que cada temporal se le
+#           devuelve al sistema al liberarlo). Medido: 1,12 MB/s con notas de
+#           30 s y 0,77 MB/s con una de doce minutos — el suelo es 0,75 y no
+#           0,8, porque la banda tiene que CONTENER lo medido: una banda que
+#           deja fuera su propia medicion no es una cota, es un adorno.
 #
 # O sea que en este tope el peor caso -un pedal, una redonda a tempo lento, una
 # pieza de una sola nota- es **1,0 GB** y no 450 MB. Si alguien sube el tope, los

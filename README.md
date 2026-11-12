@@ -670,7 +670,7 @@ está tocando ella.
   de un segundo, **484,3 MB** en 24 notas de treinta segundos y **1.002,5 MB**
   en una sola nota de doce minutos. El motivo es que cada nota se sintetiza
   entera antes de sumarse, así que **la nota más larga también paga**: cuenta
-  0,58 MB por segundo de audio total y entre 0,8 y 1,2 MB por segundo de la nota
+  0,58 MB por segundo de audio total y entre 0,75 y 1,2 MB por segundo de la nota
   más larga. El peor caso dentro del tope es **1 GB**, no medio.
 
 **Límites de esta etapa**, sin maquillar:

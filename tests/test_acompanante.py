@@ -247,18 +247,32 @@ def test_cada_bloque_sale_del_cabezal_y_no_de_un_contador():
         assert np.array_equal(fila, esperado), f"el bloque {indice} no es el del pulso 2"
 
 
-def test_un_cabezal_que_vuelve_ATRAS_hace_volver_el_audio():
-    """El cabezal vuelve del pulso 8 al 0 y el audio vuelve con el.
+def test_un_cabezal_que_salta_ADELANTE_Y_ATRAS_arrastra_el_audio_las_dos_veces():
+    """El cabezal va 0 -> 8 -> 0 y el audio le sigue en los dos sentidos.
 
-    **Hacia atras a proposito, y es la mitad que importa.** Un bucle va hacia
-    atras: al dar la vuelta, el carril devuelve el cabezal al principio del
-    tramo, y lo mismo hace un salto a un compas anterior o el rearme de una
-    repeticion. Con el cabezal solo avanzando, «leer el cabezal cada bloque» y
-    «quedarse con el maximo entre el cabezal y el ultimo visto» escriben
-    exactamente lo mismo: un reloj de trinquete -la forma mas barata de colar un
-    reloj propio en un modulo que existe para no tener ninguno- pasaria sin que
-    nada se pusiera rojo, y el fondo no volveria NUNCA al principio del bucle.
-    Por eso la referencia de esta prueba es el retroceso.
+    **Los DOS sentidos, y hay una razon medida para cada uno.**
+
+    *Hacia atras*, porque un bucle va hacia atras: al dar la vuelta, el carril
+    devuelve el cabezal al principio del tramo, y lo mismo hace un salto a un
+    compas anterior o el rearme de una repeticion. Con el cabezal solo
+    avanzando, «leer el cabezal cada bloque» y «quedarse con el maximo entre el
+    cabezal y el ultimo visto» escriben exactamente lo mismo: un reloj de
+    trinquete -la forma mas barata de colar un reloj propio en un modulo que
+    existe para no tener ninguno- pasaria sin que nada se pusiera rojo, y el
+    fondo no volveria NUNCA al principio del bucle.
+
+    *Hacia delante*, porque el usuario salta a un compas posterior y el README
+    promete que el fondo le sigue. Y porque **esta misma prueba ya se equivoco
+    una vez por ahi**: su version anterior empezaba EN el pulso 8, asi que su
+    primer bloque no era un salto sino el estado de partida, y la unica
+    transicion que provocaba iba hacia atras. Un mutante que ignorase los saltos
+    adelante mayores de medio pulso sobrevivia a la suite entera. La prueba del
+    avance continuo (`test_cero_deriva_en_diez_mil_bloques`) tampoco lo ve:
+    avanza 0,0021 pulsos por bloque, o sea que cubre el avance **continuo** y no
+    el **discontinuo**.
+
+    De ahi los tres tramos: **se empieza en el 0** -para que ir al 8 sea un salto
+    de verdad y no el estado inicial- y se vuelve al 0.
 
     La referencia NO es `rodaja(0.0, bloque)`, que seria el mismo camino de
     codigo que se prueba, sino el trozo de `renderizada.muestras` que empieza en
@@ -266,15 +280,23 @@ def test_un_cabezal_que_vuelve_ATRAS_hace_volver_el_audio():
     """
     renderizada = _pieza_con_notas()
     bloque = 512
-    cabezal = CabezalFalso(lambda numero: 8.0 if numero <= 3 else 0.0)
+
+    def donde_va(numero: int) -> float:
+        if numero <= 3:
+            return 0.0
+        if numero <= 6:
+            return 8.0
+        return 0.0
+
+    cabezal = CabezalFalso(donde_va)
     acompanante, captura = _arrancado(cabezal, renderizada, bloque)
     try:
-        assert cabezal.esperar_llamadas(7) is True
+        assert cabezal.esperar_llamadas(10) is True
     finally:
         acompanante.detener()
 
     filas = _por_bloques(captura, bloque)
-    assert len(filas) >= 6
+    assert len(filas) >= 9
 
     desde_cero = _muestra_del_pulso(0.0)
     desde_ocho = _muestra_del_pulso(8.0)
@@ -283,8 +305,12 @@ def test_un_cabezal_que_vuelve_ATRAS_hace_volver_el_audio():
     assert not np.array_equal(el_ocho, el_cero), "los dos pulsos suenan igual: no prueba nada"
 
     for indice in range(3):
-        assert np.array_equal(filas[indice], el_ocho), f"el bloque {indice} no es el del pulso 8"
+        assert np.array_equal(filas[indice], el_cero), f"el bloque {indice} no es el del pulso 0"
     for indice in range(3, 6):
+        assert np.array_equal(filas[indice], el_ocho), (
+            f"el bloque {indice} no salto al pulso 8: el audio no avanza con el cabezal"
+        )
+    for indice in range(6, 9):
         assert np.array_equal(filas[indice], el_cero), (
             f"el bloque {indice} no volvio al pulso 0: el audio no retrocede con el cabezal"
         )
