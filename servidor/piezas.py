@@ -208,6 +208,39 @@ def acompanamiento_posible(hay_fondo: bool, entrada_es_el_cable: bool) -> bool:
     return hay_fondo and entrada_es_el_cable
 
 
+def acompanamiento_debe_sonar(
+    encendido: bool, lo_encendio_el_usuario: bool, entrada_es_el_cable: bool
+) -> bool:
+    """**EL PESTILLO DE M6, y se mira en CADA instantanea, no una sola vez.**
+
+    Quien encendio el fondo decide si la entrada puede volver a apagarlo, y esa
+    es toda la regla:
+
+    - **Lo encendio `cargar_acompanamiento`** -automaticamente, porque en ese
+      momento habia cable-. Esa decision no la tomo nadie: la tomo el programa
+      porque se daban las condiciones, asi que **sigue a las condiciones**. Si
+      la entrada deja de ser el cable, el fondo se calla.
+    - **Lo encendio el usuario a mano** (`acompanamiento(encendido=True)`). Su
+      decision manda y persiste aunque la entrada sea un microfono: es su
+      equipo, puede tener auriculares puestos y ya vio el aviso -que sigue
+      publicado mientras suene, porque `acompanamiento_posible` no se mueve-.
+
+    **Por que no basta con mirarlo al cargar**, que es lo que se hacia y lo que
+    un revisor reprodujo: el usuario carga con el cable y el fondo suena; luego
+    **elige el microfono del portatil en el selector**, la sesion de audio
+    reabre la captura, `entrada_es_el_cable` pasa a False... y el fondo seguia
+    sonando encima de una entrada que lo recoge. El detector cobra ese sonido
+    como notas del usuario y el informe se llena de aciertos que no toco nadie,
+    sin que se note. Era el anti-objetivo de la etapa ocurriendo en vivo a
+    mitad de pasada, y el pestillo de una sola lectura solo tapaba el arranque.
+
+    Al ser una compuerta VIVA y no un estado que se escriba, tambien desaparece
+    la ventana estrecha del arranque: si la entrada cambia entre el `cargar` y
+    la primera instantanea, el fondo no llega a empezar.
+    """
+    return encendido and (lo_encendio_el_usuario or entrada_es_el_cable)
+
+
 def cabezal_del_fondo(estado: EstadoEstudio | None) -> float | None:
     """El instante EN PULSOS que el fondo debe estar sonando, o None si nada.
 
@@ -368,6 +401,10 @@ class SesionCarril:
         # cortaria la vuelta por la mitad. Ni el volumen ni el interruptor
         # cambian la PASADA; cambian lo que sale por los altavoces.
         self._fondo_encendido = False
+        # Y QUIEN lo encendio, que es lo que decide si la entrada puede volver a
+        # apagarlo: ver `acompanamiento_debe_sonar`. El encendido automatico de
+        # `cargar_acompanamiento` sigue a la entrada; la mano del usuario manda.
+        self._fondo_encendido_a_mano = False
         self._volumen_del_fondo = VOLUMEN_DEL_FONDO_POR_OMISION
         # Sube con cada fondo nuevo, y forma parte de la clave del render. Es un
         # contador y no el `FondoDisponible` mismo porque la clave se compara en
@@ -1024,23 +1061,30 @@ class SesionCarril:
         `fondo=None` lo apaga y lo olvida, que es lo que hace falta cuando el
         usuario deselecciona el archivo de fondo.
 
-        **Cargar enciende SOLO SI LA ENTRADA ES EL CABLE** (decision M6 de la
-        spec). Cargarlo es haberlo pedido, si: con el cable, esto deja el caso
-        normal en un solo paso. Pero con cualquier otra entrada -el microfono
-        del portatil- el sonido del fondo ENTRA por ella, el detector de ataques
-        lo cobra como notas del usuario y el informe se llena de aciertos y
-        fallos que no toco nadie. Y lo peor no es que este mal: es que **no se
-        nota**, porque los numeros salen. Encender solo porque se cargo seria el
-        anti-objetivo de la etapa entera -que el programa se puntue a si mismo-
-        ocurriendo sin que nadie lo decida.
+        **Cargar enciende, pero es un encendido AUTOMATICO: solo suena mientras
+        la entrada sea el cable** (decision M6 de la spec). Cargarlo es haberlo
+        pedido, si, y con el cable esto deja el caso normal en un solo paso.
+        Pero con cualquier otra entrada -el microfono del portatil- el sonido
+        del fondo ENTRA por ella, el detector de ataques lo cobra como notas del
+        usuario y el informe se llena de aciertos y fallos que no toco nadie. Y
+        lo peor no es que este mal: es que **no se nota**, porque los numeros
+        salen. Que eso ocurra porque alguien eligio un archivo -sin haber
+        decidido nada- es el anti-objetivo de la etapa entera pasando solo.
 
-        Asi que con otra entrada se carga y se queda CALLADO. El usuario puede
-        encenderlo a mano despues con `acompanamiento(encendido=True)` -es su
-        equipo, y con auriculares no hay realimentacion ninguna-, y mientras
-        suene el estado seguira diciendo `acompanamiento_posible: False` para
-        que el recordatorio no se vaya. El precio de equivocarse esta medido y
-        es pequeño: quien tenga una interfaz que no se llame «Rocksmith» tiene
-        que darle al interruptor una vez.
+        **La condicion NO se evalua aqui y se guarda**, se mira en cada
+        instantanea (`acompanamiento_debe_sonar`), porque la entrada cambia a
+        mitad de pasada: el usuario que elige el microfono en el selector tiene
+        que quedarse sin fondo en el acto, no al empezar la pieza siguiente.
+        Lo que esta llamada deja dicho es solo que el encendido es automatico y
+        no de la mano del usuario.
+
+        Con otra entrada, entonces, se carga y se queda CALLADO. El usuario
+        puede encenderlo a mano con `acompanamiento(encendido=True)` -es su
+        equipo, y con auriculares no hay realimentacion ninguna-; esa decision
+        si persiste, y mientras suene el estado seguira diciendo
+        `acompanamiento_posible: False` para que el recordatorio no se vaya. El
+        precio de equivocarse esta medido y es pequeño: quien tenga una interfaz
+        que no se llame «Rocksmith» le da al interruptor una vez.
 
         Encendido no es sonando: hace falta ademas salida de audio, pasada en
         marcha y buffer renderizado, y nada de eso lo decide esta llamada.
@@ -1062,14 +1106,21 @@ class SesionCarril:
             self._clave_del_render = None
             self._renderizada = None
             self._volumen_del_fondo = volumen
-            # La regla M6, y se lee de la misma fuente que la publica: con el
-            # microfono se carga callado. Ver el docstring.
-            self._fondo_encendido = self._entrada_es_el_cable()
-            if self._acompanante is not None:
-                # El acompañante vivo se queda en silencio -su pieza cargada es
-                # la vieja- hasta que el render nuevo aterrice. Lo unico que se
-                # le puede decir ya es a que volumen va a entrar.
-                self._acompanante.ganancia(self._ganancia_del_fondo())
+            # Encendido AUTOMATICO: suena mientras la entrada sea el cable, y
+            # el pestillo se mira en cada instantanea, no aqui. Ver
+            # `acompanamiento_debe_sonar`, que es donde vive la regla M6.
+            self._fondo_encendido = True
+            self._fondo_encendido_a_mano = False
+            # **Y se para el que estuviera sonando.** No es simetria: el
+            # acompañante vivo lleva CARGADA la pieza anterior y seguiria
+            # tocandola tan contento durante todo el render de la nueva, asi
+            # que elegir otra pista de fondo sonaria a la anterior unos
+            # segundos. Parar aqui lo deja en silencio y la instantanea
+            # siguiente lo vuelve a levantar con el buffer que toque -o sin
+            # ninguno todavia, que es silencio-. Cuesta un cierre y una
+            # apertura del dispositivo por cambio de archivo, que es algo que
+            # el usuario hace a mano y de uvas a peras.
+            self._parar_acompanamiento()
 
     def acompanamiento(
         self, encendido: bool | None = None, volumen: float | None = None
@@ -1098,6 +1149,12 @@ class SesionCarril:
         with self._candado:
             if encendido is not None:
                 self._fondo_encendido = bool(encendido)
+                # La mano del usuario: a partir de aqui la entrada ya no apaga
+                # el fondo por su cuenta (ver `acompanamiento_debe_sonar`). Se
+                # apunta tambien al apagar, y a False, porque apagar deja el
+                # fondo sin ninguna decision viva que defender: el encendido
+                # siguiente volvera a decir de quien es.
+                self._fondo_encendido_a_mano = bool(encendido)
             if volumen is not None:
                 self._volumen_del_fondo = _volumen_valido(volumen)
                 if self._acompanante is not None:
@@ -1171,9 +1228,26 @@ class SesionCarril:
 
         Lo que se lee es un `float | None` y nada mas: ni se entra en el nucleo
         -cuyo candado tambien podria estar ocupado- ni se construye ningun
-        estado. El valor lo dejan puestos `_instantanea` y `_observar`, que son
-        los dos unicos sitios donde el reloj de la pasada se mueve, asi que leer
-        la foto es tan actual como preguntarle al estudio y cuesta nanosegundos.
+        estado. Cuesta nanosegundos, y es tan actual como preguntarle al estudio
+        **porque se mantiene una invariante que conviene escribir entera, ya que
+        no la obliga nada**:
+
+        > **TODO metodo que mueva el estudio tiene que acabar llamando a
+        > `estado()`.**
+
+        La foto la escriben `_instantanea` y `_observar` (y `detener`, que la
+        pone a `None`, que es silencio y siempre es seguro). Pero el estado del
+        nucleo del que sale lo mueven CINCO sitios: esos dos y, ademas,
+        `_aplicar_plan`, `saltar` y `pausa`. Los tres ultimos no refrescan la
+        foto ellos mismos; quedan cubiertos solo porque cada uno termina en
+        `self.estado()`. El nucleo no lleva reloj propio, asi que entre dos
+        avisos el cabezal vale exactamente lo mismo y la foto es exacta.
+
+        **Lo que rompe esto es un metodo nuevo que mute el estudio y devuelva
+        otra cosa**: la foto se quedaria vieja y el fondo sonaria desplazado
+        respecto al carril, sin que nada lo dijera. Si haces uno -un endpoint
+        de la Task 6, por ejemplo-, acaba en `estado()` o refresca la foto a
+        mano con `cabezal_del_fondo`.
         """
         if not self._candado.acquire(blocking=False):
             raise BloqueadoAhora()
@@ -1210,7 +1284,14 @@ class SesionCarril:
             estudio is None
             or pieza is None
             or self._fondo is None
-            or not self._fondo_encendido
+            # El pestillo de M6, mirado AQUI y por tanto en cada instantanea:
+            # el usuario que cambia de entrada a mitad de pasada se queda sin
+            # fondo en el acto, y el que lo encendio a mano no.
+            or not acompanamiento_debe_sonar(
+                self._fondo_encendido,
+                self._fondo_encendido_a_mano,
+                self._entrada_es_el_cable(),
+            )
         ):
             self._parar_acompanamiento()
             return
@@ -1341,6 +1422,7 @@ class SesionCarril:
         """Suelta el archivo de fondo y todo lo que se derivaba de el."""
         self._fondo = None
         self._fondo_encendido = False
+        self._fondo_encendido_a_mano = False
         self._clave_del_render = None
         self._renderizada = None
 
@@ -1385,6 +1467,11 @@ class SesionCarril:
         El plan nuevo se lo pide al conductor y no al estudio directamente:
         adoptar el reloj que devuelve el nucleo y borrar la sugerencia del
         historial son dos decisiones de la politica, y viven con ella.
+
+        **Mueve el estudio, asi que quien lo llame tiene que acabar en
+        `estado()`**: de eso depende que la foto del cabezal del fondo
+        (`_cabezal_pulsos`) no se quede vieja. Hoy lo cumplen los dos que hay,
+        `cambiar_plan` y `parchar_plan`. Ver `_cabezal_del_carril`.
         """
         self._instante = self._conductor.cambiar_plan(plan).carril.instante_s
 
@@ -1393,6 +1480,11 @@ class SesionCarril:
 
         Un compas fuera del tramo lo rechaza el nucleo con `ValueError`, y sale
         como 400 igual que los demas: saltar fuera del tramo es cambiar el plan.
+
+        Mueve el estudio y por eso **acaba en `estado()`**, que es lo que
+        refresca la foto del cabezal del fondo: un salto que devolviera otra
+        cosa dejaria el fondo sonando donde el cabezal ya no esta. Ver
+        `_cabezal_del_carril`, que escribe la invariante entera.
         """
         with self._candado:
             self._estudio_o_falla()
@@ -1410,6 +1502,8 @@ class SesionCarril:
 
         No es la pausa por falta de señal (`self._pausado`), que la decide esta
         clase mirando el audio: ni se mezclan ni se sobreescriben.
+
+        Mueve el estudio y **acaba en `estado()`**, por lo mismo que `saltar`.
         """
         with self._candado:
             estudio = self._estudio_o_falla()

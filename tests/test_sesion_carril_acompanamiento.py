@@ -149,12 +149,14 @@ class RenderContado:
     def __init__(self) -> None:
         self.llamadas = 0
         self.factores: list[float] = []
+        self.voces: list[tuple] = []
         self._condicion = threading.Condition()
 
     def __call__(self, voces, **argumentos):
         with self._condicion:
             self.llamadas += 1
             self.factores.append(argumentos.get("factor_tempo", 1.0))
+            self.voces.append(voces)
             self._condicion.notify_all()
         return renderizar(voces, **argumentos)
 
@@ -421,6 +423,97 @@ def test_con_el_microfono_cargar_no_enciende_el_fondo():
     con_cable.cargar_acompanamiento(fondo_de())
     assert con_cable.estado()["acompanamiento_sonando"] is True
     cerrar(con_cable, sesion_cable)
+
+
+def test_cambiar_a_microfono_a_mitad_de_pasada_calla_el_fondo_automatico():
+    """**El pestillo de M6 se mira en CADA instantanea, no solo al cargar.**
+
+    El caso, reproducido por el revisor: el usuario carga con el cable y el
+    fondo suena; despues **elige el microfono del portatil en el selector**, la
+    sesion de audio reabre la captura y `entrada_es_el_cable` pasa a False... y
+    el fondo seguia sonando encima de una entrada que lo recoge. El detector
+    cobraba ese sonido como notas del usuario y el informe se llenaba de
+    aciertos que no toco nadie, sin que se notara. Un pestillo que se evalua una
+    sola vez solo tapa el arranque.
+
+    Lo que se calla es el encendido AUTOMATICO -el que puso `cargar`, que nadie
+    decidio-, y se calla de verdad: ni un bloque mas por la salida del fondo.
+    """
+    reloj = RelojFalso()
+    sesion_carril, sesion, captura_fondo, _ = carril(reloj, entrada_es_el_cable=True)
+    sesion_carril.iniciar(pieza_de([40, 45, 50, 55]), SIN_CUENTA)
+    sesion_carril.cargar_acompanamiento(fondo_de())
+    assert sesion_carril.estado()["acompanamiento_sonando"] is True
+    assert captura_fondo.esperar_escrituras(1)
+
+    sesion.entrada_es_el_cable = False
+    estado = sesion_carril.estado()
+
+    assert estado["acompanamiento_sonando"] is False, (
+        "cambiar de entrada a mitad de pasada tiene que callar el fondo que se "
+        "encendio solo: si no, el programa se puntua a si mismo en vivo"
+    )
+    assert estado["acompanamiento_posible"] is False
+    assert sesion_carril._acompanante is None
+    escritas = captura_fondo.escrituras
+    avanzar_mirando(sesion_carril, reloj, 0.5)
+    assert captura_fondo.escrituras == escritas, "y no escribe ni un bloque mas"
+
+    # Y al volver el cable, vuelve: la decision automatica SIGUE a la entrada,
+    # en los dos sentidos. No hace falta volver a cargar nada.
+    sesion.entrada_es_el_cable = True
+    assert sesion_carril.estado()["acompanamiento_sonando"] is True
+    cerrar(sesion_carril, sesion)
+
+
+def test_el_fondo_encendido_a_mano_sobrevive_al_cambio_de_entrada():
+    """La mano del usuario manda, y la entrada no se la discute.
+
+    La otra mitad del pestillo, y el matiz entero de la regla: lo que la entrada
+    puede apagar es la decision que tomo el PROGRAMA al cargar, no la que tomo
+    el usuario. Quien le dio al interruptor ya vio el aviso -y puede tener
+    auriculares puestos, que es cuando no hay realimentacion ninguna-, asi que
+    callarle el fondo por cambiar de dispositivo seria deshacerle una orden
+    explicita. El recordatorio se queda puesto, que es lo que si le corresponde
+    al programa.
+    """
+    reloj = RelojFalso()
+    sesion_carril, sesion, _, _ = carril(reloj, entrada_es_el_cable=True)
+    sesion_carril.iniciar(pieza_de([40, 45, 50, 55]), SIN_CUENTA)
+    sesion_carril.cargar_acompanamiento(fondo_de())
+    sesion_carril.acompanamiento(encendido=True)
+
+    sesion.entrada_es_el_cable = False
+    estado = sesion_carril.estado()
+
+    assert estado["acompanamiento_sonando"] is True, (
+        "el fondo que encendio el usuario a mano no se apaga por cambiar de "
+        "entrada: es su equipo y ya vio el aviso"
+    )
+    assert estado["acompanamiento_posible"] is False, "y el aviso sigue puesto"
+    cerrar(sesion_carril, sesion)
+
+
+def test_si_la_entrada_cambia_antes_de_la_primera_instantanea_el_fondo_ni_empieza():
+    """La variante estrecha: entre `cargar` y la primera instantanea.
+
+    Con el pestillo guardado al cargar, el fondo ARRANCABA -un arranque del
+    dispositivo y bloques escritos- con la entrada ya cambiada. Siendo una
+    compuerta viva, esa ventana no existe: no hay nada guardado que pueda
+    quedarse viejo.
+    """
+    reloj = RelojFalso()
+    sesion_carril, sesion, captura_fondo, _ = carril(reloj, entrada_es_el_cable=True)
+    sesion_carril.iniciar(pieza_de([40, 45, 50, 55]), SIN_CUENTA)
+    sesion_carril.cargar_acompanamiento(fondo_de())
+    sesion.entrada_es_el_cable = False
+
+    estado = avanzar_mirando(sesion_carril, reloj, 0.5)
+
+    assert estado["acompanamiento_sonando"] is False
+    assert captura_fondo.arranques == 0, "ni se llego a abrir el dispositivo"
+    assert captura_fondo.escrituras == 0, "ni se escribio una muestra"
+    cerrar(sesion_carril, sesion)
 
 
 def test_el_recordatorio_del_microfono_no_se_va_mientras_el_fondo_suena():
@@ -1001,6 +1094,133 @@ def test_cambiar_el_factor_de_tempo_renderiza_de_nuevo_UNA_vez(monkeypatch):
     assert contado.factores == [1.0, 0.5], (
         "y el render sigue al factor del plan, que es lo que mueve el cabezal"
     )
+    cerrar(sesion_carril, sesion)
+
+
+def test_deseleccionar_el_fondo_lo_apaga_y_lo_olvida():
+    """La SEGUNDA llamada a la puerta, con `None`: el usuario quita el archivo.
+
+    Es lo que el endpoint de la Task 6 va a hacer en cuanto alguien vacie el
+    selector de fondo, y no tenia ni una prueba. Sin olvidar el fondo, el estado
+    seguiria ofreciendo `acompanamiento_posible: True` sobre un archivo que el
+    usuario acaba de quitar, y el interruptor lo volveria a poner a sonar.
+    """
+    reloj = RelojFalso()
+    sesion_carril, sesion, captura_fondo, _ = carril(reloj)
+    sesion_carril.iniciar(pieza_de([40, 45, 50, 55]), SIN_CUENTA)
+    sesion_carril.cargar_acompanamiento(fondo_de())
+    assert sesion_carril.estado()["acompanamiento_sonando"] is True
+
+    sesion_carril.cargar_acompanamiento(None)
+
+    assert sesion_carril._fondo is None, "el fondo quitado tiene que olvidarse"
+    assert sesion_carril._acompanante is None
+    assert captura_fondo.cierres == 1, "y su dispositivo, cerrado"
+    estado = avanzar_mirando(sesion_carril, reloj, 0.5)
+    assert estado["acompanamiento_sonando"] is False
+    assert estado["acompanamiento_posible"] is False, (
+        "no se puede ofrecer encender un fondo que el usuario acaba de quitar"
+    )
+    assert estado["acompanamiento_es_tu_parte"] is False
+    # Y el interruptor no resucita nada: no hay archivo.
+    assert sesion_carril.acompanamiento(encendido=True)["acompanamiento_sonando"] is False
+    cerrar(sesion_carril, sesion)
+
+
+def test_elegir_otra_pista_de_fondo_renderiza_la_nueva_y_calla_la_vieja(monkeypatch):
+    """La segunda llamada con un fondo DISTINTO: ni suena la anterior ni se reusa.
+
+    El otro camino que el endpoint de la Task 6 va a recorrer -cambiar de pista
+    de fondo a mitad de sesion- y que tampoco tenia prueba. Dos cosas tienen que
+    pasar, y las dos fallaban por separado:
+
+    - **El buffer viejo se tira**, y con el para el acompañante que lo lleva
+      cargado. Si no, la pista anterior sigue sonando tan contenta durante todo
+      el render de la nueva.
+    - **Se renderiza otra vez**, porque la clave del render incluye la
+      generacion del fondo y no solo el factor de tempo. Con una clave que solo
+      mirara el factor, elegir otra pista al mismo tempo no renderizaria nada.
+    """
+    contado = RenderContado()
+    monkeypatch.setattr("servidor.piezas.renderizar", contado)
+    reloj = RelojFalso()
+    sesion_carril, sesion, _, _ = carril(reloj)
+    sesion_carril.iniciar(pieza_de([40, 45, 50, 55]), SIN_CUENTA)
+    sesion_carril.cargar_acompanamiento(fondo_de(midis=(40, 45, 50, 55)))
+    sesion_carril.estado()
+    esperar_el_render(sesion_carril)
+    assert contado.llamadas == 1
+    buffer_viejo = sesion_carril._renderizada
+    assert buffer_viejo is not None
+
+    sesion_carril.cargar_acompanamiento(fondo_de(midis=(28, 30, 32)))
+
+    assert sesion_carril._renderizada is None, (
+        "el buffer de la pista anterior tiene que irse con ella"
+    )
+    assert sesion_carril._acompanante is None, (
+        "y el acompañante que lo lleva cargado tambien: si no, sigue tocando la "
+        "pista vieja mientras se sintetiza la nueva"
+    )
+    sesion_carril.estado()
+    esperar_el_render(sesion_carril)
+
+    assert contado.llamadas == 2, (
+        f"la pista nueva tiene que renderizarse: {contado.llamadas} llamadas"
+    )
+    assert contado.voces[1] == (voz_de((28, 30, 32)),), (
+        "y renderizarse con las voces NUEVAS"
+    )
+    assert sesion_carril._renderizada is not None
+    assert sesion_carril._renderizada is not buffer_viejo
+    assert sesion_carril.estado()["acompanamiento_sonando"] is True
+    cerrar(sesion_carril, sesion)
+
+
+def test_si_el_hilo_del_fondo_no_arranca_no_se_queda_el_dispositivo_cogido(monkeypatch):
+    """Una salida abierta sin nadie que escriba por ella es retener los altavoces.
+
+    `_arrancar_acompanante` abre el dispositivo ANTES de echar a andar el hilo,
+    porque `Acompanante.iniciar()` devuelve False precisamente si no hay salida
+    activa. Si el hilo no arranca, lo abierto hay que cerrarlo: con la salida
+    colgada, el carril retiene el dispositivo durante toda la pasada sin que
+    suene nada por el, y la instantanea siguiente lo intentaria otra vez sobre
+    un stream ya abierto.
+    """
+
+    class AcompananteQueNoArranca:
+        def __init__(self, salida=None, **argumentos):
+            self.salida = salida
+            self.sonando = False
+
+        def cargar(self, renderizada) -> None:
+            pass
+
+        def ganancia(self, valor) -> None:
+            pass
+
+        def iniciar(self, cabezal) -> bool:
+            return False
+
+        def detener(self) -> None:
+            pass
+
+    monkeypatch.setattr("servidor.piezas.Acompanante", AcompananteQueNoArranca)
+    reloj = RelojFalso()
+    sesion_carril, sesion, captura_fondo, _ = carril(reloj)
+    sesion_carril.iniciar(pieza_de([40, 45, 50, 55]), SIN_CUENTA)
+    sesion_carril.cargar_acompanamiento(fondo_de())
+
+    estado = avanzar_mirando(sesion_carril, reloj, 0.5)
+
+    assert estado["acompanamiento_sonando"] is False
+    assert captura_fondo.arranques == captura_fondo.cierres, (
+        f"se abrio el dispositivo {captura_fondo.arranques} veces y se cerro "
+        f"{captura_fondo.cierres}: lo que se abre y no se usa hay que cerrarlo"
+    )
+    assert captura_fondo.arranques > 0, "y la prueba tiene que haber abierto algo"
+    # Y la pasada, en pie: a 60 ppm medio segundo es medio pulso (a mano).
+    assert estado["instante_s"] == pytest.approx(0.5, abs=0.05)
     cerrar(sesion_carril, sesion)
 
 
