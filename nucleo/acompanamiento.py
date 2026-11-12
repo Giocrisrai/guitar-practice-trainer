@@ -53,13 +53,34 @@ COLA_DE_LA_FIGURA = 1.3
 # **El buffer y el pico de renderizarlo no son el mismo numero**, y conviene no
 # confundirlos: el buffer que se devuelve son 138 MB (float32), pero al final del
 # render conviven la mezcla en float64 -276 MB, porque sumar un acorde en float32
-# iria perdiendo bits- y el float32 que sale de ella. Medido con `getrusage` en el
-# tope exacto: **449,6 MB de pico**, de los que 34,7 son el interprete y numpy.
-# Antes de normalizar en sitio eran 708,7 MB, porque `np.abs(mezcla)` y
-# `mezcla / pico` copiaban la mezcla entera una vez cada uno; ver `_normalizada`.
-# Si alguien sube este tope, el pico sube con el a razon de 0,58 MB por segundo de
-# audio a 48 kHz (12 bytes por muestra entre los dos buffers), y es el pico -no el
-# buffer- lo que decide si el proceso muere.
+# iria perdiendo bits- y el float32 que sale de ella. Antes de normalizar en sitio
+# el pico era 708,7 MB, porque `np.abs(mezcla)` y `mezcla / pico` copiaban la
+# mezcla entera una vez cada uno; ver `_normalizada`.
+#
+# **Y el pico NO depende solo de la duracion total: depende tambien de LA NOTA MAS
+# LARGA**, porque `cuerda_pulsada` construye la onda entera de cada nota en
+# float64 y la normaliza con copias antes de que se sume a la mezcla. La misma
+# pieza de doce minutos, medida con `getrusage` en el tope exacto y repartida de
+# tres maneras:
+#
+#   720 notas de 1 s  ->   451,8 MB
+#    24 notas de 30 s ->   484,3 MB
+#     1 nota  de 12 m -> 1.002,5 MB   (2,2 veces la primera)
+#
+# La regla, pues, tiene dos terminos y no uno:
+#
+#   pico ~= 35 MB (interprete y numpy)
+#         + 0,58 MB por segundo de audio TOTAL  (12 B/muestra: la mezcla
+#           float64 y el float32 que sale de ella)
+#         + 0,8 a 1,2 MB por segundo de LA NOTA MAS LARGA (de 16 a 24 B/muestra
+#           entre la onda de la nota y las copias de normalizarla; el ritmo baja
+#           hacia los 16 cuando la nota es tan grande que cada temporal se le
+#           devuelve al sistema al liberarlo)
+#
+# O sea que en este tope el peor caso -un pedal, una redonda a tempo lento, una
+# pieza de una sola nota- es **1,0 GB** y no 450 MB. Si alguien sube el tope, los
+# dos terminos suben con el, y es el pico -no el buffer- lo que decide si el
+# proceso muere.
 MUESTRAS_MAXIMAS = 48000 * 60 * 12
 
 # Cuanto separa la semilla de una nota de la de la siguiente. La semilla por nota

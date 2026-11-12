@@ -665,9 +665,13 @@ está tocando ella.
 - **Hay un tope de memoria, dicho en voz alta**: doce minutos de audio a 48 kHz.
   Por encima falla limpio en vez de morir sin decir por qué. Y el buffer y el
   pico de renderizarlo no son el mismo número: el buffer que sale son **138 MB**
-  y el pico medido en el tope son unos **450 MB** (antes de normalizar en sitio
-  eran 708,7 MB, que es cinco veces lo que el comentario del código decía: una
-  red que no sujetaba donde decía sujetar).
+  y el pico depende de dos cosas, no de una. La misma pieza de doce minutos,
+  medida con `getrusage` en el tope exacto: **451,8 MB** repartida en 720 notas
+  de un segundo, **484,3 MB** en 24 notas de treinta segundos y **1.002,5 MB**
+  en una sola nota de doce minutos. El motivo es que cada nota se sintetiza
+  entera antes de sumarse, así que **la nota más larga también paga**: cuenta
+  0,58 MB por segundo de audio total y entre 0,8 y 1,2 MB por segundo de la nota
+  más larga. El peor caso dentro del tope es **1 GB**, no medio.
 
 **Límites de esta etapa**, sin maquillar:
 
