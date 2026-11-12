@@ -261,10 +261,54 @@ class StreamSimulado:
         return bloque
 
 
+def _con_el_ambiente(
+    muestras: np.ndarray, audio_ambiente: np.ndarray | None
+) -> np.ndarray:
+    """Lo que el cable entrega: lo que el gemelo toco mas lo que suena alrededor.
+
+    **ES EL CAMINO QUE HACE MEDIBLE EL ANTI-OBJETIVO DE LA ETAPA 3e.** Con un
+    microfono abierto, lo que sale por los altavoces -la pieza de fondo- vuelve a
+    entrar por la entrada, el detector de ataques lo cobra como notas del usuario
+    y el informe se llena de aciertos y fallos que no toco nadie. Hasta que esto
+    existio, la entrada del gemelo y la salida del acompanamiento eran dos streams
+    sin ningun camino entre ellos, de modo que ninguna prueba podia reproducir esa
+    realimentacion ni queriendo. Quien la mide es
+    `tests/test_gemelo_realimentacion.py`.
+
+    `None` -el valor por omision- devuelve **el mismo array**, sin copiarlo y sin
+    tocar ni una muestra: es lo que corre en todas las demas pruebas del gemelo y
+    en `herramientas/gemelo.py`, y que no cambie esta comprobado con
+    `np.array_equal` contra la verdad del interprete.
+
+    **EL RESULTADO ES TAN LARGO COMO EL MAS LARGO DE LOS DOS**, y no se recorta al
+    audio del gemelo: el microfono sigue oyendo el fondo despues de que el alumno
+    haya tocado su ultima nota, y la cola del fondo es justo donde la cadena no
+    tiene ni una nota de verdad con la que confundirse. Recortarla seria quitarle
+    al montaje su caso mas limpio.
+
+    **Y NO SE RECORTA A [-1, 1].** El cable entrega lo que le dan: quien pida una
+    suma que se sale de la escala tiene un problema de niveles, y un recorte
+    silencioso aqui lo taparia distorsionando el audio en vez de dejarlo ver.
+    """
+    if audio_ambiente is None:
+        return muestras
+    ambiente = np.asarray(audio_ambiente, dtype=np.float32)
+    if ambiente.ndim != 1:
+        raise ValueError(
+            f"El audio ambiente tiene {ambiente.ndim} dimensiones: el cable "
+            "entrega un solo canal, asi que tiene que ser mono"
+        )
+    suma = np.zeros(max(muestras.size, ambiente.size), dtype=np.float32)
+    suma[: muestras.size] = muestras
+    suma[: ambiente.size] += ambiente
+    return suma
+
+
 def dispositivo_simulado(
     interpretacion: Interpretacion,
     tamano_bloque: int = 512,
     nombre: str = NOMBRE_DEL_GEMELO,
+    audio_ambiente: np.ndarray | None = None,
 ) -> tuple[Callable, Callable]:
     """Los dos cierres con los que la sesion entera toca lo que el gemelo toco.
 
@@ -285,7 +329,14 @@ def dispositivo_simulado(
     pide uno (`blocksize`), manda el suyo, porque un stream de verdad entrega los
     bloques del tamaño que se le pidio y `CapturaAudio` pasa siempre el que lleva.
 
-    Lanza `ValueError` si el nombre no lleva las dos marcas obligatorias.
+    `audio_ambiente` es lo que suena en la habitacion y el microfono recoge: se
+    SUMA a lo que el gemelo toco, que es la unica forma de reproducir el
+    anti-objetivo de la etapa 3e. Ver `_con_el_ambiente`, que es donde esta
+    escrito lo que la suma promete; con `None` el cable entrega exactamente lo
+    mismo que entregaba antes de que este parametro existiera.
+
+    Lanza `ValueError` si el nombre no lleva las dos marcas obligatorias o si el
+    audio ambiente no es mono.
     """
     faltan = [marca for marca in MARCAS_DEL_NOMBRE if marca not in nombre]
     if faltan:
@@ -296,6 +347,10 @@ def dispositivo_simulado(
             "una sesion simulada con una real"
         )
     frecuencia = interpretacion.frecuencia_muestreo
+    # La mezcla se hace UNA vez y no en cada apertura: `abrir_stream` puede
+    # llamarse varias veces -la sesion reabre la captura cuando el dispositivo
+    # cambia- y las dos aperturas tienen que entregar lo mismo.
+    entregable = _con_el_ambiente(interpretacion.muestras, audio_ambiente)
 
     def listar() -> list[DispositivoAudio]:
         return [
@@ -316,7 +371,7 @@ def dispositivo_simulado(
                 "velocidad"
             )
         bloque = argumentos.get("blocksize") or tamano_bloque
-        return StreamSimulado(callback, interpretacion.muestras, int(bloque), frecuencia)
+        return StreamSimulado(callback, entregable, int(bloque), frecuencia)
 
     return abrir_stream, listar
 
