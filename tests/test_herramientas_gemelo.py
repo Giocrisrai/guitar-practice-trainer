@@ -38,6 +38,8 @@ from herramientas.gemelo import (
     informe_del_fondo,
     _analizador_de_argumentos,
     _construir,
+    _decir_el_fondo,
+    _informe_del_capturador,
     _correr_la_demostracion,
     _esperar_al_servidor,
     _seguir_la_pasada,
@@ -58,6 +60,7 @@ from nucleo.gemelo.perfiles import (
     PERFILES_DE_DESTREZA,
     PRINCIPIANTE,
 )
+from nucleo.acompanamiento import renderizar
 from nucleo.gemelo.dispositivo import RecolectorDeLaSesion
 from nucleo.gemelo.interprete import interpretar
 from nucleo.gemelo.piezas_de_prueba import escala_de_ocho_notas, pieza_de_demostracion
@@ -67,6 +70,7 @@ from nucleo.piezas.estudio import PlanDePasada, SesionDeEstudio
 from nucleo.piezas.voces_de_fondo import FondoDisponible, NotaDeFondo, VozDeFondo
 from nucleo.sintesis import _abrir_stream_real
 from servidor.diagnostico import Diagnostico
+from servidor.piezas import voz_de_tu_parte
 
 RAIZ = pathlib.Path(__file__).resolve().parent.parent
 
@@ -2052,3 +2056,116 @@ def test_una_pasada_de_verdad_con_fondo_captura_muestras_y_mide_el_desfase():
     assert informe.bloques_medidos > 20
     assert informe.desfase_maximo_ms is not None
     assert abs(informe.desfase_maximo_ms) < 150.0
+
+
+def test_la_ventana_con_relleno_de_ceros_no_produce_localizaciones_falsas():
+    """**El defecto que el primer escaparate real tuvo: bloques «localizados» a medio segundo.**
+
+    El cabezal dice 0,10 s y la ventana de busqueda empieza 0,4 s ANTES del
+    comienzo de la pieza: ahi la referencia es relleno de ceros. Sin la mascara de
+    energia, el ruido numerico de la correlacion dividido por una energia casi
+    nula daba un «parecido» enorme y el bloque se «localizaba» en el relleno,
+    publicando un desfase de -450 ms que no existia. Se parte de un estado donde
+    el relleno ESTA en la ventana; con el cabezal a mitad de pieza no se veria.
+
+    Y con una referencia FUERTE (pico ~3, como una pieza renderizada normalizada
+    a 1 que suena sin pausa): el ruido de la correlacion crece con el nivel, y
+    con la referencia floja de las demas pruebas (pico ~0,8) el defecto no asoma
+    -lo medi: esa version de la prueba pasaba con la mascara quitada-.
+    """
+    referencia = _referencia() * 5.0
+    pps = 1.5
+    traza = [(t, 0.10 * pps) for t in np.arange(0.0, 2.0, 0.01)]
+
+    peor, medidos, sin_localizar = desfase_contra_el_cabezal(
+        _bloques_cortados(referencia, [0.10]), [1.0], referencia, FS_FONDO, pps, traza
+    )
+
+    assert (medidos, sin_localizar) == (1, 0)
+    assert peor == pytest.approx(0.0, abs=0.1)
+
+
+def test_el_fondo_avisa_cuando_cargarlo_no_lo_deja_posible(capsys):
+    """Si la entrada no es el cable el escaparate lo DICE; con el cable, no avisa."""
+    class CarrilQueDice:
+        def __init__(self, posible):
+            self._posible = posible
+
+        def estado(self):
+            return {"acompanamiento_voces": 2, "acompanamiento_posible": self._posible}
+
+    _decir_el_fondo(CarrilQueDice(False), altavoces=False)
+    sin_cable = capsys.readouterr().out
+    _decir_el_fondo(CarrilQueDice(True), altavoces=True)
+    con_cable = capsys.readouterr().out
+
+    assert "AVISO" in sin_cable and "Rocksmith" in sin_cable
+    assert "AVISO" not in con_cable
+    assert "2 voces" in con_cable and "por los altavoces" in con_cable
+    assert "capturado" in sin_cable
+
+
+def test_la_referencia_se_renderiza_al_factor_de_tempo_del_plan():
+    """**Con `--tempo 0,5` la pieza dura el doble: la referencia tiene que saberlo.**
+
+    El estado de partida tiene el factor en 0,5 y no en 1,0: con 1,0 una
+    referencia renderizada sin el factor coincidiria con la buena y no se
+    notaria. Los bloques se cortan de una pieza que la PRUEBA renderiza al
+    factor 0,5, y el cabezal avanza al ritmo de ese factor.
+    """
+    pieza = pieza_de_demostracion()
+    fondo = FondoDisponible((), pieza.tempo, ())
+    plan = PlanDePasada(factor_tempo=0.5)
+    de_la_prueba = renderizar(
+        (voz_de_tu_parte(pieza),), tempo=pieza.tempo, factor_tempo=0.5,
+        frecuencia_muestreo=FS_FONDO,
+    )
+    # Un reloj que avanza 10 s por escritura, y un cabezal que a la hora de cada
+    # escritura esta exactamente donde se corto el bloque.
+    ticks = iter(range(0, 1000))
+    capturador = StreamCapturadoAlRitmo(
+        reloj=lambda: float(next(ticks)) * 10.0, esperar=lambda s: None
+    )
+    traza = []
+    for numero, inicio in enumerate((0.5, 1.0, 1.5, 2.0)):
+        trozo = de_la_prueba.muestras[int(inicio * FS_FONDO) :][:TAM_BLOQUE]
+        capturador.write(trozo * 0.6)
+        # Dos lecturas, una antes y otra despues de la hora de la escritura.
+        traza.append((numero * 20.0 - 1.0, inicio * de_la_prueba.pulsos_por_segundo))
+        traza.append((numero * 20.0 + 1.0, inicio * de_la_prueba.pulsos_por_segundo))
+
+    informe = _informe_del_capturador(capturador, pieza, fondo, plan, traza)
+
+    assert informe.bloques_medidos >= 3, "la referencia no era la del factor pedido"
+    assert abs(informe.desfase_maximo_ms) < 1.0
+
+
+def test_sin_lecturas_del_cabezal_no_hay_nada_que_medir_y_no_revienta():
+    """Una pasada que no llego a leer el cabezal ni una vez: sin cifra, sin error."""
+    referencia = _referencia()
+
+    resultado = desfase_contra_el_cabezal(
+        _bloques_cortados(referencia, [1.0]), [1.0], referencia, FS_FONDO, 1.5, []
+    )
+
+    assert resultado == (None, 0, 0)
+
+
+def test_la_vuelta_del_bucle_no_se_interpola_como_si_fuera_un_cabezal_que_avanza():
+    """El cabezal salta de 3,0 s a 0,0 s entre dos lecturas: el bloque es del 3,0 s.
+
+    Interpolar en linea recta entre las dos lecturas daria un cabezal «esperado»
+    a mitad de camino (1,5 s) y un desfase de segundo y medio que no existe. El
+    estado de partida ES el salto, que es lo unico donde las dos formas de
+    calcular el esperado difieren.
+    """
+    referencia = _referencia()
+    pps = 1.5
+    traza = [(0.99, 3.0 * pps), (1.01, 0.0)]
+
+    peor, medidos, _ = desfase_contra_el_cabezal(
+        _bloques_cortados(referencia, [3.0]), [1.0], referencia, FS_FONDO, pps, traza
+    )
+
+    assert medidos == 1
+    assert peor == pytest.approx(0.0, abs=0.1)
