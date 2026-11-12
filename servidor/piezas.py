@@ -395,6 +395,15 @@ class SesionCarril:
         # hacer, y el precio -un `abrir()` mas- se paga una vez por pasada.
         self._salida_fondo = salida_fondo or SalidaAudio()
         self._acompanante: Acompanante | None = None
+        # La generacion de fondo del ultimo intento de arrancar el acompañante,
+        # haya salido bien o no. **Es el pestillo, y es el mismo de
+        # `_clave_del_click`**: sin el, una maquina sin salida de audio -o con
+        # los altavoces desenchufados- intenta abrir el dispositivo en CADA
+        # instantanea, treinta veces por segundo y bajo `_candado`, que es el
+        # candado que la clausura del cabezal intenta sin bloquear. Se repone a
+        # None en `_parar_acompanamiento`, asi que vuelve a haber un intento
+        # cuando el fondo deja de poder sonar y vuelve a poder.
+        self._generacion_arrancada: int | None = None
         # El archivo de fondo cargado por su puerta (`cargar_acompanamiento`), o
         # None si nadie llamo. Mientras sea None el carril corre exactamente como
         # antes de esta etapa.
@@ -1321,8 +1330,17 @@ class SesionCarril:
             self._parar_acompanamiento()
             return
         self._pedir_el_render(pieza, estudio)
-        if self._acompanante is None and not self._arrancar_acompanante():
-            return
+        if self._acompanante is None:
+            # El pestillo: un intento por fondo cargado. Sin el, una maquina sin
+            # altavoces reabre el dispositivo treinta veces por segundo bajo
+            # este candado. Se anota ANTES de intentarlo, igual que
+            # `_clave_del_click`, para que el intento FALLIDO tambien cuente:
+            # anotarlo solo al salir bien es no tener pestillo.
+            if self._generacion_arrancada == self._generacion_del_fondo:
+                return
+            self._generacion_arrancada = self._generacion_del_fondo
+            if not self._arrancar_acompanante():
+                return
         # Las dos pausas, las mismas que el click: la del usuario y la de la
         # falta de señal. Con `pausar()` y no con `detener()`, para no pagar el
         # `join` en cada pulsacion del boton -y para no perder el buffer, que
@@ -1409,7 +1427,13 @@ class SesionCarril:
                 factor_tempo=factor_tempo,
                 frecuencia_muestreo=self._salida_fondo.frecuencia_muestreo,
             )
-        except ValueError as error:
+        except Exception as error:
+            # Ancho, y por lo mismo que el `except` de `app._fondo_del_archivo`:
+            # esto corre en un hilo propio, asi que lo que no se atrape aqui no
+            # tumba nada -el fondo se queda mudo y la pasada sigue- pero sale
+            # por stderr como «Exception in thread» y NO llega al registro. Un
+            # fondo que no suena sin una linea que diga por que es un fallo que
+            # no se puede perseguir.
             _registro.error("La pieza de fondo no se pudo renderizar: %s", error)
             return
         with self._candado:
@@ -1435,6 +1459,11 @@ class SesionCarril:
         if self._acompanante is not None:
             self._acompanante.detener()
         self._acompanante = None
+        # Y se suelta el pestillo: el fondo que deja de poder sonar -el usuario
+        # eligio el microfono, o apago el interruptor- tiene derecho a un intento
+        # nuevo cuando vuelva a poder. Lo que el pestillo impide es reintentar
+        # treinta veces por segundo sin que nada haya cambiado.
+        self._generacion_arrancada = None
         self._salida_fondo.cerrar()
 
     def _olvidar_el_fondo(self) -> None:

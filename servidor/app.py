@@ -840,13 +840,31 @@ def crear_app(
         # antes deja la pasada en pie y el fondo en la nada, SIN un solo error:
         # lo unico que se nota es que no suena. Lo descubrio la tarea anterior y
         # esta escrito en `SesionCarril.cargar_acompanamiento`.
-        if fondo is not None:
-            app.state.carril.cargar_acompanamiento(fondo)
-        # El estado se vuelve a leer porque el de `iniciar` se hizo antes de que
-        # hubiera fondo: sin esto, la respuesta diria que no hay acompañamiento y
-        # el paquete siguiente del WebSocket diria que si, treinta milisegundos
-        # mas tarde y sin que nadie hubiera tocado nada.
-        return {**respuesta, **app.state.carril.estado()}
+        #
+        # **Y va dentro de un `try` ancho**, que es lo que impide la respuesta
+        # peor de este endpoint: un 500 con la pasada YA EN MARCHA. Aqui abajo
+        # se abren y se cierran dispositivos de audio -`SalidaAudio.cerrar()`
+        # llama a `stream.stop()` y `stream.close()` sin protegerlos-, y lo que
+        # salga de CoreAudio no es ni `TypeError` ni `ValueError`, asi que subia
+        # tal cual. El usuario se quedaba tocando una pieza que el servidor
+        # acababa de decirle que no habia podido empezar.
+        #
+        # Que se devuelve entonces: `respuesta`, o sea el estado de `iniciar`.
+        # Dice la verdad -la pasada esta en marcha y sin fondo- y es justo lo
+        # que esta rama significa.
+        try:
+            if fondo is not None:
+                app.state.carril.cargar_acompanamiento(fondo)
+            # El estado se vuelve a leer porque el de `iniciar` se hizo antes de
+            # que hubiera fondo: sin esto, la respuesta diria que no hay
+            # acompañamiento y el paquete siguiente del WebSocket diria que si,
+            # treinta milisegundos mas tarde y sin que nadie hubiera tocado nada.
+            return {**respuesta, **app.state.carril.estado()}
+        except Exception as error:  # el fondo es un extra: la pasada sigue
+            _registro.warning(
+                "La pieza '%s' empezo sin acompañamiento: %s", pieza.nombre, error
+            )
+            return respuesta
 
     @app.post("/api/piezas/detener")
     def detener_pieza() -> dict:

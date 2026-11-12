@@ -41,6 +41,7 @@ from nucleo.acompanante import BloqueadoAhora
 from nucleo.analisis.pipeline import ResultadoAnalisis
 from nucleo.captura import NOMBRE_ROCKSMITH, DispositivoAudio
 from nucleo.gemelo.salida import SalidaCapturada, StreamCapturado
+from nucleo.sintesis import SalidaAudio
 from nucleo.piezas.estudio import PlanDePasada
 from nucleo.piezas.modelo import NotaEnPieza, Pieza
 from nucleo.piezas.voces_de_fondo import FondoDisponible, NotaDeFondo, VozDeFondo
@@ -136,6 +137,26 @@ class SalidaQueCuenta(SalidaCapturada):
     @property
     def escrituras(self) -> int:
         return self._stream.escrituras
+
+
+class SalidaQueNoAbre:
+    """`SalidaAudio` de verdad cuyo dispositivo no abre nunca, CONTANDO intentos.
+
+    `SalidaCapturada(fallar_al_abrir=True)` ya simula la maquina sin altavoces,
+    pero no dice cuantas veces se lo pidieron, y esa es justo la pregunta: con
+    el pestillo roto, abrir el dispositivo se intenta en cada instantanea.
+    """
+
+    def __init__(self, frecuencia_muestreo: int = MUESTREO) -> None:
+        self.intentos = 0
+
+        def abrir_stream(**argumentos):
+            self.intentos += 1
+            raise OSError("sin dispositivo de audio (simulado)")
+
+        self.salida = SalidaAudio(
+            frecuencia_muestreo=frecuencia_muestreo, abrir_stream=abrir_stream
+        )
 
 
 class RenderContado:
@@ -1419,6 +1440,96 @@ def test_sin_salida_de_audio_la_pasada_sigue_en_pie():
     # Y la pasada, en pie: a 60 ppm dos segundos son dos pulsos (a mano).
     assert estado["instante_s"] == pytest.approx(2.0, abs=0.05)
     assert estado["completado"] is False
+    cerrar(sesion_carril, sesion)
+
+
+def test_sin_salida_de_audio_el_dispositivo_se_intenta_UNA_vez_y_no_treinta():
+    """El pestillo del arranque, que es el mismo que el del click.
+
+    Sin este pestillo, una maquina sin altavoces -o con el jack fuera- intenta
+    abrir el dispositivo en CADA instantanea: treinta veces por segundo, bajo
+    `_candado`, que es el candado que la clausura del cabezal intenta sin
+    bloquear desde el hilo de audio. `_clave_del_click` existe desde la etapa 3c
+    por exactamente este motivo y el fondo no lo tenia.
+
+    El numero esperado se cuenta a mano: sesenta instantaneas y UN intento.
+    """
+    reloj = RelojFalso()
+    sin_dispositivo = SalidaQueNoAbre()
+    sesion_carril, sesion, _, _ = carril(reloj, salida_fondo=sin_dispositivo)
+    sesion_carril.iniciar(pieza_de([40, 45, 50, 55]), SIN_CUENTA)
+    sesion_carril.cargar_acompanamiento(fondo_de())
+
+    avanzar_mirando(sesion_carril, reloj, 2.0)
+
+    assert sin_dispositivo.intentos == 1, (
+        "sesenta instantaneas tienen que dejar UN intento de abrir el "
+        f"dispositivo, y se hicieron {sin_dispositivo.intentos}"
+    )
+    cerrar(sesion_carril, sesion)
+
+
+def test_un_fondo_nuevo_vuelve_a_intentar_abrir_el_dispositivo():
+    """El pestillo no es una condena: lo suelta cargar otro fondo.
+
+    Es la otra mitad del contrato y la que impide arreglar el defecto de mas:
+    un pestillo que no se soltara nunca dejaria sin fondo para siempre al que
+    enchufa los altavoces y elige otra pista, y eso no se nota hasta que pasa.
+    Empieza DESPUES del intento fallido, que es el estado donde un pestillo
+    pegado y uno bien puesto se distinguen.
+    """
+    reloj = RelojFalso()
+    sin_dispositivo = SalidaQueNoAbre()
+    sesion_carril, sesion, _, _ = carril(reloj, salida_fondo=sin_dispositivo)
+    sesion_carril.iniciar(pieza_de([40, 45, 50, 55]), SIN_CUENTA)
+    sesion_carril.cargar_acompanamiento(fondo_de())
+    avanzar_mirando(sesion_carril, reloj, 1.0)
+    assert sin_dispositivo.intentos == 1
+
+    sesion_carril.cargar_acompanamiento(fondo_de(midis=(45, 47)))
+    avanzar_mirando(sesion_carril, reloj, 1.0)
+
+    assert sin_dispositivo.intentos == 2, (
+        "el fondo nuevo tiene derecho a su intento; lo que el pestillo impide "
+        "es reintentar sin que nada haya cambiado"
+    )
+    cerrar(sesion_carril, sesion)
+
+
+def test_un_fallo_ajeno_del_sintetizador_llega_al_registro(monkeypatch, caplog):
+    """Y no por stderr como «Exception in thread», que es donde se pierde.
+
+    `_renderizar` corre en un hilo propio: lo que no atrape se queda sin fondo
+    igual -la pasada no se entera- pero la traza sale por stderr de un hilo que
+    nadie mira. Un fondo mudo sin una linea que diga por que no se puede
+    perseguir.
+
+    El fallo que se simula NO es `ValueError`, que es el unico que se atrapaba:
+    un `ValueError` pasa esta prueba con el `except` viejo y con el nuevo.
+    """
+
+    def revienta(*argumentos, **nombrados):
+        raise RuntimeError("el sintetizador se atraganto")
+
+    monkeypatch.setattr("servidor.piezas.renderizar", revienta)
+    reloj = RelojFalso()
+    sesion_carril, sesion, captura_fondo, _ = carril(reloj)
+    sesion_carril.iniciar(pieza_de([40, 45, 50, 55]), SIN_CUENTA)
+    with caplog.at_level("ERROR", logger="servidor.piezas"):
+        sesion_carril.cargar_acompanamiento(fondo_de())
+        sesion_carril.estado()
+        esperar_el_render(sesion_carril)
+
+    assert "atraganto" in caplog.text, (
+        "el motivo tiene que quedar escrito en el registro"
+    )
+    # Y la pasada sigue, con el fondo MUDO: sin buffer no hay nada que tocar,
+    # y lo que sale por la salida del fondo es silencio y no basura.
+    estado = avanzar_mirando(sesion_carril, reloj, 1.0)
+    assert estado["completado"] is False
+    assert np.allclose(captura_fondo.muestras, 0.0), (
+        "sin render no hay nada que sonar, y lo que se escribe es silencio"
+    )
     cerrar(sesion_carril, sesion)
 
 

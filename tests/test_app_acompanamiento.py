@@ -280,8 +280,10 @@ def test_un_archivo_que_el_lector_no_entiende_no_tumba_la_pasada(
     )
     assert respuesta.status_code == 200
     estado = respuesta.json()
-    # La pieza esta en pie: es lo unico que no se puede perder aqui.
-    assert len(estado["pieza"]["notas"]) == 2
+    # La pieza esta en pie, y es LA SUYA: contar las notas no distingue la
+    # guitarra del bajo -las dos pistas tienen dos notas- y es el mismo defecto
+    # que la cuenta de voces tapaba. Los midis son los que escribio `banda`.
+    assert [nota["midi"] for nota in estado["pieza"]["notas"]] == [52, 57]
     # Y el estado lo dice, en vez de callarlo.
     assert estado["acompanamiento_posible"] is False
     assert estado["acompanamiento_voces"] == 0
@@ -304,6 +306,82 @@ def test_el_endpoint_mueve_el_interruptor_y_el_volumen(cliente, carril):
     assert "acompanamiento_sonando" in respuesta.json()
     assert carril._fondo_encendido is False
     assert carril._volumen_del_fondo == 0.25
+
+
+def test_mandar_solo_el_interruptor_no_mueve_el_volumen(cliente, carril):
+    """Lo ausente se queda como estaba. Es la doctrina de `_campos_del_plan`.
+
+    Un cuerpo es un PATCH: `{"encendido": true}` dice una cosa y no dice nada
+    de la otra. Convertir ese silencio en un cero deja el fondo mudo con el
+    interruptor encendido, que es el peor sitio donde dejarlo: el usuario ve
+    que esta puesto y no oye nada.
+    """
+    cliente.post("/api/piezas/iniciar", json=EJERCICIO)
+    cliente.post("/api/piezas/acompanamiento", json={"volumen": 0.42})
+
+    respuesta = cliente.post("/api/piezas/acompanamiento", json={"encendido": True})
+
+    assert respuesta.status_code == 200
+    assert carril._volumen_del_fondo == 0.42, "el volumen que nadie toco no se mueve"
+    assert carril._fondo_encendido is True
+
+
+def test_mandar_solo_el_volumen_no_mueve_el_interruptor(cliente, carril):
+    """La otra mitad, y empieza con el fondo APAGADO a proposito.
+
+    Con el fondo encendido -como lo deja cargarlo- un campo ausente convertido
+    en False y uno respetado dan el mismo True de partida: el defecto se ve
+    solo desde el estado contrario al de fabrica.
+    """
+    cliente.post("/api/piezas/iniciar", json=EJERCICIO)
+    cliente.post("/api/piezas/acompanamiento", json={"encendido": False})
+
+    respuesta = cliente.post("/api/piezas/acompanamiento", json={"volumen": 0.3})
+
+    assert respuesta.status_code == 200
+    assert carril._fondo_encendido is False, "el interruptor que nadie toco no se mueve"
+    assert carril._volumen_del_fondo == 0.3
+
+
+def test_un_volumen_que_no_es_un_numero_se_rechaza(cliente, carril):
+    """`true` no es 1.0, y `"0.5"` no es medio.
+
+    En JSON un numero se escribe sin comillas y un booleano no es un numero;
+    `float(True)` vale 1.0, asi que `{"volumen": true}` se colaba como el fondo
+    a tope. Es la misma clase de error que la etapa anterior arreglo en el
+    escaparate: un numero aceptado en el formato equivocado.
+    """
+    cliente.post("/api/piezas/iniciar", json=EJERCICIO)
+    volumen_antes = carril._volumen_del_fondo
+    for malo in (True, "0.5", None, [0.5]):
+        respuesta = cliente.post("/api/piezas/acompanamiento", json={"volumen": malo})
+        assert respuesta.status_code == 400, f"{malo!r} no es un volumen"
+        assert "volumen" in respuesta.json()["detail"].lower()
+        assert carril._volumen_del_fondo == volumen_antes
+
+
+def test_si_el_fondo_revienta_al_cargarse_la_pasada_sigue_y_no_hay_500(
+    cliente, carril, monkeypatch
+):
+    """La respuesta peor de este endpoint: un 500 con la pasada YA en marcha.
+
+    Debajo de `cargar_acompanamiento` se cierran dispositivos de audio
+    -`SalidaAudio.cerrar()` llama a `stream.stop()` y `stream.close()` sin
+    protegerlos- y lo que salga de CoreAudio no es ni `TypeError` ni
+    `ValueError`. Subia tal cual, y el usuario se quedaba tocando una pieza que
+    el servidor acababa de decirle que no habia podido empezar.
+    """
+
+    def revienta(*argumentos, **nombrados):
+        raise OSError("PortAudio se cayo al cerrar el stream")
+
+    monkeypatch.setattr(carril, "cargar_acompanamiento", revienta)
+    respuesta = cliente.post("/api/piezas/iniciar", json=EJERCICIO)
+
+    assert respuesta.status_code == 200, "la pasada esta en marcha: no es un 500"
+    assert respuesta.json()["pieza"]["notas"], "y la pieza viaja igual"
+    # Y la pasada esta de verdad en marcha, no solo en la respuesta.
+    assert cliente.get("/api/piezas/estado").json()["completado"] is False
 
 
 def test_el_interruptor_se_pide_con_true_o_false_y_no_con_cualquier_cosa(cliente):
