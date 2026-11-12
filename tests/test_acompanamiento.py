@@ -13,7 +13,13 @@ unica que esta permitida en una asercion.
 import numpy as np
 import pytest
 
-from nucleo.acompanamiento import MUESTRAS_MAXIMAS, _normalizada, renderizar
+from nucleo.acompanamiento import (
+    MUESTRAS_MAXIMAS,
+    PASO_DE_SEMILLA,
+    _normalizada,
+    renderizar,
+)
+from nucleo.gemelo.cuerda import cuerda_pulsada, duracion_minima_s
 from nucleo.musica import midi_a_frecuencia
 from nucleo.piezas.voces_de_fondo import NotaDeFondo, VozDeFondo
 
@@ -307,6 +313,51 @@ def test_dos_notas_iguales_no_son_el_mismo_clon():
     assert primera.any()
     assert segunda.any()
     assert not np.array_equal(primera, segunda)
+
+
+def test_la_semilla_de_la_PRIMERA_nota_tampoco_es_la_base_a_secas():
+    """La semilla se deriva del indice + 1, asi que la base nunca se usa tal cual.
+
+    `test_dos_notas_iguales_no_son_el_mismo_clon` sujeta que la semilla cambia
+    DE una nota a otra, y eso lo cumple igual un `PASO_DE_SEMILLA * indice`: las
+    dos formulas solo se diferencian en la primera nota de un render con
+    `semilla=0`, que con el indice a secas se sintetizaria con la semilla 0 -la
+    base- y no con una derivada. Es cosmetico, pero es la unica diferencia
+    observable y hasta hoy no la miraba nadie.
+
+    La nota dura menos que su minimo a proposito: asi `_planear` la acota con
+    `duracion_minima_s` y la prueba puede sintetizar la MISMA onda sin repetir
+    la cuenta de `COLA_DE_LA_FIGURA`. La referencia no sale de `renderizar`:
+    sale de `cuerda_pulsada`, que es la funcion de la que `renderizar` tira.
+    """
+    midi = 40.0
+    nota = NotaDeFondo(midi=midi, inicio_pulsos=0.0, duracion_pulsos=1e-4)
+    pieza = renderizar(_voz(nota), tempo=TEMPO, frecuencia_muestreo=MUESTREO, semilla=0)
+    duracion_s = duracion_minima_s(midi, MUESTREO)
+
+    def normalizada(semilla: int) -> np.ndarray:
+        onda = cuerda_pulsada(
+            midi=midi,
+            duracion_s=duracion_s,
+            frecuencia_muestreo=MUESTREO,
+            semilla=semilla,
+        )
+        return _normalizada(onda.astype(np.float64), 1.0)
+
+    derivada = normalizada(PASO_DE_SEMILLA)
+    la_base = normalizada(0)
+    cuantas = min(pieza.muestras.size, derivada.size, la_base.size)
+    assert cuantas > 0 and pieza.muestras[:cuantas].any()
+    assert not np.array_equal(derivada[:cuantas], la_base[:cuantas]), (
+        "las dos semillas dan la misma onda: la prueba no distingue nada"
+    )
+
+    assert np.array_equal(pieza.muestras[:cuantas], derivada[:cuantas]), (
+        "la primera nota tiene que salir con la semilla DERIVADA (base + paso)"
+    )
+    assert not np.array_equal(pieza.muestras[:cuantas], la_base[:cuantas]), (
+        "la primera nota salio con la semilla base tal cual"
+    )
 
 
 def test_la_ganancia_escala_el_pico_de_la_mezcla():
