@@ -1024,10 +1024,26 @@ class SesionCarril:
         `fondo=None` lo apaga y lo olvida, que es lo que hace falta cuando el
         usuario deselecciona el archivo de fondo.
 
-        Cargar ENCIENDE, porque cargarlo es haberlo pedido; para dejarlo puesto y
-        callado esta el interruptor vivo de `acompanamiento(encendido=False)`. No
-        suena por eso solo: tiene que haber salida de audio, pasada en marcha y
-        buffer renderizado, y nada de eso lo decide esta llamada.
+        **Cargar enciende SOLO SI LA ENTRADA ES EL CABLE** (decision M6 de la
+        spec). Cargarlo es haberlo pedido, si: con el cable, esto deja el caso
+        normal en un solo paso. Pero con cualquier otra entrada -el microfono
+        del portatil- el sonido del fondo ENTRA por ella, el detector de ataques
+        lo cobra como notas del usuario y el informe se llena de aciertos y
+        fallos que no toco nadie. Y lo peor no es que este mal: es que **no se
+        nota**, porque los numeros salen. Encender solo porque se cargo seria el
+        anti-objetivo de la etapa entera -que el programa se puntue a si mismo-
+        ocurriendo sin que nadie lo decida.
+
+        Asi que con otra entrada se carga y se queda CALLADO. El usuario puede
+        encenderlo a mano despues con `acompanamiento(encendido=True)` -es su
+        equipo, y con auriculares no hay realimentacion ninguna-, y mientras
+        suene el estado seguira diciendo `acompanamiento_posible: False` para
+        que el recordatorio no se vaya. El precio de equivocarse esta medido y
+        es pequeño: quien tenga una interfaz que no se llame «Rocksmith» tiene
+        que darle al interruptor una vez.
+
+        Encendido no es sonando: hace falta ademas salida de audio, pasada en
+        marcha y buffer renderizado, y nada de eso lo decide esta llamada.
 
         Un volumen fuera de [0, 1] es `ValueError`, que sale como 400 igual que
         un plan imposible.
@@ -1046,7 +1062,9 @@ class SesionCarril:
             self._clave_del_render = None
             self._renderizada = None
             self._volumen_del_fondo = volumen
-            self._fondo_encendido = True
+            # La regla M6, y se lee de la misma fuente que la publica: con el
+            # microfono se carga callado. Ver el docstring.
+            self._fondo_encendido = self._entrada_es_el_cable()
             if self._acompanante is not None:
                 # El acompañante vivo se queda en silencio -su pieza cargada es
                 # la vieja- hasta que el render nuevo aterrice. Lo unico que se

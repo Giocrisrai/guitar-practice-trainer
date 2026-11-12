@@ -361,6 +361,10 @@ def test_con_el_microfono_el_acompanamiento_no_es_posible():
     sesion_carril.iniciar(pieza_de([40, 45, 50, 55]), SIN_CUENTA)
     sesion_carril.cargar_acompanamiento(fondo_de())
 
+    assert sesion_carril.estado()["acompanamiento_sonando"] is False, (
+        "con el microfono se carga CALLADO: ver "
+        "`test_con_el_microfono_cargar_no_enciende_el_fondo`"
+    )
     estado = sesion_carril.acompanamiento(encendido=True)
 
     assert estado["acompanamiento_posible"] is False, (
@@ -370,6 +374,83 @@ def test_con_el_microfono_el_acompanamiento_no_es_posible():
     assert estado["acompanamiento_sonando"] is True, (
         "y aun asi suena: manda el usuario, no el servidor"
     )
+    cerrar(sesion_carril, sesion)
+
+
+def test_con_el_microfono_cargar_no_enciende_el_fondo():
+    """**Decision M6**: cargar enciende solo si la entrada es el cable.
+
+    El anti-objetivo de la etapa entera es que el programa se puntue a si mismo,
+    y esto es exactamente eso: con el microfono del portatil, el sonido del
+    fondo entra por la entrada, el detector de ataques lo cobra como notas del
+    usuario y el informe se llena de aciertos y fallos que no toco nadie. Lo
+    peor es que **no se nota**, porque los numeros salen igual. Que eso ocurra
+    porque alguien eligio un archivo de fondo -sin haber decidido nada- es el
+    defecto que esta prueba cierra.
+
+    Con el cable, en cambio, cargar enciende: es el caso normal y tiene que
+    costar un solo paso.
+
+    Lo que se mide es que la pieza siga callada DE VERDAD -ni un bloque escrito
+    por la salida del fondo, que es donde se oiria-, no solo que una bandera
+    diga que no.
+    """
+    reloj = RelojFalso()
+    con_microfono, sesion, captura_fondo, _ = carril(reloj, entrada_es_el_cable=False)
+    con_microfono.iniciar(pieza_de([40, 45, 50, 55]), SIN_CUENTA)
+    con_microfono.cargar_acompanamiento(fondo_de())
+
+    estado = avanzar_mirando(con_microfono, reloj, 1.0)
+    assert estado["acompanamiento_sonando"] is False, (
+        "cargar un archivo de fondo con el microfono abierto no puede ponerlo a "
+        "sonar: el informe de la pasada dejaria de medir al alumno y nadie lo "
+        "veria"
+    )
+    assert con_microfono._acompanante is None
+    assert captura_fondo.arranques == 0, "ni se toco el dispositivo de salida"
+    assert captura_fondo.escrituras == 0, "ni se escribio una muestra"
+
+    # Y encenderlo a mano SI suena: es su equipo y su decision (puede tener
+    # auriculares puestos, que es cuando no hay realimentacion ninguna).
+    assert con_microfono.acompanamiento(encendido=True)["acompanamiento_sonando"] is True
+    cerrar(con_microfono, sesion)
+
+    # Con el cable, el caso normal: cargar y ya suena, sin segundo paso.
+    con_cable, sesion_cable, _, _ = carril(reloj, entrada_es_el_cable=True)
+    con_cable.iniciar(pieza_de([40, 45, 50, 55]), SIN_CUENTA)
+    con_cable.cargar_acompanamiento(fondo_de())
+    assert con_cable.estado()["acompanamiento_sonando"] is True
+    cerrar(con_cable, sesion_cable)
+
+
+def test_el_recordatorio_del_microfono_no_se_va_mientras_el_fondo_suena():
+    """Encendido a mano con el microfono, `acompanamiento_posible` sigue False.
+
+    Es la otra mitad del mismo riesgo. El campo no es una compuerta -el fondo
+    suena, porque manda el usuario- sino el recordatorio del que cuelga el aviso
+    de la pantalla: mientras el fondo este sonando por una entrada que lo va a
+    recoger, el aviso tiene que seguir ahi. Apagarlo «porque ya esta sonando,
+    luego algo posible sera» es como callar el aviso del cable en la pausa del
+    usuario: el aviso desaparece justo cuando hace falta.
+
+    Se mira a lo largo de una pasada entera y no en un solo instante: el campo
+    se publica treinta veces por segundo y basta con que uno de esos paquetes
+    diga que si para que la pantalla parpadee y el usuario deje de leerlo.
+    """
+    reloj = RelojFalso()
+    sesion_carril, sesion, _, _ = carril(reloj, entrada_es_el_cable=False)
+    sesion_carril.iniciar(pieza_de([40, 45, 50, 55]), SIN_CUENTA)
+    sesion_carril.cargar_acompanamiento(fondo_de())
+    sesion_carril.acompanamiento(encendido=True)
+
+    for vuelta in range(30):
+        reloj.avanzar(1 / 30.0)
+        estado = sesion_carril.estado()
+        assert estado["acompanamiento_sonando"] is True, f"paquete {vuelta}"
+        assert estado["acompanamiento_posible"] is False, (
+            f"el paquete {vuelta} dejo de recordar que la entrada no es el "
+            "cable mientras el fondo sonaba por ella"
+        )
     cerrar(sesion_carril, sesion)
 
 
