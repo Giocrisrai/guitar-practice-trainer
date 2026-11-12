@@ -239,15 +239,15 @@ class EstadoEstudio:
     `completado` y `tocadas` del paquete del WebSocket, y anidarlos obligaria a
     tocar `useCarril.ts` sin ningun motivo.
 
-    **Los tres campos del acompañamiento los rellena el SERVIDOR y no el nucleo**,
-    y por eso -solo ellos- llevan valor por omision. El nucleo no sabe de
-    archivos de fondo, de tarjetas de sonido ni de cables, asi que
+    **Los campos del acompañamiento los rellena el SERVIDOR y no el nucleo**, y
+    por eso -solo ellos- llevan valor por omision. El nucleo no sabe de archivos
+    de fondo, de tarjetas de sonido ni de cables, asi que
     `SesionDeEstudio.estado` los deja como estan y `SesionCarril._instantanea`
     pone los de verdad con `replace` antes de publicar. Viajan AQUI, y no como
-    tres claves sueltas que el servidor añada al diccionario, para que haya un
-    solo sitio que los escriba en el paquete: la leccion de `esperando_notas`
-    -una regla escrita en dos sitios no es la misma regla- aplicada a la forma
-    del estado.
+    claves sueltas que el servidor añada al diccionario, para que haya un solo
+    sitio que los escriba en el paquete: la leccion de `esperando_notas` -una
+    regla escrita en dos sitios no es la misma regla- aplicada a la forma del
+    estado.
     """
 
     carril: EstadoCarril
@@ -280,6 +280,16 @@ class EstadoEstudio:
     # usuario, a media ganancia. Hay que decirlo: si no, el alumno cree que esta
     # oyendo el acompañamiento y esta oyendose a si mismo.
     acompanamiento_es_tu_parte: bool = False
+    # Cuantas pistas del archivo suenan detras del usuario. Es la cuenta de lo
+    # que SI entro, y vale cero tanto sin fondo cargado como cuando lo que suena
+    # es la propia parte (`acompanamiento_es_tu_parte`): son las voces AJENAS.
+    acompanamiento_voces: int = 0
+    # Las pistas que el archivo traia y que no pueden sonar, con el motivo ya
+    # escrito para el usuario -(nombre, motivo)-. Se publica porque un fondo al
+    # que le falta la bateria sin que nada lo diga parece roto, y porque el que
+    # mira la cuenta de arriba necesita saber si faltan dos voces o si nunca
+    # las hubo.
+    acompanamiento_excluidas: tuple[tuple[str, str], ...] = ()
 
     def a_dict(self) -> dict:
         return {
@@ -303,6 +313,14 @@ class EstadoEstudio:
             "acompanamiento_sonando": self.acompanamiento_sonando,
             "acompanamiento_posible": self.acompanamiento_posible,
             "acompanamiento_es_tu_parte": self.acompanamiento_es_tu_parte,
+            "acompanamiento_voces": self.acompanamiento_voces,
+            # Pares por dentro -son dos cosas y siempre las dos- y objetos con
+            # nombre por fuera: quien lee esto en la pantalla escribe
+            # `excluida.motivo` y no `excluida[1]`.
+            "acompanamiento_excluidas": [
+                {"pista": nombre, "motivo": motivo}
+                for nombre, motivo in self.acompanamiento_excluidas
+            ],
             # `completado` del carril es "se acabo la PIEZA"; para quien practica
             # un tramo, lo que se acabo es el tramo. Se publica con el mismo
             # nombre porque es lo que la interfaz de la etapa 3a ya lee.

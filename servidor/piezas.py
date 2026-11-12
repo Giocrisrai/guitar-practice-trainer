@@ -1168,7 +1168,7 @@ class SesionCarril:
         return self.estado()
 
     def _campos_del_fondo(self) -> dict:
-        """Los tres campos del acompañamiento que viajan en el estado.
+        """Los campos del acompañamiento que viajan en el estado.
 
         Un solo sitio los decide, y los dos caminos de `_instantanea` -con pieza
         y sin ella- llaman AQUI en vez de escribirlos cada uno. Es la misma
@@ -1188,6 +1188,14 @@ class SesionCarril:
                 fondo is not None, self._entrada_es_el_cable()
             ),
             "acompanamiento_es_tu_parte": fondo is not None and not fondo.voces,
+            # Las voces AJENAS que suenan, y las pistas que se quedaron fuera
+            # con su motivo. Salen del `FondoDisponible` tal cual lo dejo
+            # `cargar_acompanamiento`, sin recontar nada: quien decide que pista
+            # entra es `voces_de_fondo._se_pierde_algo` y aqui solo se publica.
+            # Sin fondo, cero y nada: no es que el archivo no tenga voces, es
+            # que no hay archivo.
+            "acompanamiento_voces": len(fondo.voces) if fondo is not None else 0,
+            "acompanamiento_excluidas": fondo.excluidas if fondo is not None else (),
         }
 
     def _entrada_es_el_cable(self) -> bool:

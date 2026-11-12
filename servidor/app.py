@@ -4,6 +4,7 @@ Capa fina. No calcula nada musical: solo publica lo que la sesión ya produce.
 """
 
 import asyncio
+import logging
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -27,6 +28,7 @@ from nucleo.piezas.desde_ejercicio import pieza_desde_ejercicio
 from nucleo.piezas.estudio import PlanDePasada
 from nucleo.piezas.lectores import importar, pistas_de_archivo
 from nucleo.piezas.modelo import Pieza
+from nucleo.piezas.voces_de_fondo import FondoDisponible, voces_de
 from servidor import configuracion as config_modulo
 from servidor.canciones import (
     MARGEN_MULTIPART_BYTES,
@@ -39,8 +41,10 @@ from servidor.canciones import (
 )
 from servidor.ejercicios import SesionPractica
 from servidor.modulos import listar_modulos
-from servidor.piezas import SesionCarril
+from servidor.piezas import SesionCarril, _volumen_valido
 from servidor.sesion import Sesion
+
+_registro = logging.getLogger(__name__)
 
 # La pantalla no muestra más rápido que esto. Emitir más solo añadiría cola y, con
 # ella, retardo entre lo que se toca y lo que se ve.
@@ -640,8 +644,50 @@ def crear_app(
         ejercicio = _generar_o_400(datos)
         return pieza_desde_ejercicio(ejercicio).a_dict()
 
-    def _pieza_para_el_carril(datos: dict) -> Pieza:
-        """La pieza que pide `datos`: un ejercicio generado o una cancion del disco.
+    def _fondo_del_archivo(ruta: Path, numero: int) -> FondoDisponible | None:
+        """Las demas pistas del archivo, o `None` si no se pudieron leer.
+
+        **El fondo es un EXTRA y nunca un requisito**, y de ahi el `except` ancho:
+        que una cancion deje de poder tocarse porque su acompañamiento no se pudo
+        leer seria cambiar algo que funciona por algo que adorna. La pista del
+        usuario ya se importo -con sus propios fallos traducidos a 400 por
+        `_leer_o_400`- y lo que pase aqui no la toca.
+
+        Ancho de verdad y no `ValueError`: `voces_de` promete esa excepcion para
+        lo que sabe (la extension que no conoce, el MIDI en SMPTE), pero por
+        debajo corren tres parsers de terceros sobre un archivo que el usuario
+        subio, y de ahi sale lo que sea -un `struct.error`, un `KeyError`, un
+        `IndexError` de una pista que no cuadra-. Cualquiera de esos tumbaria la
+        pasada entera, que es justo lo que no puede pasar. Se registra, que es lo
+        que lo distingue de tragarselo.
+
+        `None` y no un `FondoDisponible` vacio, porque no son lo mismo: vacio es
+        «este archivo no trae otras pistas» -y entonces suena la propia parte como
+        guia-, y `None` es «no se sabe que trae», que no es un fondo que ofrecer.
+        """
+        try:
+            return voces_de(ruta, numero)
+        except Exception as error:  # el fondo es un extra: la pieza sigue
+            _registro.warning(
+                "No pude leer el fondo de '%s': %s", ruta.name, error
+            )
+            return None
+
+    def _pieza_para_el_carril(datos: dict) -> tuple[Pieza, FondoDisponible | None]:
+        """La pieza que pide `datos` y lo que puede sonar detras, en ese orden.
+
+        El fondo sale de AQUI y no de otro sitio porque este es el unico punto
+        del servidor que tiene la ruta del archivo y el numero de pista a la vez:
+        quien los volviera a resolver mas tarde estaria leyendo el cuerpo de la
+        peticion por segunda vez, y dos lecturas del mismo cuerpo son dos
+        oportunidades de no coincidir.
+
+        Un ejercicio del catalogo no sale de ningun archivo, asi que no tiene
+        otras pistas: se le da un `FondoDisponible` SIN voces, que es lo que hace
+        sonar su propia pieza como guia a ganancia reducida y lo que publica
+        `acompanamiento_es_tu_parte` (ver `SesionCarril._pedir_el_render` y
+        `voz_de_tu_parte`). Vacio y no `None`: hay fondo que ofrecer, y es el
+        suyo.
 
         Hay DOS formas de pedir una pieza y son exclusivas:
 
@@ -697,8 +743,13 @@ def crear_app(
             ruta = _leer_o_400(lambda: _ruta_de_cancion(datos["cancion"]))
             numero = _leer_o_400(lambda: _numero_de_pista(datos.get("pista", 1)))
             perfil = _leer_o_400(lambda: _perfil_pedido(datos.get("perfil")))
-            return _leer_o_400(lambda: importar(ruta, numero, perfil))
-        return pieza_desde_ejercicio(_generar_o_400(datos))
+            pieza = _leer_o_400(lambda: importar(ruta, numero, perfil))
+            return pieza, _fondo_del_archivo(ruta, numero)
+        pieza = pieza_desde_ejercicio(_generar_o_400(datos))
+        # El tempo es el de la pieza porque es el unico que hay; el render usa
+        # el de la pieza de todos modos (`SesionCarril._pedir_el_render`), asi
+        # que aqui no se inventa ningun numero.
+        return pieza, FondoDisponible(voces=(), tempo=pieza.tempo, excluidas=())
 
     def _campos_del_plan(datos: dict) -> dict:
         """Convierte SOLO los campos del plan que el cuerpo trae.
@@ -760,15 +811,21 @@ def crear_app(
 
         `plan` es opcional, y sin el la pasada es la de la etapa 3a: la pieza
         entera, a tempo escrito, sin bucle y sin click.
+
+        **El acompañamiento se carga solo, sin que el cliente pida nada**: las
+        demas pistas del archivo son parte de la cancion que se eligio, no una
+        opcion aparte. Que suenen o no lo decide despues `SesionCarril` -solo con
+        el cable, por la decision M6 de la spec-, y esa regla no se vuelve a
+        escribir aqui: viaja publicada en `acompanamiento_posible`.
         """
-        pieza = _pieza_para_el_carril(datos)
+        pieza, fondo = _pieza_para_el_carril(datos)
         try:
             # El plan se construye DENTRO del `try`: un factor imposible es un
             # pedido mal hecho igual que una afinacion que no cuadra, y fuera de
             # aqui su `ValueError` saldria como un 500, es decir "el servidor se
             # ha roto", que es mentira.
             plan = _plan_pedido(datos["plan"]) if datos.get("plan") else None
-            return app.state.carril.iniciar(pieza, plan)
+            respuesta = app.state.carril.iniciar(pieza, plan)
         except (TypeError, ValueError) as error:
             # La afinacion de la pieza no coincide con la activa (spec §5), o el
             # plan pide algo que la pieza no tiene: es un pedido mal formado, no
@@ -777,6 +834,19 @@ def crear_app(
             # (`{"primer_compas": null}`) sale de Python como `TypeError`, y
             # dejarlo subir lo convertia en un 500.
             raise HTTPException(status_code=400, detail=str(error))
+        # **DESPUES de `iniciar`, y el orden no es un detalle de estilo**:
+        # `iniciar` empieza llamando a `detener`, y `detener` suelta el fondo con
+        # la pieza para que no suene encima de la siguiente cancion. Cargarlo
+        # antes deja la pasada en pie y el fondo en la nada, SIN un solo error:
+        # lo unico que se nota es que no suena. Lo descubrio la tarea anterior y
+        # esta escrito en `SesionCarril.cargar_acompanamiento`.
+        if fondo is not None:
+            app.state.carril.cargar_acompanamiento(fondo)
+        # El estado se vuelve a leer porque el de `iniciar` se hizo antes de que
+        # hubiera fondo: sin esto, la respuesta diria que no hay acompañamiento y
+        # el paquete siguiente del WebSocket diria que si, treinta milisegundos
+        # mas tarde y sin que nadie hubiera tocado nada.
+        return {**respuesta, **app.state.carril.estado()}
 
     @app.post("/api/piezas/detener")
     def detener_pieza() -> dict:
@@ -822,6 +892,61 @@ def crear_app(
             return app.state.carril.pausa(bool(datos.get("activa", True)))
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error))
+
+    def _encendido_pedido(valor) -> bool:
+        """`valor` como interruptor, o `ValueError` nombrando la opcion.
+
+        No se convierte con `bool(...)`, por lo mismo que los booleanos del
+        plan: `bool("no")` vale True, asi que apagar el fondo desde una pantalla
+        que mandase texto lo encenderia.
+        """
+        if not isinstance(valor, bool):
+            raise ValueError(
+                f"'encendido' tiene que ser true o false, y me has mandado {valor!r}"
+            )
+        return valor
+
+    def _volumen_pedido(valor) -> float:
+        """`valor` como volumen, o `ValueError` nombrando la opcion y el valor.
+
+        Solo el TIPO. Que el numero este en [0, 1] lo decide
+        `piezas._volumen_valido`, que es el unico sitio donde vive ese rango:
+        repetirlo aqui serian dos rangos que un dia dejarian de ser el mismo.
+        """
+        if isinstance(valor, bool) or not isinstance(valor, (int, float)):
+            raise ValueError(
+                f"'volumen' se pide con un numero de 0 a 1, y me has mandado {valor!r}"
+            )
+        return float(valor)
+
+    @app.post("/api/piezas/acompanamiento")
+    def ajustar_acompanamiento(datos: dict = Body(...)) -> dict:
+        """El interruptor y el volumen del fondo. Los dos opcionales.
+
+        Ninguno de los dos va en `PlanDePasada` ni en `/api/piezas/plan`, y el
+        motivo esta medido en `SesionCarril.acompanamiento`: todo cambio de plan
+        cierra la repeticion, asi que un deslizador de volumen arrastrado serian
+        decenas de vueltas partidas por la mitad.
+
+        **Los dos valores se comprueban ANTES de tocar nada**, y por eso el
+        rango pasa por `_volumen_valido` aqui y no solo dentro del carril: con el
+        cuerpo `{"encendido": false, "volumen": 2.5}`, dejar que el carril
+        aplique lo primero y reviente en lo segundo apaga el fondo, contesta 400
+        y nadie se entera de que algo cambio. Un pedido mal hecho no deja a medias
+        el que lo manda.
+        """
+        try:
+            encendido = (
+                _encendido_pedido(datos["encendido"]) if "encendido" in datos else None
+            )
+            volumen = (
+                _volumen_valido(_volumen_pedido(datos["volumen"]))
+                if "volumen" in datos
+                else None
+            )
+        except (TypeError, ValueError) as error:
+            raise HTTPException(status_code=400, detail=str(error))
+        return app.state.carril.acompanamiento(encendido=encendido, volumen=volumen)
 
     @app.get("/api/piezas/informe")
     def leer_informe_pieza() -> dict:
