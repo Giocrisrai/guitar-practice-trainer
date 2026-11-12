@@ -57,6 +57,10 @@ MICROFONO = DispositivoAudio(0, "MacBook Pro Microphone", 1, 48000.0)
 LIMITE_S = 10.0
 MUESTREO = 48000
 TEMPO = 60
+# El tempo que el ARCHIVO de fondo declara, distinto del de la pieza a
+# proposito: es el 90 por omision de la tablatura de texto, y el Ruling 1 dice
+# que el que manda al renderizar es el de la pieza.
+TEMPO_AJENO_DEL_FONDO = 90
 BLOQUE = 1024
 
 
@@ -1019,6 +1023,73 @@ def test_el_acompanamiento_se_pausa_con_la_pasada():
     assert acompanante.pausado is False, "y al volver la señal, vuelve el fondo"
 
     assert acompanante.sonando is True, "pausar no es detener: el hilo sigue vivo"
+    cerrar(sesion_carril, sesion)
+
+
+def test_el_render_usa_el_tempo_de_la_PIEZA_y_no_el_del_fondo():
+    """El fondo se sintetiza al tempo del carril, aunque el archivo diga otro.
+
+    Es el **Ruling 1**, y es la decision mas vieja de la etapa: `FondoDisponible.tempo`
+    es INFORMATIVO. MusicXML saca el tempo de la obra entera y una tablatura de
+    texto lleva el 90 por omision (`voces_de_fondo.TEMPO_DE_LA_TABLATURA`), asi
+    que el tempo del fondo puede no ser el de la `Pieza` que mueve el cabezal.
+    Si se renderizara con el del fondo, el fondo **derivaria por construccion**
+    -compas a compas, sin un solo error- que es justo lo que M2 existe para
+    hacer imposible.
+
+    **Los dos tempos son DISTINTOS a proposito, y ahi estaba el agujero.**
+    `pieza_de` y `fondo_de` valen las dos `TEMPO` por omision, de modo que en el
+    estado donde empezaban todas las pruebas del archivo leer uno u otro daba el
+    mismo numero: el mutante `pieza.tempo` -> `fondo.tempo` sobrevivia a la suite
+    entera. Aqui la pieza va a 60 y el fondo dice 90.
+
+    **El cabezal se para en medio de una nota, no en su ataque**: en el ataque
+    las dos sintesis empiezan igual y la prueba no distinguiria gran cosa. A
+    pulso 2,5 la nota lleva 0,25 s sonando al tempo de la pieza y 0,167 s al del
+    fondo, que son dos ondas distintas. La asercion de que las dos referencias
+    DIFIEREN esta escrita, porque si un dia coincidieran esta prueba dejaria de
+    probar nada sin ponerse roja.
+    """
+    reloj = RelojFalso()
+    sesion_carril, sesion, captura_fondo, _ = carril(reloj)
+    midis = (40, 45, 50, 55)
+    sesion_carril.iniciar(pieza_de([52, 57, 59, 60], tempo=TEMPO), SIN_CUENTA)
+    sesion_carril.cargar_acompanamiento(
+        fondo_de(midis=midis, tempo=TEMPO_AJENO_DEL_FONDO), volumen=1.0
+    )
+    # Dos pulsos y medio de pasada, contados al tempo de la PIEZA: 60 ppm es un
+    # pulso por segundo, asi que 2,5 s son 2,5 pulsos.
+    avanzar_mirando(sesion_carril, reloj, 2.5)
+    esperar_el_render(sesion_carril)
+
+    al_tempo_de_la_pieza = renderizar(
+        (voz_de(midis),), tempo=TEMPO, factor_tempo=1.0, frecuencia_muestreo=MUESTREO
+    )
+    al_tempo_del_fondo = renderizar(
+        (voz_de(midis),),
+        tempo=TEMPO_AJENO_DEL_FONDO,
+        factor_tempo=1.0,
+        frecuencia_muestreo=MUESTREO,
+    )
+    desde_la_pieza = muestra_del_pulso(2.5, tempo=TEMPO)
+    desde_el_fondo = muestra_del_pulso(2.5, tempo=TEMPO_AJENO_DEL_FONDO)
+    manda_la_pieza = al_tempo_de_la_pieza.muestras[desde_la_pieza : desde_la_pieza + BLOQUE]
+    manda_el_fondo = al_tempo_del_fondo.muestras[desde_el_fondo : desde_el_fondo + BLOQUE]
+
+    assert not np.allclose(manda_la_pieza, 0.0), "el fondo de la prueba tiene que sonar"
+    assert not np.allclose(manda_la_pieza, manda_el_fondo, atol=1e-6), (
+        "los dos tempos escriben el mismo audio: la prueba no distingue nada"
+    )
+
+    hechos = captura_fondo.escrituras
+    assert captura_fondo.esperar_escrituras(hechos + 3), "el fondo no llego a sonar"
+    cual = hechos + 1
+    assert captura_fondo.bloques[cual] == BLOQUE
+    escrito = captura_fondo.muestras[cual * BLOQUE : (cual + 1) * BLOQUE]
+
+    assert np.allclose(escrito, manda_la_pieza, atol=1e-6), (
+        "lo que suena tiene que estar renderizado al tempo de la pieza del carril"
+    )
     cerrar(sesion_carril, sesion)
 
 
