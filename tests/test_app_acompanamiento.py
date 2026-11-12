@@ -36,7 +36,7 @@ from nucleo.captura import NOMBRE_ROCKSMITH, DispositivoAudio
 from nucleo.gemelo.salida import SalidaCapturada
 from servidor.app import crear_app
 from servidor.configuracion import Configuracion
-from servidor.piezas import VOLUMEN_DEL_FONDO_POR_OMISION, SesionCarril
+from servidor.piezas import SesionCarril
 from servidor.sesion import Sesion
 
 # El servidor solo atiende peticiones dirigidas a localhost (ver
@@ -161,7 +161,9 @@ def banda(ruta):
 # ---------------------------------------------------------------------------
 
 
-def test_al_empezar_una_cancion_las_demas_pistas_se_cargan_solas(cliente, carpeta):
+def test_al_empezar_una_cancion_las_demas_pistas_se_cargan_solas(
+    cliente, carpeta, carril
+):
     """Y se cargan DESPUES de `iniciar`, que es lo que esta prueba mide.
 
     `iniciar` llama a `detener`, y `detener` suelta el fondo. Cargarlo antes
@@ -181,9 +183,14 @@ def test_al_empezar_una_cancion_las_demas_pistas_se_cargan_solas(cliente, carpet
     # Sin que el cliente haya pedido nada: el estado que la pantalla lee ya lo
     # trae.
     assert cliente.get("/api/piezas/estado").json()["acompanamiento_voces"] == 1
+    # Y es el bajo, no cualquier voz: la cuenta sola no distingue apartar una
+    # pista de apartar otra, que es justo el defecto que esta linea cierra. El
+    # nombre no viaja en el estado -la pantalla solo muestra cuantas son- asi
+    # que se mira donde esta, que es el fondo cargado en el carril.
+    assert [voz.nombre for voz in carril._fondo.voces] == ["Bajo"]
 
 
-def test_la_pista_que_tocas_no_suena_de_fondo(cliente, carpeta):
+def test_la_pista_que_tocas_no_suena_de_fondo(cliente, carpeta, carril):
     """Tocando el bajo, el fondo es la guitarra: se aparta la pista PEDIDA.
 
     Empieza en la pista 2 a proposito: una implementacion que aparte siempre la
@@ -196,6 +203,10 @@ def test_la_pista_que_tocas_no_suena_de_fondo(cliente, carpeta):
     ).json()
     assert estado["acompanamiento_voces"] == 1
     assert estado["acompanamiento_es_tu_parte"] is False
+    # LA GUITARRA, que es la que el usuario NO esta tocando ahora. Contar no
+    # basta: apartando siempre la pista 1 tambien queda una sola voz, y seria
+    # el usuario doblado por la maquina mientras el bajo no suena.
+    assert [voz.nombre for voz in carril._fondo.voces] == ["Guitarra"]
     assert [excluida["pista"] for excluida in estado["acompanamiento_excluidas"]] == [
         "Bateria"
     ]
@@ -221,6 +232,9 @@ def test_el_endpoint_rechaza_un_volumen_fuera_de_rango(cliente, carril):
     """
     cliente.post("/api/piezas/iniciar", json=EJERCICIO)
     assert carril._fondo_encendido is True
+    # El de antes, no el de fabrica: lo que se afirma es que NADA se movio, y
+    # tomar el numero de la constante de produccion seria afirmar la constante.
+    volumen_antes = carril._volumen_del_fondo
     for malo in (-1, 2.5):
         respuesta = cliente.post(
             "/api/piezas/acompanamiento", json={"encendido": False, "volumen": malo}
@@ -230,7 +244,7 @@ def test_el_endpoint_rechaza_un_volumen_fuera_de_rango(cliente, carril):
         assert "volumen" in detalle.lower()
         assert str(malo) in detalle
         assert carril._fondo_encendido is True
-        assert carril._volumen_del_fondo == VOLUMEN_DEL_FONDO_POR_OMISION
+        assert carril._volumen_del_fondo == volumen_antes
 
 
 def test_las_pistas_excluidas_se_publican_con_su_motivo(cliente, carpeta):
