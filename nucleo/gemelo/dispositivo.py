@@ -29,6 +29,14 @@ gemelo. Las dos marcas se COMPRUEBAN sobre el nombre que se pide, y no solo sobr
 el de fabrica: un nombre a medida que se olvidara una de las dos romperia una de
 las dos propiedades en silencio.
 
+**Y POR ESTE CABLE ENTRA TAMBIEN LO QUE SUENA EN LA HABITACION.**
+`audio_ambiente` se suma a lo que el gemelo toco, que es la unica forma de
+reproducir el anti-objetivo de la etapa 3e -el fondo volviendo por un microfono
+abierto y el detector cobrandoselo al alumno-: sin el, la entrada del gemelo y la
+salida del acompanamiento son dos streams sin ningun camino entre ellos y esa
+realimentacion no se puede medir. Lo que promete la suma esta en
+`_con_el_ambiente`; quien la mide, `tests/test_gemelo_realimentacion.py`.
+
 **AGOTADO EL AUDIO, EL STREAM SIGUE EMPUJANDO SILENCIO INDEFINIDAMENTE Y EL
 DISPOSITIVO NUNCA DESAPARECE DE `listar`.** Es una decision tomada, no una
 omision, y es lo que hace un cable enchufado a una guitarra que nadie toca. Es

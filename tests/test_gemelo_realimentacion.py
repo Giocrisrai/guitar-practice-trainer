@@ -460,6 +460,12 @@ def test_sin_la_suma_el_veredicto_es_IDENTICO_muestra_a_muestra(
     assert float(np.max(np.abs(capturada.muestras))) > 0.0
 
     # Y el cable entrego lo mismo, muestra a muestra, con el fondo sonando.
+    #
+    # Las dos mitades de la comparacion son DOS PASADAS DISTINTAS, y se afirma:
+    # un veredicto comparado consigo mismo sale igual pase lo que pase, y esa es
+    # la forma que tendria esta prueba de aprobar sin mirar nada. Lo que las hace
+    # dos es que `sin_suma` se vacio sin ningun acompanante vivo.
+    assert con_fondo_sonando is not sin_suma
     assert np.array_equal(con_fondo_sonando.entregado, sin_suma.entregado)
     assert con_fondo_sonando.veredicto == sin_suma.veredicto
 
@@ -482,3 +488,73 @@ def test_con_audio_ambiente_None_el_cable_entrega_lo_mismo_que_entregaba_antes(
     assert np.array_equal(
         sin_suma.entregado[: interpretacion.muestras.size], interpretacion.muestras
     )
+
+
+def test_la_suma_es_muestra_a_muestra_y_el_microfono_sigue_oyendo_despues():
+    """La suma de cerca, con un audio de juguete: exacta y sin recortar la cola.
+
+    No paga reloj y por eso no va marcada `slow`: ocho bloques de audio del
+    gemelo -85 ms- contra dieciseis de ambiente. Las de arriba miden lo que la
+    suma le hace al VEREDICTO, que es lo que la etapa teme; esta mide la suma.
+
+    Dos cosas, y la segunda es la que ninguna de las otras puede ver:
+
+    * **Es muestra a muestra.** La referencia es la suma hecha aqui con numpy
+      sobre los dos arrays que entraron, que es la definicion de lo que se pide
+      y no un segundo recorrido del codigo que se prueba.
+    * **El resultado dura lo que el mas largo de los dos.** El microfono sigue
+      oyendo el fondo despues de que el alumno haya tocado su ultima nota, y ese
+      tramo -donde no hay ni una nota de verdad con la que confundirse- es el
+      caso mas limpio del montaje. Un cable que recortara la suma al audio del
+      gemelo lo perderia entero y no se notaria en las pruebas de arriba, donde
+      el ambiente es el mas corto de los dos.
+    """
+    bloque = 512
+    gemelo = np.linspace(0.1, 0.9, 8 * bloque, dtype=np.float32)
+    ambiente = np.linspace(-0.4, 0.4, 16 * bloque, dtype=np.float32)
+    interpretacion = Interpretacion(
+        pieza=escala_de_ocho_notas(tempo=TEMPO),
+        muestras=gemelo,
+        eventos=(),
+        frecuencia_muestreo=48000,
+        duracion_s=gemelo.size / 48000,
+        silencio_de_cabecera_s=0.0,
+    )
+
+    entregado = _vaciar_el_cable(interpretacion, audio_ambiente=ambiente)
+
+    esperado = ambiente.copy()
+    esperado[: gemelo.size] += gemelo
+    assert entregado.size == ambiente.size
+    assert np.array_equal(entregado, esperado)
+
+
+def test_un_ambiente_que_no_es_mono_se_rechaza_al_abrir_el_dispositivo():
+    """Un ambiente de dos canales no se suma a medias: se rechaza y se dice.
+
+    El cable entrega UN canal -`CapturaAudio._callback` indexa `datos[:, 0]`- y
+    un array de dos dimensiones aqui se sumaria por difusion o reventaria dentro
+    del hilo del stream, que es donde las excepciones mueren sin que nadie las
+    vea y el audio simplemente deja de llegar. Quien le pase al cable el buffer
+    estereo de una tarjeta se entera al abrir, no por un gemelo mudo.
+
+    El mensaje trae el numero de dimensiones recibido, que es el dato que le
+    dice a quien lo lee que lo que paso fue eso y no otra cosa.
+    """
+    gemelo = np.linspace(0.1, 0.9, 512, dtype=np.float32)
+    interpretacion = Interpretacion(
+        pieza=escala_de_ocho_notas(tempo=TEMPO),
+        muestras=gemelo,
+        eventos=(),
+        frecuencia_muestreo=48000,
+        duracion_s=gemelo.size / 48000,
+        silencio_de_cabecera_s=0.0,
+    )
+
+    with pytest.raises(ValueError) as fallo:
+        dispositivo_simulado(
+            interpretacion, audio_ambiente=np.zeros((512, 2), dtype=np.float32)
+        )
+
+    assert "2 dimensiones" in str(fallo.value)
+    assert "mono" in str(fallo.value)
