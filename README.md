@@ -8,7 +8,9 @@ corriendo. Etapa 3b: importar canciones de Guitar Pro, MusicXML, MIDI y
 tablatura de texto. Etapa 3c: practicar la pieza con compases, bucles y tempo
 ajustable. Etapa 3d: un **gemelo digital** —un guitarrista sintético que genera
 audio de verdad y lo mete por donde entra el cable— para poder ver la sesión
-correr sin tener la guitarra enchufada.
+correr sin tener la guitarra enchufada. Etapa 3e: **la pieza suena de fondo
+mientras la tocas**, sintetizada de la partitura —y antes de encenderla hay que
+leer lo del micrófono, que está al principio de esa sección.
 
 ## Requisitos
 
@@ -534,8 +536,8 @@ canción, no un dato perdido.
   resumen del final cuenta sobre la pieza completa, así que en un tramo parcial se
   dice solo que el tramo terminó y lo que se tocó se lee en el informe por
   compases, que sí sabe qué notas son del tramo.
-- **La pieza no suena de fondo.** Solo se oye tu guitarra (y el click, si lo
-  pides): que la pieza suene mientras la sigues es la **etapa 3e**.
+- **La pieza sonando de fondo ya no es de esta etapa**: la trajo la 3e y tiene
+  su propia sección, más abajo. Léela antes de encenderla.
 - **Nada de esto se ha probado con la guitarra en las manos**: lo que hay son
   pruebas automáticas. Siguen pendientes de ensayo real si la cuenta atrás de un
   compás da tiempo a colocar la mano, si el click acentuado ayuda o estorba, si
@@ -548,6 +550,160 @@ bucle**, al revés que el *Riff Repeater* de Rocksmith: Carter y Grahn (2016,
 encontraron que gana la intercalada —y, de propina, que la mayoría de los
 participantes creía lo contrario—. **Son diez sujetos**: es una señal, no una
 ley. El bucle está porque es lo que se pidió; la alternancia no está construida.
+
+### La pieza sonando de fondo
+
+La etapa 3e hace que la pieza **suene mientras la tocas**: el carril deja de ser
+música muda. Pero lo primero de esta sección no es cómo se enciende.
+
+#### Con el micrófono del portátil, el programa se puntúa a sí mismo
+
+Si la entrada no es el cable sino el micrófono, **el sonido del fondo entra por
+la entrada**, el detector de ataques lo cobra como notas tuyas y **el informe se
+llena de aciertos y de fallos que no tocó nadie**. Lo peor no es que pase: es
+que **no se nota**, porque los números salen.
+
+Esta etapa dejó de suponerlo y lo midió de punta a punta (una escala de ocho
+notas, tempo 160, el gemelo con destreza *perfecto*, sumando el fondo al audio
+que entra por el cable falso):
+
+| Lo que entra por la entrada | Inventadas | Perdidas | Mal adjudicadas |
+|---|---|---|---|
+| solo tú (la referencia) | **0** | 0 | 0 — veredicto **LIMPIO** |
+| tú + el fondo al 0,05 / 0,10 / 0,15 | 0 | 0 | 0 — **todavía no ensucia** |
+| tú + el fondo al 0,20 | 2 | 2 | 1 |
+| tú + el fondo al 0,50 | **4** | **4** | **2** |
+| tú + el fondo al 1,00 | 3 | 3 | 3 |
+| tú + el fondo al 1,50 | 1 | 1 | 6 |
+
+Tres cosas que hay que leer de esa tabla:
+
+- **Los reportes siguen siendo ocho en todas las filas.** El fondo **no añade
+  notas** al informe: hace que **las ocho hablen de otras**. No vas a ver un
+  informe más largo de lo que tocaste, y por eso no salta a la vista.
+- **El desfase firmado MEJORA de +131,3 a +35,3 ms.** La cifra de calidad
+  **sube** mientras el informe se pudre. Eso es «los números salen y están mal»,
+  demostrado y no advertido.
+- **Por debajo de unos 0,20 de nivel no ensucia**; de ahí arriba, sí. El suelo
+  está medido, no estimado.
+
+(El mecanismo, por si interesa: el detector de tono toma el **primer** mínimo de
+la autocorrelación y no el global —`nucleo/analisis/yin.py`—, así que ante dos
+notas a la vez contesta el **subarmónico común** de las dos. Las alturas que se
+cuelan comparten clase de altura con algo que suena; ninguna es una nota
+escrita.)
+
+**Qué hace el programa con eso**, en este orden:
+
+1. **El fondo arranca apagado cuando la entrada no es el cable Rocksmith.**
+   Cargar una canción deja el interruptor puesto solo si la entrada es el cable;
+   con cualquier otra entrada se carga y se queda callado.
+2. **El aviso no se va mientras suene.** Puedes encenderlo igual —es tu equipo y
+   tu decisión, y el programa no te discute el uso de tus altavoces—, pero el
+   recordatorio se queda en pantalla todo el rato, no solo al pulsar. Un aviso
+   que desaparece en cuanto le desobedeces no es un aviso.
+3. **Con auriculares no pasa.** Es la salida, no la entrada: si el fondo no llega
+   al micrófono, el informe vuelve a medirte a ti.
+
+Y si cambias de entrada a mitad de sesión, el fondo distingue **quién lo
+encendió**: el que se encendió solo al cargar la canción sigue a la entrada y se
+calla; el que encendiste tú a mano persiste, con el aviso puesto. Volver a
+cargar otra pista lo devuelve al modo automático.
+
+#### Es una guía de estudio, no el disco
+
+**El fondo se sintetiza de la partitura.** Las canciones entran como `.gp5`,
+MusicXML, MIDI o tablatura: son partituras, no grabaciones, así que no hay
+ningún audio que reproducir —y pedirte el MP3 de cada canción le añadiría un
+problema de licencias a un programa libre. Lo que suena lo genera el mismo motor
+de cuerda pulsada del gemelo digital.
+
+Consecuencias que conviene saber antes y no descubrir:
+
+- **Suena a cuerda pulsada**, no a la banda del disco. Una canción que te sabes
+  de memoria va a sonar pobre comparada con tu recuerdo.
+- **No hay batería, y es una decisión declarada** (M5 del diseño): Karplus-Strong
+  sintetiza una cuerda, y una batería no es una cuerda. Hacerla es otro motor de
+  síntesis y otra etapa. **En una canción de rock eso se nota**, porque la
+  batería es justo lo que marca el pulso. Lo que hay para suplirlo es el click de
+  la etapa 3c.
+- **Las pistas que no pueden sonar se dicen, con su motivo**, debajo del control:
+  «1 pista se quedó fuera: Drums (Es una pista de percusión…)». Un fondo al que
+  le falta el bajo sin que nada lo diga parece roto. Una pista **vacía** no se
+  menciona: de ella no se pierde nada.
+- Lo que suena son **las otras** pistas del archivo, no la tuya: tú eres el
+  guitarrista que falta.
+
+#### En una canción de una sola pista, lo que suena eres tú
+
+Si el archivo no trae ninguna otra voz, se renderiza **tu propia parte** como
+guía, **a la mitad de volumen**, y el control se llama **Guía** y no
+**Acompañamiento**. El nombre importa: a volumen de acompañamiento no se
+distingue tu guitarra de la máquina y acabas creyendo que tocas limpio lo que
+está tocando ella.
+
+#### El resto de lo que hay que saber
+
+- **El volumen de partida es 0,6**, por debajo de lo que tocas tú a propósito: si
+  el fondo tapa la guitarra, dejas de oírte los fallos, que es para lo que estás
+  practicando. El interruptor y el deslizador son **controles vivos**: se mueven
+  en caliente, no reinician la pasada y **no cortan la vuelta del bucle**, porque
+  no viajan en el plan (`POST /api/piezas/acompanamiento` con `{encendido}`,
+  `{volumen}` o los dos; un volumen fuera de 0 a 1 es un 400 y no cambia nada).
+- **Mover el tempo vuelve a renderizar la pieza entera, y eso tarda décimas de
+  segundo.** No se resamplea, porque resamplear cambiaría la afinación. Medido
+  con este motor: 200 notas de medio segundo en **55 ms**, y las mismas 200 de
+  segundo y medio en **151 ms** —el coste escala con la **duración sonando**, no
+  con el número de notas, que es justo lo que importa cuando bajas el tempo y
+  cada nota dura el doble—. El render corre en un hilo aparte y **hasta que está,
+  el fondo no suena**; nunca suena a medias.
+- **El fondo no lleva reloj propio: lee el cabezal del carril en cada bloque.**
+  Por eso respeta la cuenta atrás (silencio, sin cortar el sonido), el bucle, los
+  saltos de compás, la pausa y el factor de tempo sin una sola línea nueva, y por
+  eso **no puede derivar**: no hay nada que derive. El precio es la latencia de un
+  bloque (~21 ms) y que si el cabezal salta, el sonido salta contigo.
+- **Hay un tope de memoria, dicho en voz alta**: doce minutos de audio a 48 kHz.
+  Por encima falla limpio en vez de morir sin decir por qué. Y el buffer y el
+  pico de renderizarlo no son el mismo número: el buffer que sale son **138 MB**
+  y el pico medido en el tope son unos **450 MB** (antes de normalizar en sitio
+  eran 708,7 MB, que es cinco veces lo que el comentario del código decía: una
+  red que no sujetaba donde decía sujetar).
+
+**Límites de esta etapa**, sin maquillar:
+
+- **Sin percusión** (arriba) y **sin audio grabado**: no hay forma de poner el
+  disco.
+- **Un volumen para todo el fondo**, no uno por pista.
+- **Sin efectos** —distorsión, reverb, amplificadores— y sin exportar el fondo a
+  un archivo.
+- **Las colas de las notas se miden en figuras, no en segundos**: al 50 % de
+  tempo duran el doble, mientras que una cuerda de verdad decae en tiempo
+  absoluto. Es deliberado (si no, practicar al 50 % no alargaría la pieza, la
+  alargaría «casi»), pero **nadie lo ha oído todavía**.
+- **Nada de esto se ha oído.** El sandbox de desarrollo no abre audio, así que lo
+  que hay son aserciones sobre muestras: que el bloque escrito es el que el mapa
+  dice, que no hay deriva en diez mil bloques, que el bucle vuelve al principio
+  del tramo, que la cuenta atrás es silencio exacto y que cambiar el tempo en
+  caliente no deja ni un corte ni una muestra del buffer viejo. **Cómo suena es
+  del usuario.**
+
+#### Lo que sigue siendo del usuario
+
+Lo que ninguna prueba puede juzgar y que solo se contesta con el cable puesto:
+
+- **Si el fondo sintético ayuda o estorba.** Es la pregunta que decide si esta
+  etapa valió la pena, y no hay forma de contestarla desde aquí.
+- Si **0,6** es el volumen correcto de partida, y si la guía de una sola pista
+  debería sonar más baja todavía.
+- Si **la latencia de un bloque** (~21 ms) se nota al tocar.
+- Si **falta la batería** tanto como parece.
+- Si **las colas de las notas** suenan bien o raro, sobre todo a tempo lento, por
+  lo que se dice arriba.
+- Y las que seguían abiertas de antes: si la ventana de aceptación escalada se
+  siente justa al 50 %, si un compás de cuenta atrás da tiempo a colocar la mano,
+  si el click acentuado ayuda o estorba, si los pasos del 5 % son finos o bastos,
+  si «dos pasadas al 90 %» es la frontera correcta para subir, y si la digitación
+  que elige el programa sale cómoda.
 
 ## El gemelo digital: verse tocar sin tocar
 
@@ -593,6 +749,15 @@ Opciones:
   demostración no tiene ni acordes ni repetidas, así que ese camino solo está
   recorrido por las pruebas de unidad.
 - `--puerto`: el puerto del servidor (por omisión 8420).
+- `--con-acompanamiento`: hace sonar la pieza de fondo **capturándola**, sin
+  abrir altavoces, y añade al informe cuántas muestras escribió y con qué desfase
+  máximo contra el cabezal. Es la forma de correrlo donde no hay audio (y la
+  única que se puede ejecutar en el entorno de desarrollo).
+- `--altavoces`: hace sonar la pieza de fondo **por los altavoces de verdad**,
+  para oírla. **Las dos banderas juntas son un error** y se rechaza al armar la
+  pasada, antes de levantar el servidor (código de salida 2). Sin `--pieza` la
+  pieza de demostración tiene una sola pista, así que lo que suena es su propia
+  parte como guía («0 voces ajenas»).
 - `--salir-al-acabar`: terminar en cuanto la pasada acaba, que es la forma de
   usarlo desde un script. Sin esta bandera el proceso se queda en primer plano
   **con el servidor todavía contestando**, así que el navegador se puede abrir
@@ -639,6 +804,24 @@ hallazgos sí son del intérprete.
 diciendo algo falso. Lo decía: con `--bucle 1-6 --repeticiones 2` sobre la pieza
 de demostración afirmaba «el gemelo tocó las 48 notas de las 48 escritas» de una
 pasada que tocó 24 dos veces.
+
+### La cifra de desfase del fondo NO es sincronía audible
+
+Con `--con-acompanamiento` el informe imprime una línea como «desfase −45,3 ms el
+peor contra el cabezal». **Esa cifra no mide si el fondo suena a tiempo: mide
+consistencia interna**, y la salvedad va escrita ahí mismo, en la línea donde se
+lee el número, y no escondida en un comentario del código. El motivo es que las
+dos patas de la resta salen **del mismo cabezal**: el acompañante construye cada
+bloque preguntándoselo, y la traza lee ese mismo cabezal por HTTP. Un error común
+a las dos es **invisible por construcción**, y encima la cifra incluye los **8-30
+ms** de retraso de esa lectura HTTP. La robustez de la medida y su ceguera son la
+misma propiedad. Para saber si el fondo va a tiempo hace falta un oído, y eso es
+hardware.
+
+Lo que sí sabe hacer la medida: si un bloque cae fuera de la ventana de búsqueda
+(±450 ms) se cuenta como **saturado** y se dice en una línea ATENCIÓN, en vez de
+publicar un número pequeño y falso. Antes no: un desfase real de +600 ms se
+publicaba como +498,8 ms sin que nada chirriara.
 
 ### Los milisegundos de esta etapa son más benignos que el programa real
 
@@ -719,6 +902,18 @@ uv run pytest             # núcleo y servidor
 cd interfaz && pnpm test  # interfaz
 ```
 
+**Si `uv` no puede escribir en su caché**, la suite ni siquiera arranca: falla
+con «Could not acquire lock … `/Users/…/.cache/uv`» antes de recoger una sola
+prueba. Pasa en entornos con el disco restringido (el sandbox de desarrollo, por
+ejemplo). La salida es darle una caché escribible:
+
+```bash
+export UV_CACHE_DIR="$TMPDIR/uv-cache"
+uv run pytest -q
+```
+
+Lo mismo vale para cualquier otra orden que empiece por `uv run`.
+
 Las pruebas de `tests/test_audio_real.py` y `tests/test_ataques_reales.py` usan
 las mismas grabaciones reales de `tests/audio/`. En un checkout nuevo esas
 grabaciones todavía no existen, así que esas pruebas aparecen como saltadas
@@ -736,21 +931,28 @@ grabaciones todavía no existen, así que esas pruebas aparecen como saltadas
 - `canciones/` — tu biblioteca. **No está en git**: son archivos de terceros. La
   crea el servidor al guardar la primera canción.
 - `interfaz/` — React + Vite.
+- `nucleo/acompanamiento.py` y `nucleo/acompanante.py` — la pieza de fondo: el
+  render determinista (función pura, sin hilos ni audio) y el hilo que lo hace
+  sonar leyendo el cabezal del carril. Las voces salen de
+  `nucleo/piezas/voces_de_fondo.py`, que lee los cuatro formatos **sin digitar
+  nada**, porque para sonar no hacen falta ni cuerda ni traste.
 - `nucleo/gemelo/` — el gemelo digital: la cuerda sintética, el intérprete, el
-  cable falso y el veredicto. Python puro, como el resto del núcleo.
+  cable falso, el capturador de salida (`salida.py`, el hermano simétrico del
+  cable falso) y el veredicto. Python puro, como el resto del núcleo.
 - `herramientas/` — utilidades de línea de comandos, incluido el escaparate del
   gemelo (`herramientas/gemelo.py`).
 - `docs/superpowers/` — especificación y plan.
 
 ## Estado
 
-Etapas 1, 2a, 3a, 3b, 3c y 3d completas, con la salvedad de que las cinco
+Etapas 1, 2a, 3a, 3b, 3c, 3d y 3e completas, con la salvedad de que las cinco
 comprobaciones de la 3b que necesitan la guitarra y archivos reales siguen
-pendientes (están listadas en **Canciones**), y que **nada se ha probado con el
-cable todavía**: el gemelo digital de la 3d deja ver la sesión correr, pero no
-sustituye esa prueba (ver **El gemelo digital**). Las siguientes, según el
-diseño:
+pendientes (están listadas en **Canciones**), de que **nada se ha probado con el
+cable todavía** —el gemelo digital de la 3d deja ver la sesión correr, pero no
+sustituye esa prueba (ver **El gemelo digital**)— y de que **el fondo de la 3e
+no lo ha oído nadie**: el entorno de desarrollo no abre audio, así que lo que
+queda del usuario está listado en **La pieza sonando de fondo**. Las siguientes,
+según el diseño:
 
 2b. Ejercicios de acordes
-3e. La pieza sonando de fondo mientras la sigues (la etapa siguiente a la 3d)
 4. Grabación de sesiones, medición de progreso, entrenamiento de oído y efectos
