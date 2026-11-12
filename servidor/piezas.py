@@ -1102,8 +1102,14 @@ class SesionCarril:
             # generacion es lo que hace que la instantanea siguiente mande
             # renderizar sin tener que comparar dos archivos nota a nota.
             self._fondo = fondo
+            # **La generacion es lo UNICO que invalida el render**, y por eso
+            # aqui no se toca `_clave_del_render`: con dos senales para la misma
+            # decision -subir el contador y ademas borrar la clave- la segunda
+            # tapa a la primera, y un dia que la primera se rompa no se entera
+            # nadie. El buffer si se tira, que es otra cosa: la clave dice
+            # «hay que volver a sintetizar» y `_renderizada` es «lo que suena
+            # mientras tanto», que no puede ser la pista anterior.
             self._generacion_del_fondo += 1
-            self._clave_del_render = None
             self._renderizada = None
             self._volumen_del_fondo = volumen
             # Encendido AUTOMATICO: suena mientras la entrada sea el cable, y
