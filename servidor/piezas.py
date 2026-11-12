@@ -303,12 +303,17 @@ def voz_de_tu_parte(pieza: Pieza) -> VozDeFondo:
     )
 
 
-def _volumen_valido(volumen: float) -> float:
+def volumen_valido(volumen: float) -> float:
     """El volumen del fondo, comprobado. `ValueError` sale como 400.
 
     Se rechaza en vez de recortarse porque quien lo manda es un deslizador de la
     pantalla: un valor fuera de rango es un defecto de quien llama, y recortarlo
     en silencio lo deja vivo.
+
+    Publica y no privada porque el endpoint la llama ANTES de tocar el carril:
+    un cuerpo con el interruptor y el volumen a la vez no puede aplicar lo
+    primero y reventar en lo segundo. El rango sigue estando escrito UNA vez, y
+    es aqui.
     """
     volumen = float(volumen)
     if not 0.0 <= volumen <= 1.0:
@@ -1092,7 +1097,7 @@ class SesionCarril:
         Un volumen fuera de [0, 1] es `ValueError`, que sale como 400 igual que
         un plan imposible.
         """
-        volumen = _volumen_valido(volumen)
+        volumen = volumen_valido(volumen)
         with self._candado:
             if fondo is None:
                 self._parar_acompanamiento()
@@ -1162,7 +1167,7 @@ class SesionCarril:
                 # siguiente volvera a decir de quien es.
                 self._fondo_encendido_a_mano = bool(encendido)
             if volumen is not None:
-                self._volumen_del_fondo = _volumen_valido(volumen)
+                self._volumen_del_fondo = volumen_valido(volumen)
                 if self._acompanante is not None:
                     self._acompanante.ganancia(self._ganancia_del_fondo())
         return self.estado()

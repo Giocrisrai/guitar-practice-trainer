@@ -41,7 +41,7 @@ from servidor.canciones import (
 )
 from servidor.ejercicios import SesionPractica
 from servidor.modulos import listar_modulos
-from servidor.piezas import SesionCarril, _volumen_valido
+from servidor.piezas import SesionCarril, volumen_valido
 from servidor.sesion import Sesion
 
 _registro = logging.getLogger(__name__)
@@ -910,7 +910,7 @@ def crear_app(
         """`valor` como volumen, o `ValueError` nombrando la opcion y el valor.
 
         Solo el TIPO. Que el numero este en [0, 1] lo decide
-        `piezas._volumen_valido`, que es el unico sitio donde vive ese rango:
+        `piezas.volumen_valido`, que es el unico sitio donde vive ese rango:
         repetirlo aqui serian dos rangos que un dia dejarian de ser el mismo.
         """
         if isinstance(valor, bool) or not isinstance(valor, (int, float)):
@@ -929,7 +929,7 @@ def crear_app(
         decenas de vueltas partidas por la mitad.
 
         **Los dos valores se comprueban ANTES de tocar nada**, y por eso el
-        rango pasa por `_volumen_valido` aqui y no solo dentro del carril: con el
+        rango pasa por `volumen_valido` aqui y no solo dentro del carril: con el
         cuerpo `{"encendido": false, "volumen": 2.5}`, dejar que el carril
         aplique lo primero y reviente en lo segundo apaga el fondo, contesta 400
         y nadie se entera de que algo cambio. Un pedido mal hecho no deja a medias
@@ -940,7 +940,7 @@ def crear_app(
                 _encendido_pedido(datos["encendido"]) if "encendido" in datos else None
             )
             volumen = (
-                _volumen_valido(_volumen_pedido(datos["volumen"]))
+                volumen_valido(_volumen_pedido(datos["volumen"]))
                 if "volumen" in datos
                 else None
             )
