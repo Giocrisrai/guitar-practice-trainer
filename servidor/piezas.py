@@ -1226,6 +1226,15 @@ class SesionCarril:
             # que no hay archivo.
             "acompanamiento_voces": len(fondo.voces) if fondo is not None else 0,
             "acompanamiento_excluidas": fondo.excluidas if fondo is not None else (),
+            # El volumen PEDIDO, no `_ganancia_del_fondo()`: la ganancia lleva
+            # dentro la mitad de `GANANCIA_DE_TU_PARTE`, y publicarla moveria el
+            # deslizador solo al cargar una guia, enseñando un numero que el
+            # usuario no puso. Que la guia suena mas bajita ya se dice con
+            # `acompanamiento_es_tu_parte`.
+            #
+            # Se publica aunque no haya fondo, y vale lo mismo: `_volumen_del_fondo`
+            # sobrevive a quedarse sin archivo y es lo que el siguiente usara.
+            "acompanamiento_volumen": self._volumen_del_fondo,
         }
 
     def _entrada_es_el_cable(self) -> bool:

@@ -290,6 +290,21 @@ class EstadoEstudio:
     # mira la cuenta de arriba necesita saber si faltan dos voces o si nunca
     # las hubo.
     acompanamiento_excluidas: tuple[tuple[str, str], ...] = ()
+    # El volumen PEDIDO para el fondo, de 0 a 1. Es lo que el usuario puso, no la
+    # ganancia que acaba aplicandose: con la propia parte como guia esa ganancia
+    # va a la mitad (`GANANCIA_DE_TU_PARTE`), y un deslizador que se moviera solo
+    # a la mitad al cargar una guia estaria mintiendo sobre lo que el usuario
+    # pidio. Que la guia suena mas bajita ya se dice aparte.
+    #
+    # Viaja publicado porque la pantalla LO NECESITA para no mentir: el
+    # deslizador no tiene otro sitio del que sacarlo, y `cargar_acompanamiento`
+    # repone este valor por su cuenta cada vez que entra un fondo. Un deslizador
+    # que enseña un numero distinto del que vas a oir es peor que no tenerlo.
+    #
+    # El cero de por omision es «no hay fondo, asi que no hay volumen»: quien
+    # tiene el mezclador (`SesionCarril._campos_del_fondo`) lo sobreescribe
+    # siempre, igual que a los otros cuatro campos.
+    acompanamiento_volumen: float = 0.0
 
     def a_dict(self) -> dict:
         return {
@@ -314,6 +329,7 @@ class EstadoEstudio:
             "acompanamiento_posible": self.acompanamiento_posible,
             "acompanamiento_es_tu_parte": self.acompanamiento_es_tu_parte,
             "acompanamiento_voces": self.acompanamiento_voces,
+            "acompanamiento_volumen": self.acompanamiento_volumen,
             # Pares por dentro -son dos cosas y siempre las dos- y objetos con
             # nombre por fuera: quien lee esto en la pantalla escribe
             # `excluida.motivo` y no `excluida[1]`.

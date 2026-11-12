@@ -308,6 +308,20 @@ def test_el_endpoint_mueve_el_interruptor_y_el_volumen(cliente, carril):
     assert carril._volumen_del_fondo == 0.25
 
 
+def test_el_volumen_viaja_en_el_estado_por_el_camino_real(cliente):
+    """Lo que el deslizador de la pantalla relee, por HTTP y por el WebSocket.
+
+    El 0,25 no es el de fabrica a proposito: con el 0,6 un campo clavado en la
+    constante diria lo mismo que el que sigue al volumen de verdad.
+    """
+    cliente.post("/api/piezas/iniciar", json=EJERCICIO)
+    estado = cliente.post("/api/piezas/acompanamiento", json={"volumen": 0.25}).json()
+    assert estado["acompanamiento_volumen"] == 0.25
+    # Y en la instantanea siguiente, que es la que llega treinta veces por
+    # segundo: la respuesta del POST no es el unico sitio donde tiene que estar.
+    assert cliente.get("/api/piezas/estado").json()["acompanamiento_volumen"] == 0.25
+
+
 def test_mandar_solo_el_interruptor_no_mueve_el_volumen(cliente, carril):
     """Lo ausente se queda como estaba. Es la doctrina de `_campos_del_plan`.
 

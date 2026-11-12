@@ -93,7 +93,7 @@ const ESTUDIO_BASE = {
   factor_sugerido: null, esperando_notas: true,
   acompanamiento_sonando: false, acompanamiento_posible: false,
   acompanamiento_es_tu_parte: false, acompanamiento_voces: 0,
-  acompanamiento_excluidas: [],
+  acompanamiento_excluidas: [], acompanamiento_volumen: 0.6,
 };
 
 /** El carril apagado: las mismas claves que con pieza (`_CARRIL_APAGADO`). */

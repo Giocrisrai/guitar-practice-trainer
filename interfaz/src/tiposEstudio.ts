@@ -77,6 +77,12 @@ export interface EstadoEstudio extends EstadoCarril {
    * escrito para el usuario. Se dice porque un fondo al que le falta el bajo sin
    * que nada lo diga parece roto. */
   acompanamiento_excluidas: PistaExcluida[];
+  /** El volumen PEDIDO para el fondo, de 0 a 1 —no la ganancia que se aplica,
+   * que con la guía va a la mitad—. Viaja publicado porque el deslizador no
+   * tiene otro sitio del que sacarlo: `cargar_acompanamiento` lo repone por su
+   * cuenta al entrar otro fondo, y un deslizador que enseñe un número distinto
+   * del que vas a oír es peor que no tener deslizador. */
+  acompanamiento_volumen: number;
   /** Tempo que el servidor propone para la pasada siguiente, o `null` si no hay
    * nada que sugerir (casi siempre). Va en LAS DOS DIRECCIONES: dos pasadas
    * seguidas por encima del 90 % de notas limpias lo suben un paso, y una sola

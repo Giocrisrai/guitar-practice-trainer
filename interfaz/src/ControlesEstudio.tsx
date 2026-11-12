@@ -14,17 +14,6 @@ const TEMPO_MINIMO_PORCIENTO = 40;
 const TEMPO_MAXIMO_PORCIENTO = 100;
 const PASO_TEMPO_PORCIENTO = 5;
 
-/**
- * El volumen con el que el servidor carga el fondo, en porcentaje
- * (`VOLUMEN_DEL_FONDO_POR_OMISION` en servidor/piezas.py).
- *
- * Es el PUNTO DE PARTIDA del deslizador y nada más: el volumen vivo NO viaja en
- * el estado publicado —los cinco campos del fondo que llegan son otros—, así que
- * aquí no hay nada que seguir y lo que se ve después de la primera orden es lo
- * que el usuario puso. Si algún día el servidor lo publica, este deslizador debe
- * pasar a leerlo como el de tempo lee `factor_tempo`, y esta constante sobra.
- */
-const VOLUMEN_DEL_FONDO_POR_OMISION_PORCIENTO = 60;
 const PASO_VOLUMEN_PORCIENTO = 5;
 
 function porciento(factor: number): number {
@@ -135,17 +124,30 @@ export function ControlesEstudio({
   /** El gesto en curso del deslizador del fondo; `null` si no se arrastra nada. */
   const [arrastreVolumen, setArrastreVolumen] = useState<number | null>(null);
   /**
-   * El volumen del fondo que se VE, en porcentaje.
+   * El volumen YA MANDADO que se sigue enseñando hasta que el servidor conteste,
+   * con el que el servidor decía al mandarlo.
    *
-   * Es local porque el servidor no publica el volumen vivo (ver
-   * `VOLUMEN_DEL_FONDO_POR_OMISION_PORCIENTO`), y se adopta EN EL ACTO al soltar,
-   * antes de saber si la orden llegó. Es la lección del deslizador de tempo de la
-   * 3d: esperar a la respuesta para adoptarlo devuelve el deslizador al valor
-   * anterior durante el viaje de la petición, y ese retroceso a la vista es el
-   * parpadeo. Solo retrocede si el servidor RECHAZA, que es cuando el valor
-   * anterior volvió a ser la verdad.
+   * Es la misma pieza que `mandado` para el tempo y existe por el mismo defecto:
+   * sin ella, al soltar se vuelve por un instante al `acompanamiento_volumen`
+   * viejo -el valor retrocede a la vista- hasta que llega el estado nuevo. Y
+   * caduca en cuanto el estado se mueve a CUALQUIER otra cosa, que es la señal
+   * de que el servidor ya contestó: `cargar_acompanamiento` repone el volumen
+   * por su cuenta al entrar otro fondo, así que el servidor también lo mueve sin
+   * que nadie toque el deslizador.
    */
-  const [volumenFondo, setVolumenFondo] = useState(VOLUMEN_DEL_FONDO_POR_OMISION_PORCIENTO);
+  const [volumenMandado, setVolumenMandado] = useState<{
+    porciento: number;
+    volumenPrevio: number;
+  } | null>(null);
+
+  // Mismo ajuste en el render que el del tempo, y por lo mismo: es estado
+  // derivado de una propiedad nueva, no una sincronizacion con nada de fuera.
+  if (
+    volumenMandado !== null &&
+    estado.acompanamiento_volumen !== volumenMandado.volumenPrevio
+  ) {
+    setVolumenMandado(null);
+  }
 
   /** Manda SOLO lo que cambia: el servidor conserva el resto del plan vigente. */
   const mandar = (cambios: Plan) => alCambiarPlan(cambios);
@@ -170,25 +172,29 @@ export function ControlesEstudio({
     });
   };
 
-  const volumenMostrado = arrastreVolumen ?? volumenFondo;
+  /** Lo que se VE: el gesto en curso, si no lo ya mandado, si no el servidor. */
+  const volumenMostrado =
+    arrastreVolumen ??
+    (volumenMandado !== null &&
+    estado.acompanamiento_volumen === volumenMandado.volumenPrevio
+      ? volumenMandado.porciento
+      : porciento(estado.acompanamiento_volumen));
 
   const descartarVolumen = () => setArrastreVolumen(null);
 
   const soltarVolumen = () => {
     if (arrastreVolumen === null) return;
     const pedido = arrastreVolumen;
-    const anterior = volumenFondo;
     setArrastreVolumen(null);
-    // SE ADOPTA YA, no al contestar: mover esta línea dentro del `then` es
-    // exactamente el parpadeo que la 3d arregló en el de tempo.
-    setVolumenFondo(pedido);
+    setVolumenMandado({ porciento: pedido, volumenPrevio: estado.acompanamiento_volumen });
     // El volumen viaja de 0 a 1, como lo pide el endpoint; el deslizador habla
     // en porcentaje porque es lo que el usuario lee.
-    void Promise.resolve(alAjustarAcompanamiento({ volumen: pedido / 100 })).then(
-      (aceptado) => {
-        if (aceptado === false) setVolumenFondo(anterior);
-      },
-    );
+    const respuesta = alAjustarAcompanamiento({ volumen: pedido / 100 });
+    // Un rechazo no va a mover el estado nunca: lo mandado se tira y el
+    // deslizador vuelve al vigente, que es la verdad.
+    void Promise.resolve(respuesta).then((aceptado) => {
+      if (aceptado === false) setVolumenMandado(null);
+    });
   };
 
   /** Pedir un salto: si el compás cae fuera del tramo, primero se mueve el rango. */

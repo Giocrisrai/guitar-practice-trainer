@@ -1137,6 +1137,82 @@ def test_cargar_sin_decir_volumen_deja_el_fondo_POR_DEBAJO_de_tu_guitarra():
     cerrar(sesion_carril, sesion)
 
 
+def test_el_volumen_pedido_viaja_en_el_estado():
+    """El deslizador de la pantalla no tiene otro sitio del que sacarlo.
+
+    Mientras no se publicaba, la pantalla arrancaba de una constante local que
+    espejaba la del servidor y **no seguia a nadie**: en cuanto algo movia el
+    volumen por detras, el deslizador enseñaba un numero distinto del que ibas a
+    oir, que es peor que no tener deslizador.
+
+    Se piden DOS volumenes distintos y ninguno es el de fabrica: con uno solo, o
+    con el 0,6, un campo clavado en la constante pasaria la prueba.
+    """
+    reloj = RelojFalso()
+    sesion_carril, sesion, _, _ = carril(reloj)
+    sesion_carril.iniciar(pieza_de([52, 57]), SIN_CUENTA)
+    sesion_carril.cargar_acompanamiento(fondo_de(), volumen=0.25)
+    assert sesion_carril.estado()["acompanamiento_volumen"] == 0.25
+
+    estado = sesion_carril.acompanamiento(volumen=0.9)
+    assert estado["acompanamiento_volumen"] == 0.9, (
+        "mover el volumen tiene que verse en el estado que la pantalla relee"
+    )
+    assert sesion_carril.estado()["acompanamiento_volumen"] == 0.9
+    cerrar(sesion_carril, sesion)
+
+
+def test_cargar_un_fondo_repone_el_volumen_y_el_estado_lo_dice():
+    """El caso por el que el campo existe: el volumen se mueve SIN que nadie lo toque.
+
+    `cargar_acompanamiento` repone el volumen al de fabrica cada vez que entra un
+    fondo. El deslizador de la pantalla tiene que enterarse, y solo puede
+    enterarse si el estado lo cuenta.
+
+    **Arranca en 0,2 a proposito**, que no es el de fabrica: desde el 0,6 el
+    campo que no se entera de nada y el que se entera dicen lo mismo, y la
+    prueba no distinguiria nada. Es el estado de partida, no la asercion.
+    """
+    reloj = RelojFalso()
+    sesion_carril, sesion, _, _ = carril(reloj)
+    sesion_carril.iniciar(pieza_de([52, 57]), SIN_CUENTA)
+    sesion_carril.cargar_acompanamiento(fondo_de(), volumen=0.2)
+    assert sesion_carril.estado()["acompanamiento_volumen"] == 0.2
+
+    # Otra pista de fondo, sin decir volumen: el carril lo repone solo.
+    sesion_carril.cargar_acompanamiento(fondo_de(midis=(45, 50)))
+
+    assert sesion_carril.estado()["acompanamiento_volumen"] == 0.6, (
+        "cargar repone el volumen y la pantalla tiene que poder seguirlo"
+    )
+    cerrar(sesion_carril, sesion)
+
+
+def test_lo_que_se_publica_es_el_volumen_PEDIDO_y_no_la_ganancia():
+    """Con la propia parte como guia la ganancia va a la mitad; el deslizador no.
+
+    `_ganancia_del_fondo` multiplica por `GANANCIA_DE_TU_PARTE`, y publicar eso
+    movería el deslizador solo al cargar una guia: el usuario veria un 0,5 que no
+    puso nunca. Que la guia suena mas bajita se dice con
+    `acompanamiento_es_tu_parte`, que es otro campo y otra frase.
+
+    El fondo es SIN voces (`midis=()`) a proposito: es el unico estado en el que
+    la ganancia y el volumen pedido se distinguen. Con voces ajenas valen lo
+    mismo y la prueba no diria nada.
+    """
+    reloj = RelojFalso()
+    sesion_carril, sesion, _, _ = carril(reloj)
+    sesion_carril.iniciar(pieza_de([52, 57]), SIN_CUENTA)
+    sesion_carril.cargar_acompanamiento(fondo_de(midis=()), volumen=0.8)
+
+    estado = sesion_carril.estado()
+    assert estado["acompanamiento_es_tu_parte"] is True
+    assert estado["acompanamiento_volumen"] == 0.8, "es lo PEDIDO, no lo aplicado"
+    # Y la ganancia si lleva la mitad dentro: las dos cosas son verdad a la vez.
+    assert sesion_carril._ganancia_del_fondo() == 0.8 * GANANCIA_DE_TU_PARTE
+    cerrar(sesion_carril, sesion)
+
+
 def test_el_volumen_no_toca_el_plan():
     """Veinte cambios de volumen NO cierran ni una repeticion.
 

@@ -22,7 +22,7 @@ const ESTADO: EstadoEstudio = {
   factor_sugerido: null, esperando_notas: true,
   acompanamiento_sonando: false, acompanamiento_posible: false,
   acompanamiento_es_tu_parte: false, acompanamiento_voces: 0,
-  acompanamiento_excluidas: [],
+  acompanamiento_excluidas: [], acompanamiento_volumen: 0.6,
 };
 
 const SECCIONES: SeccionEnCompases[] = [
@@ -753,16 +753,67 @@ describe("el acompañamiento", () => {
     }
     fireEvent.pointerUp(volumen());
     vistos.push(Number(volumen().value));
-    // Llega otro paquete del servidor: no trae el volumen (no lo publica), así
-    // que no puede mover el deslizador ni hacia delante ni hacia atrás.
+    // Llega otro paquete del servidor con el volumen TODAVÍA en el de antes: la
+    // orden está en vuelo y el estado aún no se movió. Aquí es donde el valor
+    // retrocedería si el deslizador leyera el estado a secas.
     repintar(rerender, CON_CABLE, manejadores);
     vistos.push(Number(volumen().value));
+    // Y cuando por fin llega el estado nuevo, el deslizador ya estaba en su sitio.
+    repintar(rerender, { ...CON_CABLE, acompanamiento_volumen: 0.85 }, manejadores);
+    vistos.push(Number(volumen().value));
 
-    expect(vistos).toEqual([60, 65, 75, 85, 85, 85]);
+    expect(vistos).toEqual([60, 65, 75, 85, 85, 85, 85]);
     for (let i = 1; i < vistos.length; i += 1) {
       expect(vistos[i]).toBeGreaterThanOrEqual(vistos[i - 1]);
     }
     expect(alAjustarAcompanamiento.mock.calls).toEqual([[{ volumen: 0.85 }]]);
+  });
+
+  it("el deslizador del volumen marca lo que dice el estado y lo sigue", () => {
+    // El caso por el que el servidor publica el volumen:
+    // `cargar_acompanamiento` lo repone al de fábrica al entrar otro fondo, y
+    // nadie tocó el deslizador. Arranca en 0,2 —que no es el de fábrica— porque
+    // desde el 0,6 un deslizador que no siga a nadie diría lo mismo.
+    const { rerender, ...manejadores } = pintar({
+      ...CON_CABLE,
+      acompanamiento_volumen: 0.2,
+    });
+    expect(volumen().value).toBe("20");
+    repintar(rerender, { ...CON_CABLE, acompanamiento_volumen: 0.6 }, manejadores);
+    expect(volumen().value).toBe("60");
+  });
+
+  it("después de soltar, el volumen vuelve a seguir al estado en cuanto se mueve", () => {
+    const { rerender, ...manejadores } = pintar({
+      ...CON_CABLE,
+      acompanamiento_volumen: 0.2,
+    });
+    fireEvent.change(volumen(), { target: { value: "40" } });
+    fireEvent.pointerUp(volumen());
+    expect(volumen().value).toBe("40");
+    repintar(rerender, { ...CON_CABLE, acompanamiento_volumen: 0.4 }, manejadores);
+    expect(volumen().value).toBe("40");
+    // Y a partir de ahí manda el estado, aunque lo mueva otro (cargar un fondo).
+    repintar(rerender, { ...CON_CABLE, acompanamiento_volumen: 0.6 }, manejadores);
+    expect(volumen().value).toBe("60");
+  });
+
+  it("el volumen mandado no resucita si el servidor vuelve al de antes", () => {
+    // Otro mutante que sobrevivió: lo mandado seguía vivo para siempre, y
+    // bastaba con que el estado volviera a pasar por el valor de aquel momento
+    // para que el número del gesto reapareciera. No se ve desde el estado en el
+    // que la prueba de arriba acaba —el servidor allí no vuelve atrás—, y por
+    // eso hace falta un recorrido que SÍ vuelva: 0,2 → 0,75 → 0,2.
+    const { rerender, ...manejadores } = pintar({
+      ...CON_CABLE,
+      acompanamiento_volumen: 0.2,
+    });
+    fireEvent.change(volumen(), { target: { value: "40" } });
+    fireEvent.pointerUp(volumen());
+    repintar(rerender, { ...CON_CABLE, acompanamiento_volumen: 0.75 }, manejadores);
+    expect(volumen().value).toBe("75");
+    repintar(rerender, { ...CON_CABLE, acompanamiento_volumen: 0.2 }, manejadores);
+    expect(volumen().value).toBe("20");
   });
 
   it("mientras se arrastra el volumen no se manda nada, y se ve lo que se lleva", () => {
@@ -791,6 +842,8 @@ describe("el acompañamiento", () => {
     fireEvent.pointerUp(volumen());
     expect(volumen().value).toBe("85");
     expect(alAjustarAcompanamiento).toHaveBeenCalledTimes(1);
+    // Un rechazo no va a mover el estado nunca: lo mandado se tira y vuelve a
+    // verse el vigente, que es la verdad.
     await vi.waitFor(() => expect(volumen().value).toBe("60"));
   });
 });
