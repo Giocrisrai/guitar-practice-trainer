@@ -80,7 +80,13 @@ def cliente(tmp_path):
         listar=lambda: [CABLE],
     )
     sesion.iniciar()
-    carril = SesionCarril(sesion)
+    # La salida del fondo, capturada: desde que `/api/piezas/iniciar` carga el
+    # acompanamiento solo, un carril sin ella intenta abrir el dispositivo de
+    # audio DE VERDAD en la primera instantanea de cada pasada. Esta prueba no
+    # va de audio y no tiene por que tocarlo.
+    carril = SesionCarril(
+        sesion, salida_fondo=SalidaCapturada(fallar_al_abrir=True).salida
+    )
     app = crear_app(sesion, carril=carril)
     app.state.ruta_config = tmp_path / "config.json"
     with TestClient(app, base_url=BASE_LOCAL) as cliente:
@@ -622,7 +628,16 @@ def carril_a_mano(salida=None):
     reloj = RelojFalso()
     sesion = SesionAudioFalsa()
     salida = salida or SalidaCapturada(fallar_al_abrir=True).salida
-    return SesionCarril(sesion, reloj=reloj, salida=salida), sesion, reloj
+    return (
+        SesionCarril(
+            sesion,
+            reloj=reloj,
+            salida=salida,
+            salida_fondo=SalidaCapturada(fallar_al_abrir=True).salida,
+        ),
+        sesion,
+        reloj,
+    )
 
 
 def mirar_hasta(carril, reloj, condicion, pasos=400, paso=1 / 30.0):
@@ -1206,7 +1221,11 @@ def cliente_con_salida(tmp_path):
             listar=lambda: [CABLE],
         )
         sesion.iniciar()
-        carril = SesionCarril(sesion, salida=salida)
+        carril = SesionCarril(
+            sesion,
+            salida=salida,
+            salida_fondo=SalidaCapturada(fallar_al_abrir=True).salida,
+        )
         app = crear_app(sesion, carril=carril)
         app.state.ruta_config = tmp_path / "config.json"
         abiertos.append((sesion, carril))

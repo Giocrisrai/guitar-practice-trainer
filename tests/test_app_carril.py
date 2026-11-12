@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from nucleo.captura import NOMBRE_ROCKSMITH, DispositivoAudio
+from nucleo.gemelo.salida import SalidaCapturada
 from servidor.app import crear_app
 from servidor.configuracion import Configuracion
 from servidor.piezas import SesionCarril
@@ -56,7 +57,13 @@ def cliente(tmp_path):
         listar=lambda: [CABLE],
     )
     sesion.iniciar()
-    carril = SesionCarril(sesion)
+    # La salida del fondo, capturada: desde que `/api/piezas/iniciar` carga el
+    # acompanamiento solo, un carril sin ella intenta abrir el dispositivo de
+    # audio DE VERDAD en la primera instantanea de cada pasada. Esta prueba no
+    # va de audio y no tiene por que tocarlo.
+    carril = SesionCarril(
+        sesion, salida_fondo=SalidaCapturada(fallar_al_abrir=True).salida
+    )
     app = crear_app(sesion, carril=carril)
     app.state.ruta_config = tmp_path / "config.json"
     with TestClient(app, base_url=BASE_LOCAL) as cliente:

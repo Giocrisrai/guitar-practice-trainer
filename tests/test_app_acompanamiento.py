@@ -327,19 +327,21 @@ def test_mandar_solo_el_interruptor_no_mueve_el_volumen(cliente, carril):
 
 
 def test_mandar_solo_el_volumen_no_mueve_el_interruptor(cliente, carril):
-    """La otra mitad, y empieza con el fondo APAGADO a proposito.
+    """La otra mitad, y empieza con el fondo ENCENDIDO a proposito.
 
-    Con el fondo encendido -como lo deja cargarlo- un campo ausente convertido
-    en False y uno respetado dan el mismo True de partida: el defecto se ve
-    solo desde el estado contrario al de fabrica.
+    **Aqui empezo mal la primera version de esta prueba** y el mutante la paso:
+    arrancaba con el fondo apagado, y un campo ausente convertido en `False`
+    deja un `False` que ya estaba, o sea el mismo estado que respetarlo. El
+    defecto solo se ve desde el estado CONTRARIO al que el descuido produce, y
+    ese es encendido -que ademas es como cargarlo lo deja-.
     """
     cliente.post("/api/piezas/iniciar", json=EJERCICIO)
-    cliente.post("/api/piezas/acompanamiento", json={"encendido": False})
+    assert carril._fondo_encendido is True, "cargarlo lo deja encendido"
 
     respuesta = cliente.post("/api/piezas/acompanamiento", json={"volumen": 0.3})
 
     assert respuesta.status_code == 200
-    assert carril._fondo_encendido is False, "el interruptor que nadie toco no se mueve"
+    assert carril._fondo_encendido is True, "el interruptor que nadie toco no se mueve"
     assert carril._volumen_del_fondo == 0.3
 
 

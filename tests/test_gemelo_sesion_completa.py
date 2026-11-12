@@ -61,6 +61,7 @@ from nucleo.captura import CapturaAudio, buscar_rocksmith
 from nucleo.analisis.pipeline import INTERVALO_DE_ANALISIS_S
 from nucleo.ejercicios.pulsaciones import VENTANA_ATAQUE_COMO_ONSET_S
 from nucleo.gemelo.cadena import RegistroDeLaCadena, pasar_por_la_cadena
+from nucleo.gemelo.salida import SalidaCapturada
 from nucleo.gemelo.dispositivo import (
     RecolectorDeLaSesion,
     dispositivo_simulado,
@@ -216,7 +217,15 @@ def _correr_la_sesion_entera(pieza, interpretacion: Interpretacion) -> PasadaCom
     instantes: list[float] = []
     sesion.registrar_observador(lambda resultado, instante: instantes.append(instante))
     diagnostico = sesion.iniciar()
-    carril = SesionCarril(sesion)
+    # La salida del fondo, capturada. Hoy esta pasada no carga ningun
+    # acompanamiento -conduce el carril a mano, sin pasar por el endpoint- asi
+    # que no llega a abrir nada; se inyecta igual para que la garantia de «aqui
+    # no se abre audio» sea explicita y no dependa de que nadie cargue un fondo
+    # manana. Medido: el cableado del fondo cuesta 3,4 ms de CPU en los 1093
+    # muestreos de esta pasada, con cero aperturas de dispositivo.
+    carril = SesionCarril(
+        sesion, salida_fondo=SalidaCapturada(fallar_al_abrir=True).salida
+    )
     recolector = RecolectorDeLaSesion()
     try:
         assert capturas, "la sesion no abrio ninguna captura sobre el cable del gemelo"
