@@ -652,6 +652,17 @@ describe("el acompañamiento", () => {
     expect(aviso(container)).toBeNull();
   });
 
+  it("el interruptor también APAGA: parte de un fondo que suena", () => {
+    // Esta prueba nació de un mutante que sobrevivió: el interruptor mandaba
+    // `encendido: true` pase lo que pase, y la prueba de arriba -que parte del
+    // fondo apagado- lo daba por bueno, porque ahí el original manda `true`
+    // también. El defecto solo se ve desde el estado CONTRARIO, que es este.
+    const { alAjustarAcompanamiento } = pintar(CON_CABLE);
+    expect(interruptor().checked).toBe(true);
+    fireEvent.click(interruptor());
+    expect(alAjustarAcompanamiento.mock.calls).toEqual([[{ encendido: false }]]);
+  });
+
   it("encenderlo con el micrófono deja el recordatorio puesto", () => {
     // Arranca con el fondo YA SONANDO y la entrada todavía equivocada, que es el
     // estado exacto en el que un aviso condicionado a «y no suena» se callaría:
