@@ -247,17 +247,26 @@ def test_cada_bloque_sale_del_cabezal_y_no_de_un_contador():
         assert np.array_equal(fila, esperado), f"el bloque {indice} no es el del pulso 2"
 
 
-def test_un_cabezal_que_salta_hace_saltar_el_audio():
-    """El cabezal pasa del pulso 0 al 8 y el audio salta con el.
+def test_un_cabezal_que_vuelve_ATRAS_hace_volver_el_audio():
+    """El cabezal vuelve del pulso 8 al 0 y el audio vuelve con el.
 
-    Si el cabezal salta -un bucle, un salto de compas-, el audio salta: eso es
-    lo correcto. La referencia NO es `rodaja(8.0, bloque)`, que seria el mismo
-    camino de codigo que se prueba, sino el trozo de `renderizada.muestras` que
-    empieza en el indice calculado a mano desde tempo y frecuencia.
+    **Hacia atras a proposito, y es la mitad que importa.** Un bucle va hacia
+    atras: al dar la vuelta, el carril devuelve el cabezal al principio del
+    tramo, y lo mismo hace un salto a un compas anterior o el rearme de una
+    repeticion. Con el cabezal solo avanzando, «leer el cabezal cada bloque» y
+    «quedarse con el maximo entre el cabezal y el ultimo visto» escriben
+    exactamente lo mismo: un reloj de trinquete -la forma mas barata de colar un
+    reloj propio en un modulo que existe para no tener ninguno- pasaria sin que
+    nada se pusiera rojo, y el fondo no volveria NUNCA al principio del bucle.
+    Por eso la referencia de esta prueba es el retroceso.
+
+    La referencia NO es `rodaja(0.0, bloque)`, que seria el mismo camino de
+    codigo que se prueba, sino el trozo de `renderizada.muestras` que empieza en
+    el indice calculado a mano desde tempo y frecuencia.
     """
     renderizada = _pieza_con_notas()
     bloque = 512
-    cabezal = CabezalFalso(lambda numero: 0.0 if numero <= 3 else 8.0)
+    cabezal = CabezalFalso(lambda numero: 8.0 if numero <= 3 else 0.0)
     acompanante, captura = _arrancado(cabezal, renderizada, bloque)
     try:
         assert cabezal.esperar_llamadas(7) is True
@@ -269,14 +278,16 @@ def test_un_cabezal_que_salta_hace_saltar_el_audio():
 
     desde_cero = _muestra_del_pulso(0.0)
     desde_ocho = _muestra_del_pulso(8.0)
-    antes = renderizada.muestras[desde_cero : desde_cero + bloque]
-    despues = renderizada.muestras[desde_ocho : desde_ocho + bloque]
-    assert not np.array_equal(antes, despues), "los dos pulsos suenan igual: no prueba nada"
+    el_ocho = renderizada.muestras[desde_ocho : desde_ocho + bloque]
+    el_cero = renderizada.muestras[desde_cero : desde_cero + bloque]
+    assert not np.array_equal(el_ocho, el_cero), "los dos pulsos suenan igual: no prueba nada"
 
     for indice in range(3):
-        assert np.array_equal(filas[indice], antes), f"el bloque {indice} no es el del pulso 0"
+        assert np.array_equal(filas[indice], el_ocho), f"el bloque {indice} no es el del pulso 8"
     for indice in range(3, 6):
-        assert np.array_equal(filas[indice], despues), f"el bloque {indice} no salto al pulso 8"
+        assert np.array_equal(filas[indice], el_cero), (
+            f"el bloque {indice} no volvio al pulso 0: el audio no retrocede con el cabezal"
+        )
 
 
 def test_cabezal_None_escribe_silencio_y_el_hilo_sigue_vivo():
