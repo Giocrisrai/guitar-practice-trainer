@@ -488,20 +488,34 @@ def test_un_bloqueo_sin_cabezal_previo_escribe_silencio_y_no_lanza():
     assert np.all(filas[1:] == np.float32(0.5))
 
 
-def test_un_candado_ocupado_sin_fin_no_deja_el_mismo_bloque_en_bucle():
-    """Pasado el techo de repeticiones se escribe silencio, no un bucle cerrado.
+def _paso_de_rampa(valor: float, desde: float, hasta: float, bloque: int) -> float:
+    """El salto entre dos muestras seguidas de una rampa, A MANO.
+
+    El cambio entero repartido por las `bloque - 1` fronteras que hay dentro del
+    bloque, por el valor constante de la pieza. Nada de `np.linspace`, que es el
+    camino de codigo que se prueba.
+    """
+    return valor * (hasta - desde) / (bloque - 1)
+
+
+def test_un_candado_ocupado_sin_fin_se_va_desvaneciendo_y_no_deja_un_bucle():
+    """Pasado el techo la pieza se VA, no se corta: rampa y despues silencio.
 
     Repetir UN bloque de 21 ms es inaudible. Repetirlo sin techo no: un candado
     de sesion ocupado un segundo da ~47 copias seguidas del mismo fragmento, que
-    no se oye como musica sino como un zumbido periodico. Tras
-    `REPETICIONES_MAXIMAS` bloqueos consecutivos el acompañante deja de repetir y
-    escribe silencio, y el hilo sigue vivo esperando que el cabezal vuelva.
+    no se oye como musica sino como un zumbido periodico. Pero cortar a cero de
+    golpe seria incoherente con el resto del modulo, que gasta `_con_ganancia`
+    entera en no meter un escalon entre dos muestras seguidas: el corte es
+    exactamente ese escalon. Asi que el bloque que pasa el techo se desvanece a
+    lo largo del bloque, con la misma rampa, y los siguientes ya son silencio.
 
     La cuenta esperada se hace a mano: el bloque bueno, despues exactamente
-    `REPETICIONES_MAXIMAS` copias suyas, y de ahi en adelante ceros.
+    `REPETICIONES_MAXIMAS` copias suyas enteras, UNA que se desvanece, y de ahi
+    en adelante ceros.
     """
     bloque = 128
-    renderizada = _pieza_constante(0.5)
+    valor = 0.5
+    renderizada = _pieza_constante(valor)
 
     def respuesta(numero: int) -> float:
         if numero == 1:
@@ -517,16 +531,116 @@ def test_un_candado_ocupado_sin_fin_no_deja_el_mismo_bloque_en_bucle():
         acompanante.detener()
 
     filas = _por_bloques(captura, bloque)
-    hasta_el_techo = 1 + REPETICIONES_MAXIMAS
-    assert len(filas) > hasta_el_techo, "no se llego a pasar del techo"
-    assert np.all(filas[:hasta_el_techo] == np.float32(0.5)), (
+    enteros = 1 + REPETICIONES_MAXIMAS
+    assert len(filas) > enteros + 1, "no se llego a pasar del techo"
+    assert np.all(filas[:enteros] == np.float32(valor)), (
         "antes del techo hay que repetir el ultimo cabezal, no abrir un agujero"
     )
-    silencio = filas[hasta_el_techo:]
+
+    desvanecido = filas[enteros].astype(np.float64)
+    assert desvanecido[0] == pytest.approx(valor, abs=1e-6), (
+        "el bloque del techo arranca ya por debajo: eso es un escalon"
+    )
+    assert desvanecido[-1] == pytest.approx(0.0, abs=1e-6)
+    paso = _paso_de_rampa(valor, 1.0, 0.0, bloque)
+    diferencias = np.diff(desvanecido)
+    assert float(diferencias.min()) == pytest.approx(paso, abs=1e-5)
+    assert float(diferencias.max()) == pytest.approx(paso, abs=1e-5), (
+        "el desvanecido no reparte la bajada por el bloque entero"
+    )
+
+    silencio = filas[enteros + 1 :]
     assert np.array_equal(silencio, np.zeros_like(silencio)), (
         "pasado el techo se sigue repitiendo el mismo bloque: eso es el zumbido"
     )
-    assert acompanante.cabezales_repetidos >= REPETICIONES_MAXIMAS + 1
+    assert acompanante.cabezales_repetidos >= REPETICIONES_MAXIMAS + 2
+
+
+def test_cuando_el_cabezal_vuelve_la_pieza_entra_desvanecida_y_no_de_golpe():
+    """La vuelta es la simetrica de la ida: rampa de subida, no un escalon.
+
+    Si la bajada del techo se reparte por el bloque y la subida no, el chasquido
+    que se ahorra al apagar se paga al encender. La pieza vuelve con la misma
+    rampa, desde el silencio hasta la ganancia pedida, y el bloque siguiente ya
+    esta plano: no hay «progreso de desvanecido» que arrastrar entre bloques.
+    """
+    bloque = 128
+    valor = 0.5
+    renderizada = _pieza_constante(valor)
+    # El cabezal bloquea desde la segunda llamada y vuelve en la novena: cuatro
+    # repeticiones enteras, una desvanecida y dos de silencio por el medio.
+    ultimo_bloqueo = 1 + REPETICIONES_MAXIMAS + 3
+
+    def respuesta(numero: int) -> float:
+        if 2 <= numero <= ultimo_bloqueo:
+            raise BloqueadoAhora("la sesion se quedo ocupada (simulado)")
+        return 0.0
+
+    cabezal = CabezalFalso(respuesta)
+    acompanante, captura = _arrancado(cabezal, renderizada, bloque)
+    try:
+        assert cabezal.esperar_llamadas(ultimo_bloqueo + 4) is True
+    finally:
+        acompanante.detener()
+
+    filas = _por_bloques(captura, bloque)
+    vuelta = ultimo_bloqueo  # el bloque de la llamada `ultimo_bloqueo + 1`
+    assert len(filas) > vuelta + 1, "no se llego a la vuelta del cabezal"
+    anterior = filas[vuelta - 1]
+    assert np.array_equal(anterior, np.zeros(bloque, dtype=np.float32)), (
+        "el bloque anterior a la vuelta tenia que ser silencio"
+    )
+
+    entrada = filas[vuelta].astype(np.float64)
+    assert entrada[0] == pytest.approx(0.0, abs=1e-6), (
+        "la pieza vuelve de golpe a toda ganancia: eso es el escalon de la vuelta"
+    )
+    assert entrada[-1] == pytest.approx(valor, abs=1e-6)
+    paso = _paso_de_rampa(valor, 0.0, 1.0, bloque)
+    diferencias = np.diff(entrada)
+    assert float(diferencias.min()) == pytest.approx(paso, abs=1e-5)
+    assert float(diferencias.max()) == pytest.approx(paso, abs=1e-5)
+    # Y pasada la rampa de vuelta, otra vez la pieza entera.
+    assert np.all(filas[vuelta + 1 :] == np.float32(valor))
+
+
+def test_un_cabezal_bueno_reinicia_la_cuenta_de_bloqueos_seguidos():
+    """El techo cuenta bloqueos CONSECUTIVOS, y esa palabra es todo el diseño.
+
+    El candado de la sesion se ocupa A RACHAS -el hilo de analisis entra y sale-,
+    asi que «uno de cada dos» no es el caso raro: es el patron probable. Si la
+    cuenta no se reiniciara con cada cabezal bueno, cuatro bloqueos SUELTOS
+    repartidos por la pieza dejarian el fondo mudo para siempre, sin que nada
+    estuviera roto. Aqui el cabezal alterna bloqueado y bueno durante muchos mas
+    bloques que el techo, y ni uno solo puede salir desvanecido ni en silencio.
+    """
+    bloque = 128
+    valor = 0.5
+    renderizada = _pieza_constante(valor)
+    vueltas = (REPETICIONES_MAXIMAS + 3) * 2
+
+    def respuesta(numero: int) -> float:
+        if numero % 2 == 0:
+            raise BloqueadoAhora("la sesion estaba ocupada esta vez (simulado)")
+        return 0.0
+
+    cabezal = CabezalFalso(respuesta)
+    acompanante, captura = _arrancado(cabezal, renderizada, bloque)
+    try:
+        assert cabezal.esperar_llamadas(vueltas + 1) is True
+        assert acompanante.sonando is True
+    finally:
+        acompanante.detener()
+
+    filas = _por_bloques(captura, bloque)
+    assert len(filas) >= vueltas, "hacen falta mas bloques que el techo"
+    assert acompanante.cabezales_repetidos >= REPETICIONES_MAXIMAS + 1, (
+        "no hubo bastantes bloqueos para que un techo mal contado se disparara"
+    )
+    assert np.all(filas[:vueltas] == np.float32(valor)), (
+        "un bloqueo de cada dos apago la pieza: el techo esta contando bloqueos "
+        "totales en vez de bloqueos seguidos"
+    )
 
 
 def test_una_excepcion_cualquiera_del_cabezal_no_mata_el_hilo(caplog):
@@ -560,6 +674,12 @@ def test_una_excepcion_cualquiera_del_cabezal_no_mata_el_hilo(caplog):
 
     assert "RuntimeError" in caplog.text, "el fallo del cabezal no dejo rastro"
     assert "la clausura de la Task 5 se equivoco" in caplog.text
+    # Con la traza entera: quien lea este log busca POR QUE se apago el fondo, y
+    # el defecto esta en la clausura, que es codigo de otra tarea.
+    registro = [r for r in caplog.records if r.name == "nucleo.acompanante"]
+    assert len(registro) == 1
+    assert registro[0].exc_info is not None, "sin traza no hay por donde empezar"
+    assert "in respuesta" in caplog.text, "la traza no llega hasta la clausura"
 
     filas = _por_bloques(captura, bloque)
     assert len(filas) >= 5
@@ -589,13 +709,92 @@ def test_un_cabezal_roto_en_cada_bloque_se_registra_una_sola_vez(caplog):
         finally:
             acompanante.detener()
 
-    assert caplog.text.count("la clausura ajena se atraganto") == 1
+    # Se cuentan REGISTROS y no apariciones del texto: la traza repite el
+    # mensaje, y lo que esta prueba mide es que no haya una linea por bloque.
+    registros = [r for r in caplog.records if r.name == "nucleo.acompanante"]
+    assert len(registros) == 1, "una linea por bloque llenaria la terminal"
 
     filas = _por_bloques(captura, bloque)
     assert len(filas) >= 3
     assert np.array_equal(filas, np.zeros_like(filas)), (
         "sin un cabezal bueno previo no hay nada que repetir: es silencio"
     )
+
+
+# El hilo muere por el `SystemExit`, que es justo lo que la prueba demuestra, y
+# pytest lo anuncia como excepcion no atendida de un hilo. Se silencia AQUI y
+# solo aqui: en cualquier otra prueba esa advertencia seria una senal de verdad.
+@pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
+def test_un_SystemExit_del_cabezal_no_se_atrapa_y_el_hilo_se_retira(caplog):
+    """Atrapar `Exception` es degradar; atrapar `BaseException` es secuestrar.
+
+    `SystemExit` y `KeyboardInterrupt` no son defectos de la clausura ajena: son
+    la peticion de que el proceso termine. Un `except BaseException` las tragaria
+    y dejaria el hilo del fondo dando vueltas y registrando una linea por tipo
+    mientras alguien intenta cerrar el programa. Tienen que pasar de largo.
+    """
+    bloque = 128
+
+    def respuesta(numero: int) -> float:
+        if numero == 2:
+            raise SystemExit("alguien esta cerrando el proceso (simulado)")
+        return 0.0
+
+    cabezal = CabezalFalso(respuesta)
+    with caplog.at_level(logging.ERROR, logger="nucleo.acompanante"):
+        acompanante, captura = _arrancado(cabezal, _pieza_constante(0.5), bloque)
+        hilo = acompanante._hilo
+        try:
+            assert cabezal.esperar_llamadas(2) is True
+            assert hilo is not None
+            hilo.join(timeout=LIMITE_S)
+            assert hilo.is_alive() is False, (
+                "el SystemExit se quedo atrapado en el `except` del cabezal"
+            )
+        finally:
+            acompanante.detener()
+
+    assert caplog.text == "", "un SystemExit no es un fallo de la clausura que registrar"
+    assert acompanante.sonando is False
+
+
+def test_un_cabezal_None_borra_el_ultimo_instante_y_no_resucita_audio_viejo():
+    """`None` no es «no se pudo leer»: es «ahora mismo no suena nada».
+
+    Si un `None` dejara en pie el ultimo instante conocido, un `BloqueadoAhora`
+    posterior repetiria audio de ANTES de que la pasada terminara: la pieza
+    volveria sola unos milisegundos despues de callarse, que es un defecto que
+    nadie sabria de donde viene. El `None` borra el ultimo instante, y por eso un
+    bloqueo que llegue despues no tiene nada que repetir y escribe silencio.
+    """
+    renderizada = _pieza_con_notas()
+    bloque = 512
+
+    def respuesta(numero: int) -> float | None:
+        if numero == 1:
+            return 4.0
+        if numero == 3:
+            raise BloqueadoAhora("la sesion estaba ocupada (simulado)")
+        return None
+
+    cabezal = CabezalFalso(respuesta)
+    acompanante, captura = _arrancado(cabezal, renderizada, bloque)
+    try:
+        assert cabezal.esperar_llamadas(5) is True
+    finally:
+        acompanante.detener()
+
+    filas = _por_bloques(captura, bloque)
+    assert len(filas) >= 4
+    desde = _muestra_del_pulso(4.0)
+    sonaba = renderizada.muestras[desde : desde + bloque]
+    assert np.any(sonaba != 0.0), "el pulso 4 es silencio: la prueba no distingue nada"
+    assert np.array_equal(filas[0], sonaba), "el primer bloque no es el del pulso 4"
+    assert np.array_equal(filas[1], np.zeros(bloque, dtype=np.float32))
+    assert np.array_equal(filas[2], np.zeros(bloque, dtype=np.float32)), (
+        "el bloqueo resucito el audio del pulso 4, que ya habia dejado de sonar"
+    )
+    assert acompanante.cabezales_repetidos == 1
 
 
 def test_la_ganancia_se_aplica_suavizada_dentro_del_bloque():

@@ -74,10 +74,16 @@ class BloqueadoAhora(Exception):
     se oye como musica repetida, se oye como un bucle cerrado, un zumbido
     periodico a ~47 Hz. Y el hilo no se frena por si solo: va tan rapido como la
     tarjeta acepte. Asi que tras `REPETICIONES_MAXIMAS` bloqueos CONSECUTIVOS el
-    acompañante deja de repetir y escribe silencio, que es lo menos malo de los
-    tres: mejor un hueco que un zumbido que no estaba en la pieza. En cuanto el
-    cabezal vuelve a contestar, la cuenta se reinicia y la pieza sigue donde el
-    carril diga.
+    acompañante deja de repetir y se calla, que es lo menos malo de los tres:
+    mejor un hueco que un zumbido que no estaba en la pieza.
+
+    **Callarse es irse, no cortarse.** El modulo entero gasta `_con_ganancia` en
+    no meter un escalon entre dos muestras seguidas; saltar a cero de golpe seria
+    exactamente ese escalon, y otro igual al volver. Asi que el bloque que pasa
+    el techo baja a cero A LO LARGO del bloque con la misma rampa, y cuando el
+    cabezal vuelve a contestar, la pieza entra con la rampa simetrica desde el
+    silencio. Los bloqueos se cuentan SEGUIDOS: un solo cabezal bueno reinicia
+    la cuenta, porque el candado de la sesion se ocupa a rachas y no sin parar.
     """
 
 
@@ -285,13 +291,21 @@ class Acompanante:
                 pedida = self._ganancia_pedida
                 desde = self._ganancia_aplicada
             instante, fallo = self._preguntar(cabezal)
-            bloque = self._con_ganancia(self._rodaja(renderizada, instante), desde, pedida)
+            # Pasado el techo de repeticiones la pieza se va a cero, y se va
+            # DESVANECIDA: el objetivo de ganancia de este bloque pasa a ser 0,0
+            # y la rampa que ya existe hace el resto. Al volver el cabezal, el
+            # objetivo vuelve a ser el pedido y la misma rampa la trae de vuelta
+            # desde el silencio. No hace falta estado nuevo -ni progreso de
+            # desvanecido ni nada que arrastrar entre bloques-: la pareja
+            # (`_ganancia_aplicada`, objetivo) ya lo dice todo.
+            objetivo = 0.0 if fallo and self._techo_pasado() else pedida
+            bloque = self._con_ganancia(self._rodaja(renderizada, instante), desde, objetivo)
             if self._parar.is_set() or self._generacion != generacion:
                 return
             aceptado = self._salida.reproducir(bloque)
             if self._parar.is_set() or self._generacion != generacion:
                 return
-            self._apuntar(instante, fallo, aceptado, bloque.size, pedida)
+            self._apuntar(instante, fallo, aceptado, bloque.size, objetivo)
 
     def _preguntar(
         self, cabezal: Callable[[], float | None] | None
@@ -329,13 +343,27 @@ class Acompanante:
             self._anunciar_fallo_cabezal(error)
             return self._instante_repetido(), True
 
+    def _techo_pasado(self) -> bool:
+        """Si los bloqueos SEGUIDOS ya llegaron al techo. Compuerta, no reloj.
+
+        Se mira la cuenta ya apuntada, sin tocarla, y un solo cabezal bueno la
+        pone a cero (ver `_apuntar`). Esa palabra, «seguidos», es lo que hace
+        seguro el techo: el candado de la sesion se ocupa a rachas, y un techo
+        que contara bloqueos TOTALES dejaria el fondo mudo para siempre despues
+        de cuatro bloqueos sueltos repartidos por la pieza.
+        """
+        return self._repeticiones_seguidas >= REPETICIONES_MAXIMAS
+
     def _instante_repetido(self) -> float | None:
-        """El ultimo cabezal conocido, o `None` si ya se agoto el techo.
+        """El ultimo cabezal conocido, o `None` cuando ya ni eso.
 
         El techo es lo que convierte un bucle cerrado audible en un hueco: ver
-        `BloqueadoAhora`. Se mira la cuenta ya apuntada, sin tocarla.
+        `BloqueadoAhora`. El bloque que lo PASA todavia repite el audio, porque
+        es el que se desvanece (`_trabajar` le pone la ganancia objetivo a 0,0);
+        de ahi en adelante no hay ya nada que desvanecer y se escribe silencio
+        directamente, que ademas se calcula mas barato.
         """
-        if self._repeticiones_seguidas >= REPETICIONES_MAXIMAS:
+        if self._repeticiones_seguidas > REPETICIONES_MAXIMAS:
             return None
         return self._ultimo_instante
 
@@ -358,6 +386,7 @@ class Acompanante:
             clave,
             error,
             REPETICIONES_MAXIMAS,
+            exc_info=True,
         )
 
     def _apuntar(
@@ -366,17 +395,25 @@ class Acompanante:
         fallo: bool,
         aceptado: bool,
         muestras: int,
-        pedida: float,
+        objetivo: float,
     ) -> None:
         """Deja apuntado lo que ese bloque dejo hecho. Solo para el hilo vigente.
 
         Se llama DESPUES de la segunda comprobacion de generacion, y en eso esta
         todo el asunto: nada de lo que un hilo huerfano calcule llega hasta aqui.
 
-        `_ganancia_aplicada` solo avanza si la salida ACEPTO el bloque. Darla por
-        avanzada en un bloque que nadie oyo -rechazado por la tarjeta- dejaria la
-        rampa consumida y el cambio de ganancia entraria como escalon en el
-        siguiente, que es justo el chasquido que la rampa existe para evitar.
+        Un cabezal bueno **reinicia** la cuenta de bloqueos seguidos, y ese
+        reinicio es lo unico que hace seguro el techo: ver `_techo_pasado`. Un
+        `None` del cabezal es un cabezal bueno -quiere decir «ahora no suena
+        nada»-, asi que borra el ultimo instante: si lo dejara en pie, un bloqueo
+        posterior resucitaria audio de antes de que la pasada terminara.
+
+        `_ganancia_aplicada` toma el objetivo de ESTE bloque (que durante el
+        desvanecido es 0,0, no lo que el usuario pidio) y solo si la salida
+        ACEPTO el bloque. Darla por avanzada en un bloque que nadie oyo
+        -rechazado por la tarjeta- dejaria la rampa consumida y el cambio de
+        ganancia entraria como escalon en el siguiente, que es justo el
+        chasquido que la rampa existe para evitar.
         """
         if fallo:
             self._repetidos += 1
@@ -386,7 +423,7 @@ class Acompanante:
             self._ultimo_instante = instante
         if aceptado:
             with self._candado:
-                self._ganancia_aplicada = pedida
+                self._ganancia_aplicada = objetivo
             self._escritas += muestras
 
     def _rodaja(
@@ -417,9 +454,12 @@ class Acompanante:
         seria ocho veces mas abrupta por el mismo cambio.
 
         No guarda nada: el que apunta que la ganancia avanzo es `_apuntar`, y
-        solo si la salida acepto el bloque. Recibe `desde` y `pedida` en la misma
-        foto tomada bajo candado, asi que la rampa de un bloque siempre va de
-        donde acabo la anterior QUE SE OYO a lo que se pide ahora.
+        solo si la salida acepto el bloque. `desde` sale de la foto tomada bajo
+        candado, asi que la rampa de un bloque siempre arranca donde acabo la
+        anterior QUE SE OYO. Y `pedida` es el objetivo de ESTE bloque, que casi
+        siempre es la ganancia que el usuario pidio y durante el desvanecido del
+        techo de repeticiones es 0,0: la misma rampa sirve para las dos cosas, y
+        por eso apagarse y volver no necesitan ni una linea de estado propia.
 
         **Trabaja EN SITIO, y eso depende de un modulo ajeno:**
         `PiezaRenderizada.rodaja` (`nucleo/acompanamiento.py`) construye un
