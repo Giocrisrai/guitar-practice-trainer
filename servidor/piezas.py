@@ -396,7 +396,12 @@ class SesionCarril:
         self._salida_fondo = salida_fondo or SalidaAudio()
         self._acompanante: Acompanante | None = None
         # La generacion de fondo del ultimo intento de arrancar el acompañante,
-        # haya salido bien o no. **Es el pestillo, y es el mismo de
+        # haya salido bien o no. **Aviso para quien lo cambie**: hoy ningun
+        # camino observable depende de que esto GUARDE la generacion en vez de
+        # un simple «ya se intento», porque `cargar_acompanamiento` termina
+        # siempre en `_parar_acompanamiento` y eso ya lo repone. La prueba del
+        # fondo nuevo pasa por ese reset y no por la comparacion, asi que no te
+        # confies en ella si tocas esta linea. **Es el pestillo, y es el mismo de
         # `_clave_del_click`**: sin el, una maquina sin salida de audio -o con
         # los altavoces desenchufados- intenta abrir el dispositivo en CADA
         # instantanea, treinta veces por segundo y bajo `_candado`, que es el
@@ -1169,6 +1174,17 @@ class SesionCarril:
         with self._candado:
             if encendido is not None:
                 self._fondo_encendido = bool(encendido)
+                if encendido:
+                    # **Y pulsar «encender» REINTENTA el dispositivo**, aunque
+                    # el interruptor ya estuviera puesto. Ese es el gesto de
+                    # «vuelve a intentarlo», y es el que el usuario va a hacer:
+                    # cargar el fondo deja el interruptor encendido, asi que
+                    # quien no oiga nada porque el dispositivo no estaba
+                    # pulsara encender y no apagar-y-encender. Sin esta linea
+                    # el pestillo sigue echado, no pasa nada y no hay forma de
+                    # saber por que. Cuesta un intento de abrir el dispositivo
+                    # por pulsacion redundante.
+                    self._generacion_arrancada = None
                 # La mano del usuario: a partir de aqui la entrada ya no apaga
                 # el fondo por su cuenta (ver `acompanamiento_debe_sonar`). Se
                 # apunta tambien al apagar, y a False, porque apagar deja el

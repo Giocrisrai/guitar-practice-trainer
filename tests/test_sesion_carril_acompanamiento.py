@@ -159,6 +159,30 @@ class SalidaQueNoAbre:
         )
 
 
+class SalidaQueFallaYLuegoAbre:
+    """`SalidaAudio` cuyo dispositivo falla las primeras `fallos` veces.
+
+    Es el aparato que no estaba y vuelve: el jack fuera, el interfaz dormido,
+    el dispositivo cogido por otro programa. Sin el no se puede probar la
+    recuperacion, que es lo unico que el usuario puede hacer desde la pantalla.
+    """
+
+    def __init__(self, fallos: int = 1, frecuencia_muestreo: int = MUESTREO) -> None:
+        self.intentos = 0
+        self._stream = StreamCapturado()
+
+        def abrir_stream(**argumentos):
+            self.intentos += 1
+            if self.intentos <= fallos:
+                raise OSError("sin dispositivo de audio (simulado)")
+            self._stream.argumentos = dict(argumentos)
+            return self._stream
+
+        self.salida = SalidaAudio(
+            frecuencia_muestreo=frecuencia_muestreo, abrir_stream=abrir_stream
+        )
+
+
 class RenderContado:
     """`renderizar` sustituido: hace el de verdad y cuenta cuantas veces.
 
@@ -1493,6 +1517,90 @@ def test_un_fondo_nuevo_vuelve_a_intentar_abrir_el_dispositivo():
         "el fondo nuevo tiene derecho a su intento; lo que el pestillo impide "
         "es reintentar sin que nada haya cambiado"
     )
+    cerrar(sesion_carril, sesion)
+
+
+def test_si_la_entrada_se_va_y_vuelve_el_dispositivo_se_intenta_otra_vez():
+    """El pestillo se suelta aunque el acompañante NUNCA llegara a existir.
+
+    Es el caso que el pestillo existe para cubrir y el que un descuido natural
+    -reponerlo dentro del `if self._acompanante is not None`- deja fuera: si el
+    arranque fallo, no hay acompañante, y un reset condicionado a que lo haya
+    no corre nunca. El fondo se quedaria sin un solo intento mas para el resto
+    de la pasada, sin que nada lo dijera.
+
+    Empieza DESPUES del intento fallido y pasa por el microfono, que es la
+    unica forma de que el fondo deje de poder sonar y vuelva a poder **sin que
+    el usuario toque el interruptor**: ahi el reset condicionado y el bueno se
+    distinguen.
+    """
+    reloj = RelojFalso()
+    sin_dispositivo = SalidaQueNoAbre()
+    sesion_carril, sesion, _, _ = carril(reloj, salida_fondo=sin_dispositivo)
+    sesion_carril.iniciar(pieza_de([40, 45, 50, 55]), SIN_CUENTA)
+    sesion_carril.cargar_acompanamiento(fondo_de())
+    avanzar_mirando(sesion_carril, reloj, 0.5)
+    assert sin_dispositivo.intentos == 1
+
+    sesion.entrada_es_el_cable = False
+    avanzar_mirando(sesion_carril, reloj, 0.5)
+    sesion.entrada_es_el_cable = True
+    avanzar_mirando(sesion_carril, reloj, 0.5)
+
+    assert sin_dispositivo.intentos == 2, (
+        "el fondo que vuelve a poder sonar tiene derecho a otro intento, "
+        "tambien cuando el primero no llego a dejar acompañante"
+    )
+    cerrar(sesion_carril, sesion)
+
+
+def test_apagar_y_encender_recupera_el_dispositivo_que_volvio():
+    """El camino B: el aparato vuelve y el usuario da la vuelta al interruptor."""
+    reloj = RelojFalso()
+    aparato = SalidaQueFallaYLuegoAbre(fallos=1)
+    sesion_carril, sesion, _, _ = carril(reloj, salida_fondo=aparato)
+    sesion_carril.iniciar(pieza_de([40, 45, 50, 55]), SIN_CUENTA)
+    sesion_carril.cargar_acompanamiento(fondo_de())
+    estado = avanzar_mirando(sesion_carril, reloj, 0.5)
+    assert estado["acompanamiento_sonando"] is False, "el aparato no estaba"
+
+    sesion_carril.acompanamiento(encendido=False)
+    avanzar_mirando(sesion_carril, reloj, 0.2)
+    sesion_carril.acompanamiento(encendido=True)
+    estado = avanzar_mirando(sesion_carril, reloj, 0.5)
+
+    assert estado["acompanamiento_sonando"] is True, (
+        "apagar y encender tiene que volver a intentar el dispositivo"
+    )
+    cerrar(sesion_carril, sesion)
+
+
+def test_pulsar_encender_estando_ya_encendido_reintenta_el_dispositivo():
+    """El camino C, que es **el que el usuario va a hacer**.
+
+    Cargar el fondo deja el interruptor puesto. Quien no oye nada porque el
+    dispositivo no estaba ve un interruptor encendido y lo pulsa: pulsa
+    ENCENDER, no apagar-y-encender. Sin esto el pestillo sigue echado, no pasa
+    nada y no hay forma de saber por que.
+
+    Empieza con el interruptor YA encendido a proposito: es el estado donde
+    «encender» parece no cambiar nada, que es justo donde el defecto vive.
+    """
+    reloj = RelojFalso()
+    aparato = SalidaQueFallaYLuegoAbre(fallos=1)
+    sesion_carril, sesion, _, _ = carril(reloj, salida_fondo=aparato)
+    sesion_carril.iniciar(pieza_de([40, 45, 50, 55]), SIN_CUENTA)
+    sesion_carril.cargar_acompanamiento(fondo_de())
+    estado = avanzar_mirando(sesion_carril, reloj, 0.5)
+    assert estado["acompanamiento_sonando"] is False, "el aparato no estaba"
+    assert aparato.intentos == 1
+
+    # El mismo valor que ya tenia: esto es pulsar el interruptor encendido.
+    sesion_carril.acompanamiento(encendido=True)
+    estado = avanzar_mirando(sesion_carril, reloj, 0.5)
+
+    assert aparato.intentos == 2, "pulsar encender es «vuelve a intentarlo»"
+    assert estado["acompanamiento_sonando"] is True
     cerrar(sesion_carril, sesion)
 
 

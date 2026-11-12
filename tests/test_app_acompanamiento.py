@@ -382,8 +382,11 @@ def test_si_el_fondo_revienta_al_cargarse_la_pasada_sigue_y_no_hay_500(
 
     assert respuesta.status_code == 200, "la pasada esta en marcha: no es un 500"
     assert respuesta.json()["pieza"]["notas"], "y la pieza viaja igual"
-    # Y la pasada esta de verdad en marcha, no solo en la respuesta.
-    assert cliente.get("/api/piezas/estado").json()["completado"] is False
+    # Y la pasada esta de verdad en marcha, no solo en la respuesta. **`activa`
+    # y no `completado`**: un carril al que nadie inicio nada tambien publica
+    # `completado: False`, asi que esa asercion es verdad antes de la peticion
+    # y no distingue nada. Es la cuarta vez en esta tarea con la misma forma.
+    assert carril.activa is True
 
 
 def test_el_interruptor_se_pide_con_true_o_false_y_no_con_cualquier_cosa(cliente):
