@@ -1,4 +1,6 @@
-import { colorDeDesviacion } from "./geometriaCarril";
+import { useEffect, useRef } from "react";
+
+import { colorDeCuerda, colorDeDesviacion } from "./geometriaCarril";
 import type { EstadoCarril, NotaTocada, Pieza } from "./tiposPieza";
 import {
   alturaEnPentagrama,
@@ -119,7 +121,9 @@ function Tablatura({
         const rotulo = (etiquetas?.[numeroLinea] ?? String(numeroLinea + 1)).padEnd(ANCHO_ETIQUETA);
         return (
           <div key={numeroLinea}>
-            <span className="etiqueta-cuerda">{rotulo}</span>
+            <span className="etiqueta-cuerda" style={{ color: colorDeCuerda(numeroLinea + 1) }}>
+              {rotulo}
+            </span>
             {trozos}
           </div>
         );
@@ -185,9 +189,19 @@ function Pentagrama({
       ))}
       <line x1={ANCHO_COMPAS} x2={ANCHO_COMPAS} y1={y(0)} y2={y(8)} stroke={COLOR_LINEA} />
       {compas.numero === 0 && (
-        <text x={2} y={y(5)} fontSize={22} fill={COLOR_LINEA} fontFamily="serif">
-          𝄞
-        </text>
+        /* La clave de sol OCUPA el pentagrama: a 22 px salia del tamano de una
+           letra suelta, encajada entre las lineas de arriba, y no se leia como
+           una clave. Y lleva el 8 debajo, que es lo que dice que la guitarra
+           suena una octava mas grave que lo escrito (8vb) — la transposicion
+           que `alturaEnPentagrama` ya aplica y que el dibujo no declaraba. */
+        <g fill={COLOR_LINEA}>
+          <text x={1} y={y(7)} fontSize={9 * ESPACIO} fontFamily="serif">
+            𝄞
+          </text>
+          <text x={5} y={y(12.5)} fontSize={2.2 * ESPACIO} fontFamily="serif" textAnchor="middle">
+            8
+          </text>
+        </g>
       )}
       {compas.notas.map((nota) => {
         const altura = alturaEnPentagrama(nota.midi);
@@ -298,10 +312,22 @@ export function VistaEscrita({ pieza, estado, cuerdas, etiquetas }: PropiedadesV
   const alturaMinima = Math.min(-2, ...alturas.map((a) => a - 6)); // sitio para la plica
   const alturaMaxima = Math.max(10, ...alturas.map((a) => a + 4)); // y para los cents
 
+  // El compas que se esta tocando. Se deriva de `actual`, que lo dice el nucleo,
+  // buscando cual de ellos contiene esa nota; con la pieza terminada o sin
+  // estado no hay ninguno, y dejar uno marcado leeria como que aun te toca algo.
+  const numeroEnCurso =
+    actual === null
+      ? null
+      : (compases.find((compas) => compas.notas.some((nota) => nota.indice === actual))?.numero ??
+        null);
+
   return (
     <div className="vista-escrita">
       {compases.map((compas) => (
-        <div className="compas-escrito" key={compas.numero}>
+        <CompasEscrito
+          key={compas.numero}
+          enCurso={compas.numero === numeroEnCurso}
+        >
           <div className="numero-compas">{compas.numero + 1}</div>
           <Pentagrama
             compas={compas}
@@ -318,8 +344,43 @@ export function VistaEscrita({ pieza, estado, cuerdas, etiquetas }: PropiedadesV
             etiquetas={etiquetas}
           />
           <Equivocadas compas={compas} tocadas={tocadas} />
-        </div>
+        </CompasEscrito>
       ))}
+    </div>
+  );
+}
+
+/**
+ * Un compas de la vista escrita, que se trae solo a la vista cuando le toca.
+ *
+ * Sin esto la vista escrita no SIGUE a quien toca: es una rejilla quieta, y con
+ * una pieza de treinta compases el que estas tocando se va fuera de la pantalla
+ * y hay que buscarlo a mano mientras suena. `block: "nearest"` para que no
+ * salte si ya se ve, que seria peor que no moverse.
+ */
+function CompasEscrito({
+  enCurso,
+  children,
+}: {
+  enCurso: boolean;
+  children: React.ReactNode;
+}) {
+  const referencia = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!enCurso) return;
+    const nodo = referencia.current;
+    // `scrollIntoView` no existe en todos los entornos (jsdom, por ejemplo, no
+    // lo implementa). Traer el compas a la vista es una comodidad; tumbar la
+    // vista escrita entera por no poder hacerlo no lo es.
+    if (nodo === null || typeof nodo.scrollIntoView !== "function") return;
+    nodo.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [enCurso]);
+  return (
+    <div
+      ref={referencia}
+      className={enCurso ? "compas-escrito en-curso" : "compas-escrito"}
+    >
+      {children}
     </div>
   );
 }

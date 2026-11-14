@@ -200,10 +200,23 @@ body {
 .conmutador-vista { display: flex; gap: 8px; margin: 8px 0; }
 .conmutador-vista button[aria-pressed="true"] { border-color: var(--acento, currentColor); font-weight: 600; }
 .vista-escrita { display: flex; flex-wrap: wrap; gap: 16px; margin: 12px 0; }
-.compas-escrito { background: #12161b; border: 1px solid var(--borde); border-radius: 8px; padding: 8px; }
+.compas-escrito {
+  background: #12161b; border: 1px solid var(--borde); border-radius: 8px; padding: 8px;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+/* El compas que suena AHORA. La vista escrita era una rejilla quieta: se veian
+   los treinta compases y ninguno decia cual estabas tocando. Se marca con el
+   borde y un halo, no con el fondo, para no cambiar el contraste del dibujo. */
+.compas-escrito.en-curso {
+  border-color: var(--afinada);
+  box-shadow: 0 0 0 1px var(--afinada), 0 0 20px -6px var(--afinada);
+}
 .numero-compas { color: var(--tenue); font-size: 11px; }
-.tablatura { font-family: ui-monospace, Menlo, monospace; font-size: 12px; line-height: 1.2; margin: 4px 0 0; color: #cfd6e0; }
-.etiqueta-cuerda { color: var(--tenue); }
+.compas-escrito.en-curso .numero-compas { color: var(--afinada); font-weight: 700; }
+.tablatura { font-family: ui-monospace, Menlo, monospace; font-size: 12px; line-height: 1.35; margin: 4px 0 0; color: #cfd6e0; }
+/* El rotulo lleva el color de SU cuerda, el mismo del carril: quien aprendio
+   ahi el codigo de colores no tiene que aprender otro aqui. */
+.etiqueta-cuerda { font-weight: 700; }
 .traste-actual { background: #ffd166; color: #12161b; font-weight: 700; }
 .equivocadas { list-style: none; margin: 4px 0 0; padding: 0; font-size: 12px; }
 
