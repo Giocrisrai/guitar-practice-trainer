@@ -907,14 +907,22 @@ describe("Carril: el dibujo sigue al tempo efectivo", () => {
     });
     vi.stubGlobal("fetch", fetchFalso);
 
+    // Se recogen los rectangulos de las NOTAS, que son los unicos que pasan por
+    // `roundRect`. Antes se leian de `fillRect` descartando "el primero, que es
+    // el fondo"; con mas de un rectangulo de fondo -las franjas de cada cuerda,
+    // la estela, las dianas- esa cuenta se rompe en cuanto cambia el dibujo, y
+    // ademas colaba el fondo entre las notas si alguna vez se pintaba antes.
     const rectangulos: number[][] = [];
     const contexto = {
       setTransform: vi.fn(),
-      fillRect: vi.fn((x: number, y: number, ancho: number, alto: number) => {
-        rectangulos.push([x, y, ancho, alto]);
-      }),
+      fillRect: vi.fn(),
       fillText: vi.fn(),
       beginPath: vi.fn(),
+      roundRect: vi.fn((x: number, y: number, ancho: number, alto: number) => {
+        rectangulos.push([x, y, ancho, alto]);
+      }),
+      rect: vi.fn(),
+      fill: vi.fn(),
       moveTo: vi.fn(),
       lineTo: vi.fn(),
       stroke: vi.fn(),
@@ -944,9 +952,11 @@ describe("Carril: el dibujo sigue al tempo efectivo", () => {
     act(() => {
       cuadros[cuadros.length - 1](performance.now());
     });
-    // El primer `fillRect` de un cuadro es el fondo; las notas vienen después.
-    const [fondo, ...notas] = rectangulos;
-    expect(fondo).toEqual([0, 0, ANCHO, 500]);
+    // Cada nota se dibuja dos veces cuando ya esta tocada (relleno y borde), asi
+    // que se queda una de cada dos posiciones repetidas consecutivas.
+    const notas = rectangulos.filter(
+      (r, i) => i === 0 || r.join() !== rectangulos[i - 1].join()
+    );
     return notas.map(([x, y, , alto]) => [x - MARGEN, y, alto]);
   }
 
@@ -961,7 +971,10 @@ describe("Carril: el dibujo sigue al tempo efectivo", () => {
     // son 6 s, menos los 4 s) y dura 2 s. Con el tempo escrito saldría ya pasada
     // (y = 500) y de 100 px de alto.
     const [, arriba, alto] = carriles[0];
-    expect(alto).toBe(200);
+    // 200 px de nota menos el hueco que la separa de la siguiente de su cuerda
+    // (SEPARACION_NOTAS_PX). El hueco se le quita al borde de ARRIBA: el de
+    // ataque, que es el que dice cuando suena, sigue cayendo en el 200.
+    expect(alto).toBe(197);
     expect(Math.abs(arriba + alto - 200)).toBeLessThan(10);
   });
 

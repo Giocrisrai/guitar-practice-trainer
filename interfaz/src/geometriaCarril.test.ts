@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  colorDeCuerda,
+  colorDeTextoSobre,
   colorDeDesviacion,
   ESTELA_S,
   notasVisibles,
@@ -121,5 +123,55 @@ describe("geometría del carril", () => {
     expect(colorDeDesviacion({ cents: 12, afinada: null })).toBe(
       colorDeDesviacion({ cents: null, afinada: null })
     );
+  });
+});
+
+describe("colorDeCuerda", () => {
+  it("cada cuerda de una guitarra tiene su propio color", () => {
+    const colores = [1, 2, 3, 4, 5, 6].map((cuerda) => colorDeCuerda(cuerda));
+    expect(new Set(colores).size).toBe(6);
+  });
+
+  it("el color de una cuerda no depende de cuantas tenga el instrumento", () => {
+    // El bajo tiene cuatro cuerdas y el ukelele cuatro: la 1 es la 1 en los
+    // tres sitios. Si el color se repartiera por fracción del total, cambiar de
+    // instrumento repintaría toda la pieza y el usuario tendría que releerla.
+    expect(colorDeCuerda(1)).toBe(colorDeCuerda(1));
+    expect(colorDeCuerda(4)).toBe(colorDeCuerda(4));
+  });
+
+  it("una cuerda fuera de las seis habituales sigue dando un color", () => {
+    // Una guitarra de siete u ocho cuerdas existe. Devolver `undefined` aquí
+    // pintaría la nota de "transparent" y la nota desaparecería del carril:
+    // el usuario no vería que tiene que tocarla.
+    for (const cuerda of [7, 8, 12]) {
+      expect(colorDeCuerda(cuerda)).toMatch(/^#[0-9a-f]{6}$/i);
+    }
+  });
+
+  it("el cero y los negativos tampoco rompen el dibujo", () => {
+    expect(colorDeCuerda(0)).toMatch(/^#[0-9a-f]{6}$/i);
+    expect(colorDeCuerda(-1)).toMatch(/^#[0-9a-f]{6}$/i);
+  });
+});
+
+describe("colorDeTextoSobre", () => {
+  it("sobre un color claro escribe oscuro y sobre uno oscuro escribe claro", () => {
+    expect(colorDeTextoSobre("#e8cf3d")).not.toBe(colorDeTextoSobre("#3d8ee8"));
+  });
+
+  it("el blanco y el negro puros caen de los lados que les tocan", () => {
+    expect(colorDeTextoSobre("#ffffff")).toBe(colorDeTextoSobre("#e8cf3d"));
+    expect(colorDeTextoSobre("#000000")).toBe(colorDeTextoSobre("#3d8ee8"));
+  });
+
+  it("los seis colores de cuerda dan un numero legible", () => {
+    // El numero del traste se pinta encima de la nota. Si el contraste se
+    // eligiera mal en una sola cuerda, esa cuerda tendria las notas mudas: se
+    // ve el bloque y no se ve que traste es.
+    for (const cuerda of [1, 2, 3, 4, 5, 6]) {
+      const texto = colorDeTextoSobre(colorDeCuerda(cuerda));
+      expect(["#12161b", "#ffffff"]).toContain(texto);
+    }
   });
 });

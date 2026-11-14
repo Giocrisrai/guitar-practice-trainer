@@ -186,3 +186,59 @@ export function colorDeDesviacion({ cents, afinada }: DesviacionPintable): strin
   if (afinada) return COLOR_AFINADA;
   return cents > 0 ? COLOR_ALTA : COLOR_BAJA;
 }
+
+/**
+ * Un color por cuerda, que es el idioma de Guitar Hero y de Rocksmith.
+ *
+ * El carril tenía las seis cuerdas del mismo gris pálido, así que para saber
+ * dónde iba una nota había que leer el número del traste y contar columnas. El
+ * color se lee sin pensar y el número no; con un color por cuerda la mano sabe
+ * dónde va antes de que el ojo lea nada.
+ *
+ * Va por NUMERO de cuerda y no por fracción del total a propósito: si el color
+ * se repartiera entre las que tenga el instrumento, la cuerda 1 de un bajo
+ * saldría de otro color que la 1 de la guitarra, y cambiar de instrumento
+ * obligaría a releer el carril entero. Más allá de la sexta el ciclo se repite
+ * —una guitarra de siete u ocho cuerdas existe— en vez de devolver nada:
+ * una nota sin color no se pinta, y una nota que no se pinta es una nota que el
+ * usuario no sabe que tiene que tocar.
+ */
+const COLORES_DE_CUERDA = [
+  "#c061f0", // 1.ª (mi agudo): violeta
+  "#2fd36f", // 2.ª (si): verde
+  "#f08a2f", // 3.ª (sol): naranja
+  "#3d8ee8", // 4.ª (re): azul
+  "#e8cf3d", // 5.ª (la): amarillo
+  "#e8503d", // 6.ª (mi grave): rojo
+];
+
+export function colorDeCuerda(cuerda: number): string {
+  const indice = Math.trunc(cuerda) - 1;
+  const cuantos = COLORES_DE_CUERDA.length;
+  // El resto de un negativo en JS es negativo: `((i % n) + n) % n` lo corrige.
+  return COLORES_DE_CUERDA[((indice % cuantos) + cuantos) % cuantos];
+}
+
+/**
+ * Negro o blanco, el que se lea encima de `fondo`.
+ *
+ * El número del traste se pinta DENTRO de la nota, y las notas ya no son todas
+ * del mismo gris pálido: con un color fijo para el número, el amarillo de la
+ * quinta se leía bien y el azul de la cuarta no se leía en absoluto. Una nota
+ * cuyo número no se lee es media nota: se ve que hay que tocar algo y no dónde.
+ *
+ * El umbral es la luminancia relativa simple (0,299 R + 0,587 G + 0,114 B,
+ * la de la norma BT.601), que para seis colores elegidos a mano basta y no
+ * necesita la conversión sRGB completa.
+ */
+const TEXTO_SOBRE_CLARO = "#12161b";
+const TEXTO_SOBRE_OSCURO = "#ffffff";
+
+export function colorDeTextoSobre(fondo: string): string {
+  const hex = fondo.replace("#", "");
+  const r = parseInt(hex.slice(0, 2), 16);
+  const g = parseInt(hex.slice(2, 4), 16);
+  const b = parseInt(hex.slice(4, 6), 16);
+  const luminancia = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  return luminancia > 0.55 ? TEXTO_SOBRE_CLARO : TEXTO_SOBRE_OSCURO;
+}

@@ -2,7 +2,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   VENTANA_VISIBLE_S,
+  colorDeCuerda,
   colorDeDesviacion,
+  colorDeTextoSobre,
   notasVisibles,
   rectanguloDeNota,
   yDeLaLineaDeAtaque,
@@ -34,11 +36,6 @@ import { VistaEscrita } from "./VistaEscritaPieza";
 const COLOR_FONDO = "#12161b";
 const COLOR_SEPARADOR = "#262d36";
 const COLOR_LINEA_ATAQUE = "#e6e9ee";
-/** Una nota que todavía no se ha tocado: pálida y sin veredicto. Los demás
- * colores los decide `colorDeDesviacion`, que es quien sabe qué significa cada
- * desviación (y que un `cents` nulo no es un cero). */
-const COLOR_PENDIENTE = "#cfd6e0";
-const COLOR_TRASTE = "#12161b";
 
 /** Hueco a cada lado del carril de una cuerda, en píxeles CSS, para que dos
  * notas simultáneas en cuerdas vecinas no se toquen. */
@@ -48,6 +45,34 @@ const MARGEN_CARRIL_PX = 5;
 const ALTO_MINIMO_PX = 6;
 /** Alto por debajo del cual no cabe el número de traste dentro de la nota. */
 const ALTO_PARA_TRASTE_PX = 18;
+
+/** Hueco vertical entre una nota y la siguiente de la MISMA cuerda.
+ *
+ * Se lo quita al alto por el borde de arriba, nunca por el de ataque: el borde
+ * inferior es el que marca cuándo suena y moverlo mentiría sobre el tiempo. Sin
+ * este hueco, tres notas seguidas en una cuerda se pintaban pegadas y se leían
+ * como un solo bloque alto. */
+const SEPARACION_NOTAS_PX = 3;
+
+/** Radio de la esquina redondeada de una nota. */
+const RADIO_NOTA_PX = 4;
+
+/** Cuánto se apaga la nota más lejana del carril, de 0 (nada) a 1 (invisible).
+ *
+ * Da profundidad: lo que viene de lejos se ve más tenue y lo inminente destaca,
+ * que es lo que hace que el carril se lea como algo que viene hacia ti y no
+ * como una lista. No llega nunca a 1: una nota invisible es una nota que el
+ * usuario no sabe que tiene que tocar. */
+const DESVANECIDO_MAXIMO = 0.55;
+
+/** La franja de debajo de la línea de ataque, donde queda la estela. */
+const COLOR_ESTELA = "#0b0e12";
+/** Tinte del carril de cada cuerda sobre el fondo. */
+const ALFA_FRANJA_CUERDA = 0.05;
+/** El borde que distingue una nota YA TOCADA de una pendiente, además del
+ * color: los colores de cuerda y los del veredicto comparten gama, y la
+ * posición (encima o debajo de la línea) no basta en el instante del cruce. */
+const COLOR_BORDE_TOCADA = "#ffffff";
 
 const TEXTO_CLASIFICACION: Record<Clasificacion, string> = {
   a_tiempo: "a tiempo",
@@ -162,8 +187,23 @@ function pintarCuadro(
   contexto.fillStyle = COLOR_FONDO;
   contexto.fillRect(0, 0, lienzo.ancho, lienzo.alto);
 
-  // Un carril por cuerda, separados por una línea fina.
   const anchoCarril = lienzo.ancho / lienzo.cuerdas;
+  const lineaAtaque = yDeLaLineaDeAtaque(lienzo, VENTANA_VISIBLE_S);
+
+  // El carril de cada cuerda, tenido con SU color. Es el mismo idioma que el de
+  // las notas: la franja dice de quien es el carril aunque este vacio.
+  for (let i = 0; i < lienzo.cuerdas; i += 1) {
+    contexto.globalAlpha = ALFA_FRANJA_CUERDA;
+    contexto.fillStyle = colorDeCuerda(i + 1);
+    contexto.fillRect(i * anchoCarril, 0, anchoCarril, lienzo.alto);
+    contexto.globalAlpha = 1;
+  }
+
+  // La estela, mas oscura que el resto: separa de un vistazo lo que YA sono de
+  // lo que viene, sin tener que localizar la linea.
+  contexto.fillStyle = COLOR_ESTELA;
+  contexto.fillRect(0, lineaAtaque, lienzo.ancho, lienzo.alto - lineaAtaque);
+
   contexto.strokeStyle = COLOR_SEPARADOR;
   contexto.lineWidth = 1;
   for (let i = 1; i < lienzo.cuerdas; i += 1) {
@@ -179,7 +219,7 @@ function pintarCuadro(
   );
 
   contexto.textAlign = "center";
-  contexto.font = "600 11px system-ui, sans-serif";
+  contexto.textBaseline = "middle";
   const tempoEfectivo = tempoParaDibujar(pieza, estado);
   for (const nota of notasVisibles(pieza.notas, instanteS, tempoEfectivo, VENTANA_VISIBLE_S)) {
     const rectangulo = rectanguloDeNota(nota, instanteS, tempoEfectivo, lienzo, VENTANA_VISIBLE_S);
@@ -187,36 +227,93 @@ function pintarCuadro(
     const tocada = indice === undefined ? undefined : tocadas.get(indice);
 
     // `rectangulo.y` es el borde de ATAQUE, el INFERIOR: el que llega primero a
-    // la línea de ataque. La esquina superior, que es la que pide `fillRect`,
-    // está un alto más arriba. Pasar `y` a secas pintaría fuera del lienzo.
-    const alto = Math.max(rectangulo.alto, ALTO_MINIMO_PX);
+    // la linea de ataque. La esquina superior esta un alto mas arriba. El hueco
+    // entre notas se le quita a ese borde de arriba, nunca al de ataque.
+    const alto = Math.max(rectangulo.alto - SEPARACION_NOTAS_PX, ALTO_MINIMO_PX);
     const arriba = rectangulo.y - alto;
+    const x = rectangulo.x + MARGEN_CARRIL_PX;
+    const ancho = Math.max(rectangulo.ancho - 2 * MARGEN_CARRIL_PX, 1);
 
-    contexto.fillStyle = tocada === undefined ? COLOR_PENDIENTE : colorDeDesviacion(tocada);
-    contexto.fillRect(
-      rectangulo.x + MARGEN_CARRIL_PX,
-      arriba,
-      Math.max(rectangulo.ancho - 2 * MARGEN_CARRIL_PX, 1),
-      alto
-    );
+    // Profundidad: lo que esta lejos de la linea se pinta mas tenue. Por debajo
+    // de la linea -la estela- no se desvanece: ya sono y es lo que se mira para
+    // ver el patron.
+    const distancia = Math.min(Math.max((lineaAtaque - rectangulo.y) / lineaAtaque, 0), 1);
+    contexto.globalAlpha = 1 - DESVANECIDO_MAXIMO * distancia;
+
+    const colorNota =
+      tocada === undefined ? colorDeCuerda(nota.cuerda) : colorDeDesviacion(tocada);
+    contexto.fillStyle = colorNota;
+    dibujarNota(contexto, x, arriba, ancho, alto);
+    contexto.fill();
+
+    if (tocada !== undefined) {
+      contexto.strokeStyle = COLOR_BORDE_TOCADA;
+      contexto.lineWidth = 2;
+      dibujarNota(contexto, x, arriba, ancho, alto);
+      contexto.stroke();
+    }
 
     if (alto >= ALTO_PARA_TRASTE_PX) {
-      contexto.fillStyle = COLOR_TRASTE;
-      contexto.fillText(String(nota.traste), rectangulo.x + rectangulo.ancho / 2, rectangulo.y - 5);
+      contexto.fillStyle = colorDeTextoSobre(colorNota);
+      contexto.font = "700 13px system-ui, sans-serif";
+      contexto.fillText(String(nota.traste), x + ancho / 2, arriba + alto / 2);
+    } else {
+      // No cabe dentro: va justo encima, en el color de la cuerda, para que una
+      // nota corta no se quede sin decir que traste es.
+      contexto.fillStyle = colorNota;
+      contexto.font = "700 11px system-ui, sans-serif";
+      contexto.fillText(String(nota.traste), x + ancho / 2, arriba - 8);
     }
+    contexto.globalAlpha = 1;
   }
 
-  // La línea de ataque, al final para que ninguna nota la tape. No va en el
-  // borde de abajo: debajo queda la estela de las notas que ya sonaron, y donde
-  // cae lo dice la geometría (`yDeLaLineaDeAtaque`), no este archivo.
-  const lineaAtaque = yDeLaLineaDeAtaque(lienzo, VENTANA_VISIBLE_S);
-  contexto.strokeStyle = COLOR_LINEA_ATAQUE;
-  contexto.lineWidth = 2;
-  contexto.beginPath();
-  contexto.moveTo(0, lineaAtaque);
-  contexto.lineTo(lienzo.ancho, lineaAtaque);
-  contexto.stroke();
+  // La linea de ataque, al final para que ninguna nota la tape. No va en el
+  // borde de abajo: debajo queda la estela, y donde cae lo dice la geometria.
+  // Se pinta con un halo -tres trazos cada vez mas anchos y mas tenues- porque
+  // una linea de 2 px se perdia entre las notas justo donde hay que mirar.
+  for (const [grosor, alfa] of [
+    [10, 0.1],
+    [5, 0.2],
+    [2, 1],
+  ] as const) {
+    contexto.globalAlpha = alfa;
+    contexto.strokeStyle = COLOR_LINEA_ATAQUE;
+    contexto.lineWidth = grosor;
+    contexto.beginPath();
+    contexto.moveTo(0, lineaAtaque);
+    contexto.lineTo(lienzo.ancho, lineaAtaque);
+    contexto.stroke();
+  }
+  contexto.globalAlpha = 1;
+
+  // La diana de cada cuerda sobre la linea: dice de que color es cada carril
+  // aunque no venga ninguna nota, que es como se aprende el codigo de colores.
+  for (let i = 0; i < lienzo.cuerdas; i += 1) {
+    contexto.fillStyle = colorDeCuerda(i + 1);
+    contexto.fillRect(i * anchoCarril + MARGEN_CARRIL_PX, lineaAtaque - 1, 
+      Math.max(anchoCarril - 2 * MARGEN_CARRIL_PX, 1), 3);
+  }
 }
+
+/** El contorno de una nota: un rectangulo de esquinas redondeadas.
+ *
+ * `roundRect` no existe en jsdom ni en navegadores viejos, asi que se degrada a
+ * un rectangulo recto en vez de romper el dibujo entero. */
+function dibujarNota(
+  contexto: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  ancho: number,
+  alto: number
+): void {
+  contexto.beginPath();
+  if (typeof contexto.roundRect === "function") {
+    contexto.roundRect(x, y, ancho, alto, Math.min(RADIO_NOTA_PX, ancho / 2, alto / 2));
+  } else {
+    contexto.rect(x, y, ancho, alto);
+  }
+}
+
 
 /**
  * El tempo con el que se convierten los pulsos en segundos al dibujar.
@@ -576,17 +673,6 @@ export function Carril({ peticion = null }: PropiedadesCarril) {
       {/* Un rechazo del servidor a una orden (tempo, salto, pausa) no se pierde. */}
       {error !== null && <p className="error-ejercicio">{error}</p>}
 
-      {estado !== null && (
-        <ControlesEstudio
-          estado={estado}
-          secciones={secciones}
-          alCambiarPlan={cambiarPlan}
-          alPausar={(activa) => void pausar(activa)}
-          alSaltar={(compas) => void saltar(compas)}
-          alAjustarAcompanamiento={acompanamiento}
-        />
-      )}
-
       <div className="conmutador-vista" role="group" aria-label="Vista">
         <button type="button" aria-pressed={vista === "carril"} onClick={() => setVista("carril")}>
           Carril
@@ -602,6 +688,17 @@ export function Carril({ peticion = null }: PropiedadesCarril) {
 
       {dibujando && (
         <canvas className="lienzo-carril" data-testid="lienzo-carril" ref={lienzoRef} />
+      )}
+
+      {estado !== null && (
+        <ControlesEstudio
+          estado={estado}
+          secciones={secciones}
+          alCambiarPlan={cambiarPlan}
+          alPausar={(activa) => void pausar(activa)}
+          alSaltar={(compas) => void saltar(compas)}
+          alAjustarAcompanamiento={acompanamiento}
+        />
       )}
 
       {/* El resumen cuenta sobre la pieza ENTERA, así que solo se muestra cuando
