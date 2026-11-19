@@ -42,7 +42,18 @@ def test_el_ejercicio_se_serializa_para_la_interfaz():
         perfil="guitarra_estandar",
     )
     datos = ejercicio.a_dict()
-    assert set(datos) == {"clave", "nombre", "descripcion", "notas", "tempo", "perfil"}
+    # "acordes" va siempre, vacio en un ejercicio de notas: la interfaz lee las
+    # dos claves y una ausente le llegaria como undefined (etapa 2b).
+    assert set(datos) == {
+        "clave",
+        "nombre",
+        "descripcion",
+        "notas",
+        "acordes",
+        "tempo",
+        "perfil",
+    }
+    assert datos["acordes"] == []
     assert datos["notas"][0] == {
         "midi": 40,
         "nombre": "E2",
