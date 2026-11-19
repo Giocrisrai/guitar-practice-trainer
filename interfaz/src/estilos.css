@@ -6,6 +6,11 @@
   --afinada: #34d17a;
   --desviada: #e8a33d;
   --borde: #2b2f37;
+  /* Una nota del acorde que no suena (etapa 2b). Tiene su propia variable y no
+     reutiliza --desviada porque en el afinador ese ámbar significa "sonó alta",
+     y darle un segundo significado en otra pantalla es cómo se pierde un
+     idioma visual. */
+  --ausente: #e85b9a;
 }
 
 * { box-sizing: border-box; }
@@ -310,3 +315,93 @@ body {
 .peores-compases { list-style: none; padding: 0; margin: 8px 0; }
 .peores-compases li { margin: 4px 0; }
 .cifras-peor { color: var(--tenue); font-size: 14px; }
+
+/* Diagrama de acorde (etapa 2b). Una fila por cuerda, de la grave arriba, con
+   la misma orientación que el mástil del ejercicio monofónico: dos
+   orientaciones distintas en la misma pantalla obligan a releer cuál es cuál. */
+.diagrama-acorde {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 14px 0;
+  padding: 12px;
+  background: #12161b;
+  border: 1px solid var(--borde);
+  border-radius: 10px;
+}
+
+.nombre-acorde {
+  margin: 0 0 6px;
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.cuerda-acorde {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 30px;
+}
+
+.cuerda-acorde .etiqueta-cuerda {
+  width: 2.2em;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.marca-traste {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  color: #12161b;
+  font-weight: 700;
+  font-size: 13px;
+}
+
+/* Una cuerda que no suena se apaga y se marca; no se oculta. Saber que falta es
+   el dato que el ejercicio existe para dar. */
+.marca-traste.apagada {
+  background: transparent;
+  border: 2px dashed var(--ausente);
+  color: var(--ausente);
+}
+
+.marca-muda {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  color: var(--tenue);
+  font-size: 18px;
+}
+
+.cuerda-acorde.no-se-toca .etiqueta-cuerda {
+  color: var(--tenue);
+  font-weight: 400;
+}
+
+.aviso-falta {
+  color: var(--ausente);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.notas-del-acorde,
+.pista-oculta {
+  margin: 8px 0 0;
+  color: var(--tenue);
+  font-size: 12px;
+}
+
+.ultimo-cambio {
+  margin: 6px 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.informe-cambios h2 {
+  font-variant-numeric: tabular-nums;
+}
