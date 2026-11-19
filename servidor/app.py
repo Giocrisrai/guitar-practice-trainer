@@ -23,6 +23,7 @@ from fastapi.staticfiles import StaticFiles
 
 from nucleo.afinaciones import PERFILES, PERFILES_DE_FABRICA
 from nucleo.analisis.pipeline import ResultadoAnalisis
+from nucleo.ejercicios.generadores.acordes import DIGITACIONES
 from nucleo.ejercicios.teoria import ACORDES, ESCALAS, INTERVALOS
 from nucleo.piezas.desde_ejercicio import pieza_desde_ejercicio
 from nucleo.piezas.estudio import PlanDePasada
@@ -576,6 +577,13 @@ def crear_app(
                 "descripcion": "Se nombra una nota y tienes que encontrarla",
                 "tipos": [],
                 "parametros": ["cuerda", "traste_minimo", "traste_maximo", "tempo", "repeticiones"],
+            },
+            {
+                "clave": "cambios",
+                "nombre": "Cambios de acorde",
+                "descripcion": "Alterna acordes y mide cuanto tardas en cambiar",
+                "tipos": sorted(DIGITACIONES),
+                "parametros": ["claves", "repeticiones", "tempo"],
             },
         ]
 

@@ -3,7 +3,11 @@
 import threading
 from typing import Callable
 
+from nucleo.afinaciones import PERFILES
+from nucleo.analisis.acordes import VENTANA_ACORDES, DetectorAcordes
+from nucleo.ejercicios.cambios import EvaluadorCambios
 from nucleo.ejercicios.evaluacion import EstadoEvaluacion, EvaluadorEjercicio
+from nucleo.ejercicios.generadores.acordes import generar_cambios
 from nucleo.ejercicios.generadores.arpegios import generar_arpegio
 from nucleo.ejercicios.generadores.escalas import generar_escala
 from nucleo.ejercicios.generadores.intervalos import generar_intervalo
@@ -17,7 +21,9 @@ GENERADORES: dict[str, Callable[..., Ejercicio]] = {
     "arpegio": generar_arpegio,
     "intervalo": generar_intervalo,
     "lectura": generar_lectura,
+    "cambios": generar_cambios,
 }
+
 
 
 class SesionPractica:
@@ -32,6 +38,10 @@ class SesionPractica:
         self._salida = salida or SalidaAudio()
         self._ejercicio: Ejercicio | None = None
         self._evaluador: EvaluadorEjercicio | None = None
+        # El de acordes va aparte del monofonico y nunca estan los dos a la vez:
+        # un ejercicio trae notas o acordes, y el modelo lo valida al construirlo.
+        self._evaluador_cambios: EvaluadorCambios | None = None
+        self._detector_acordes: DetectorAcordes | None = None
         self._metronomo: Metronomo | None = None
         self._reproductor: ReproductorTonos | None = None
         # Indice de la nota cuya referencia ya se pidio, para no repetirla en
@@ -48,7 +58,7 @@ class SesionPractica:
 
     @property
     def activa(self) -> bool:
-        return self._evaluador is not None
+        return self._evaluador is not None or self._evaluador_cambios is not None
 
     @property
     def ejercicio(self) -> Ejercicio | None:
@@ -80,12 +90,37 @@ class SesionPractica:
         pausar el metronomo levanta una bandera. Ninguna de las dos cosas espera
         a que la salida de audio escriba nada.
         """
+        if self._evaluador_cambios is not None:
+            self._observar_acordes(instante)
+            self._ajustar_metronomo()
+            return
         evaluador = self._evaluador
         if evaluador is None:
             return
         estado = evaluador.procesar(resultado, instante)
         self._sonar_referencia(estado)
         self._ajustar_metronomo()
+
+    def _observar_acordes(self, instante: float) -> None:
+        """Alimenta al evaluador de cambios con su propia ventana de audio.
+
+        No usa el `ResultadoAnalisis` que llega al observador, y no es un
+        descuido: ese resultado se calculo sobre la ventana del perfil (4096
+        muestras) y el detector de acordes necesita 8192 para separar semitonos
+        graves. Asi que pide la ventana cruda a la sesion de audio.
+
+        Si la ventana todavia no esta (buffer a medio llenar, o captura cerrada)
+        no se inventa nada: se deja pasar el cuadro. El detector tiene su propia
+        guarda equivalente, pero llamarlo con None seria un TypeError.
+        """
+        evaluador = self._evaluador_cambios
+        detector = self._detector_acordes
+        if evaluador is None or detector is None:
+            return
+        muestras = self._sesion_audio.leer_ventana_cruda(VENTANA_ACORDES)
+        if muestras is None:
+            return
+        evaluador.procesar(detector.procesar(muestras, evaluador.midis_esperados), instante)
 
     def _sonar_referencia(self, estado: EstadoEvaluacion) -> None:
         """Hace sonar la nota de referencia al entrar en una nota nueva.
@@ -144,7 +179,22 @@ class SesionPractica:
         self.detener()
         self._metronomo_pedido = con_metronomo
         self._ejercicio = ejercicio
-        self._evaluador = EvaluadorEjercicio(ejercicio)
+        if ejercicio.acordes:
+            self._evaluador_cambios = EvaluadorCambios(ejercicio)
+            perfil = PERFILES.get(
+                ejercicio.perfil, PERFILES[self._sesion_audio.configuracion.perfil]
+            )
+            # La frecuencia de muestreo se deja por defecto (48 kHz), que es la
+            # misma que usan `Analizador` y `CapturaAudio`: no hay un ajuste de
+            # usuario para eso, y poner aqui un numero distinto haria que el
+            # detector midiera frecuencias que no son las que se capturaron.
+            self._detector_acordes = DetectorAcordes(
+                perfil,
+                umbral_ruido_dbfs=self._sesion_audio.configuracion.umbral_ruido_dbfs,
+                referencia_a4=self._sesion_audio.configuracion.referencia_a4,
+            )
+        else:
+            self._evaluador = EvaluadorEjercicio(ejercicio)
         with self._candado_referencia:
             self._indice_referencia = -1
 
@@ -177,8 +227,8 @@ class SesionPractica:
         # La referencia de la primera nota se pide aqui y no desde `_observar`
         # porque `_observar` solo corre cuando llega audio: sin cable enchufado no
         # hay cuadros, y el alumno se quedaria esperando un tono que no llega.
-        estado = self._evaluador.estado
-        self._sonar_referencia(estado)
+        if self._evaluador is not None:
+            self._sonar_referencia(self._evaluador.estado)
         return {**self.estado(), "metronomo": sonando}
 
     def detener(self) -> None:
@@ -196,6 +246,8 @@ class SesionPractica:
             self._reproductor = None
         self._salida.cerrar()
         self._evaluador = None
+        self._evaluador_cambios = None
+        self._detector_acordes = None
         self._ejercicio = None
         with self._candado_referencia:
             self._indice_referencia = -1
@@ -214,10 +266,14 @@ class SesionPractica:
         bloquea, asi que llamarlo desde los dos hilos es seguro.
         """
         self._ajustar_metronomo()
-        evaluador = self._evaluador
+        # Uno de los dos, nunca los dos: lo garantiza la validacion de Ejercicio.
+        # La interfaz lee las mismas dos claves en los dos casos; lo que cambia es
+        # la forma de lo que llega dentro, y "es_de_acordes" se lo dice.
+        evaluador = self._evaluador or self._evaluador_cambios
         metronomo = self._metronomo
         return {
             "ejercicio": None if self._ejercicio is None else self._ejercicio.a_dict(),
+            "es_de_acordes": self._evaluador_cambios is not None,
             "evaluacion": None if evaluador is None else evaluador.estado.a_dict(),
             "informe": None if evaluador is None else evaluador.resultado().a_dict(),
             "metronomo": metronomo is not None and metronomo.sonando,

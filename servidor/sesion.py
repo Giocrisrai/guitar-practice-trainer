@@ -13,6 +13,8 @@ import time
 from dataclasses import replace
 from typing import Callable
 
+import numpy as np
+
 from nucleo.afinaciones import PERFILES
 from nucleo.analisis.energia import nivel_dbfs
 from nucleo.analisis.pipeline import (
@@ -216,6 +218,25 @@ class Sesion:
         spec §5) tiene que poder preguntarlo sin pagar esa enumeración.
         """
         return self._falta_senal_confirmada()
+
+    def leer_ventana_cruda(self, muestras: int) -> np.ndarray | None:
+        """Las últimas `muestras` muestras capturadas, sin analizar.
+
+        Existe por la detección de acordes (etapa 2b), que necesita una ventana
+        más larga que el análisis monofónico —8192 muestras frente a 4096, para
+        separar semitonos graves— y por tanto no puede servirse de lo que los
+        observadores reciben, que es un `ResultadoAnalisis` ya calculado sobre la
+        ventana del perfil.
+
+        Devuelve None si no hay captura abierta o si el buffer todavía no tiene
+        tantas muestras. Es deliberado que no rellene con ceros: una ventana a
+        medio llenar no se puede juzgar, y quien la pida tiene que poder
+        distinguir "no hay bastante" de "hay silencio".
+        """
+        captura = self._captura
+        if captura is None:
+            return None
+        return captura.leer_ventana(muestras)
 
     def diagnostico(
         self, nivel_db: float | None = None, esperando_notas: bool = True
