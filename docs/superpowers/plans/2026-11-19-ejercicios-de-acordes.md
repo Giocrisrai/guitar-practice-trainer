@@ -1422,7 +1422,23 @@ El requisito de la spec §8: se ve la digitación en el mástil y, cuando falta 
 
 ---
 
-### Task 8: El carril deja de excluir acordes
+### Task 8: El carril deja de excluir acordes — **NO HECHA**
+
+> **Estado real, 2026-11-19.** Las tareas 1 a 7 y la 9 están hechas; esta no.
+> Al llegar aquí se vio que el plan la había infravalorado: `SeguidorPieza`
+> (`nucleo/piezas/seguimiento.py`) adjudica UNA `Pulsacion` a UNA nota, con sus
+> ventanas de reclamo asimétricas y su desempate por altura, y recibe
+> `ResultadoAnalisis`, no muestras. Cobrar un acorde exige (a) llevar audio crudo
+> desde `servidor/piezas.py` hasta el seguidor, y (b) decidir qué significan
+> `clasificacion`, `desfase_s` y `cents` de `NotaTocada` para una nota que no
+> tiene ataque propio —y eso la spec §4.4 no lo resolvió: dice «presencia, no
+> cents», pero el informe entero está escrito en el vocabulario de los cents y
+> el desfase. Es una etapa con su propio diseño, no un remate de esta.
+>
+> Los pasos de abajo se dejan como estaban, porque la mitad siguen valiendo; lo
+> que falta antes de ejecutarlos es la decisión de (b).
+
+
 
 **Files:**
 - Modify: el seguimiento del carril (`nucleo/piezas/` y `servidor/piezas.py`, según lo que haya).
