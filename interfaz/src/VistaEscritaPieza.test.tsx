@@ -34,6 +34,10 @@ function tocada(indice: number, midi: number, nombre: string, cents: number | nu
     clasificacion: "a_tiempo",
     acertada: midi === PIEZA.notas[indice].midi,
     afinada: cents === null ? null : Math.abs(cents) < 5,
+    // Este ayudante finge el camino MONOFONICO, que es el que mide cents y
+    // desfase. Las notas de acorde cobradas por presencia llevan `true` y los
+    // cuatro campos de arriba en null; no hay ninguna en esta suite.
+    por_presencia: false,
   };
 }
 

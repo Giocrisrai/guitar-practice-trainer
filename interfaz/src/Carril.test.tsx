@@ -269,13 +269,73 @@ describe("Carril", () => {
       instante_s: 4.0, indice_actual: 3, total: 3, completado: true, pausado: false,
       tocadas: [
         { indice: 0, midi: 40, cents: -5.0, desfase_s: 0.01, clasificacion: "a_tiempo", acertada: true,
-          afinada: false },
+          afinada: false , por_presencia: false },
         { indice: 1, midi: 45, cents: 3.0, desfase_s: 0.22, clasificacion: "tarde", acertada: true,
-          afinada: true },
+          afinada: true , por_presencia: false },
       ],
     });
     expect(await screen.findByText(/a tiempo/i)).toBeTruthy();
     expect(await screen.findByText(/tarde/i)).toBeTruthy();
+  });
+
+  /**
+   * Una cuerda de un acorde cobrada por presencia: el rasgueo tuvo UN ataque, y
+   * las demás cuerdas se verificaron por presencia armónica. No tienen desfase ni
+   * clasificación, y el resumen no puede decir "sin instante" —eso suena a
+   * medición fallida— ni mucho menos "a tiempo".
+   */
+  it("una nota de acorde cobrada por presencia se dice distinta, no fallida", async () => {
+    vi.stubGlobal("fetch", crearFetchFalso());
+    render(<Carril />);
+    fireEvent.click(await screen.findByRole("button", { name: /empezar/i }));
+    enviarEstado({
+      instante_s: 4.0, indice_actual: 2, total: 3, completado: true, pausado: false,
+      tocadas: [
+        { indice: 0, midi: 40, cents: -1.0, desfase_s: 0.01, clasificacion: "a_tiempo",
+          acertada: true, afinada: true, por_presencia: false },
+        { indice: 1, midi: 45, cents: null, desfase_s: null, clasificacion: null,
+          acertada: true, afinada: null, por_presencia: true },
+      ],
+    });
+    expect(await screen.findByText(/en el acorde/i)).toBeTruthy();
+    expect(screen.queryByText(/sin instante/i)).toBeNull();
+    // Cuenta como acertada: cobrar el acorde entero es justo el punto.
+    expect(await screen.findByText(/2 de 3 notas acertadas/)).toBeTruthy();
+  });
+
+  it("la fila por presencia va marcada y la del ataque no", async () => {
+    vi.stubGlobal("fetch", crearFetchFalso());
+    render(<Carril />);
+    fireEvent.click(await screen.findByRole("button", { name: /empezar/i }));
+    enviarEstado({
+      instante_s: 4.0, indice_actual: 2, total: 3, completado: true, pausado: false,
+      tocadas: [
+        { indice: 0, midi: 40, cents: -1.0, desfase_s: 0.01, clasificacion: "a_tiempo",
+          acertada: true, afinada: true, por_presencia: false },
+        { indice: 1, midi: 45, cents: null, desfase_s: null, clasificacion: null,
+          acertada: true, afinada: null, por_presencia: true },
+      ],
+    });
+    await screen.findByText(/en el acorde/i);
+    const marcadas = document.querySelectorAll('[data-por-presencia="si"]');
+    expect(marcadas).toHaveLength(1);
+    expect(marcadas[0].className).toContain("nota-por-presencia");
+    expect(marcadas[0].className).not.toContain("nota-fallada");
+  });
+
+  it("una nota de acorde sin desfase no imprime un desfase de cero", async () => {
+    vi.stubGlobal("fetch", crearFetchFalso());
+    render(<Carril />);
+    fireEvent.click(await screen.findByRole("button", { name: /empezar/i }));
+    enviarEstado({
+      instante_s: 4.0, indice_actual: 1, total: 2, completado: true, pausado: false,
+      tocadas: [
+        { indice: 0, midi: 40, cents: null, desfase_s: null, clasificacion: null,
+          acertada: true, afinada: null, por_presencia: true },
+      ],
+    });
+    await screen.findByText(/en el acorde/i);
+    expect(screen.queryByText(/0 ms/)).toBeNull();
   });
 
 
@@ -303,9 +363,9 @@ describe("Carril", () => {
         ultimo_compas: 4,
         tocadas: [
           { indice: 0, midi: 40, nombre: "E2", cents: 0, desfase_s: 0.01,
-            clasificacion: "a_tiempo", acertada: true, afinada: true },
+            clasificacion: "a_tiempo", acertada: true, afinada: true , por_presencia: false },
           { indice: 1, midi: 45, nombre: "A2", cents: 0, desfase_s: 0.01,
-            clasificacion: "a_tiempo", acertada: true, afinada: true },
+            clasificacion: "a_tiempo", acertada: true, afinada: true , por_presencia: false },
         ],
       }),
     );
@@ -331,7 +391,7 @@ describe("Carril", () => {
         ultimo_compas: 4,
         tocadas: [
           { indice: 0, midi: 40, nombre: "E2", cents: 0, desfase_s: 0.01,
-            clasificacion: "a_tiempo", acertada: true, afinada: true },
+            clasificacion: "a_tiempo", acertada: true, afinada: true , por_presencia: false },
         ],
       }),
     );
@@ -354,10 +414,10 @@ describe("Carril", () => {
       instante_s: 4.0, indice_actual: 2, total: 3, completado: true, pausado: false,
       tocadas: [
         { indice: 0, midi: 40, nombre: "E2", cents: 0, desfase_s: 0.01,
-          clasificacion: "a_tiempo", acertada: true, afinada: true },
+          clasificacion: "a_tiempo", acertada: true, afinada: true , por_presencia: false },
         // La nota 1 pedia A2 (MIDI 45) y sonó A#2: fallada, y bien afinada.
         { indice: 1, midi: 46, nombre: "A#2", cents: 1.0, desfase_s: 0.02,
-          clasificacion: "a_tiempo", acertada: false, afinada: true },
+          clasificacion: "a_tiempo", acertada: false, afinada: true , por_presencia: false },
       ],
     });
     expect(await screen.findByText(/1 de 3 notas acertadas/i)).toBeTruthy();
@@ -430,7 +490,7 @@ describe("Carril", () => {
       pausado: false,
       tocadas: [
         { indice: 2, midi: 52, cents: 0, desfase_s: 0, clasificacion: "a_tiempo", acertada: true,
-          afinada: true },
+          afinada: true , por_presencia: false },
       ],
     });
 
@@ -470,7 +530,7 @@ describe("Carril", () => {
       pausado: false,
       tocadas: [
         { indice: 2, midi: 52, cents: 0, desfase_s: 0, clasificacion: "a_tiempo", acertada: true,
-          afinada: true },
+          afinada: true , por_presencia: false },
       ],
     });
     expect(screen.queryByText(/pieza terminada/i)).toBeNull();

@@ -253,6 +253,41 @@ Lo que no cambia: las notas sueltas siguen yendo por el camino monofónico, que 
 el que da cents y afinación. Un acorde da presencia, no cents, y el informe tiene
 que distinguirlo en vez de dejar un hueco donde antes decía «con acordes».
 
+### 4.4.1 Qué significan `desfase_s`, `clasificacion` y `cents` en una nota de acorde
+
+Esto la §4.4 no lo resolvió, y sin resolverlo no hay código: el informe del carril
+está escrito entero en cents y desfase, y una nota cobrada por presencia no tiene
+ni lo uno ni lo otro. La decisión, tomada al implementar la tarea 8:
+
+**Un acorde del carril se cobra en dos mitades, y las dos se dicen distintas.**
+
+1. **El rasgueo tiene UN ataque**, y ese ataque se adjudica como siempre:
+   `DetectorPulsaciones` da una `Pulsacion`, `_adjudicar` la lleva a una nota del
+   grupo por altura y cercanía, y esa nota sale con su `desfase_s`, su
+   `clasificacion` y sus `cents` reales. No cambia nada del camino monofónico.
+2. **El resto de las notas del grupo se cobran por presencia**, con el detector de
+   acordes sobre la ventana cruda. Las que suenan salen con `cents=None`,
+   `desfase_s=None`, `clasificacion=None`, `afinada=None` y un campo nuevo,
+   `por_presencia=True`.
+
+**Por qué `None` y no un número prestado.** `NotaTocada` ya define `None` como «no
+se supo», y una cuerda sin ataque propio genuinamente no tiene desviación ni
+desfase medibles. Copiarle el desfase a la nota hermana que sí tuvo ataque
+publicaría la colocación del rasgueo como si fuera la de cada cuerda, y el informe
+promediaría seis copias del mismo número: la estadística de tiempo saldría seis
+veces más segura de lo que es. `por_presencia` es justo lo que las mantiene fuera
+de esas cuentas.
+
+**El ataque sigue siendo obligatorio.** La presencia solo se cobra sobre un grupo
+que ya tiene una nota cobrada por ataque en este mismo cuadro. Sin esa puerta, los
+armónicos de un acorde vecino cobrarían un acorde que nadie tocó —el falso
+positivo medido en el umbral— y lo harían encima sin que suene un ataque. Con
+ella, el detector monofónico es el que autoriza y el de acordes solo reparte.
+
+**Qué no cubre.** Una nota de acorde que no suena no deja marca de fallo: queda sin
+cobrar, igual que hoy queda una nota suelta que nadie tocó. Decir *qué cuerda* del
+acorde escrito falló es la pantalla de ejercicios, no el carril.
+
 ## 5. Manejo de errores
 
 | Situación | Cuándo se detecta | Qué muestra |

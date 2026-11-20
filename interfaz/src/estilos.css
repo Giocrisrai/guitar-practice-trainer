@@ -201,6 +201,12 @@ body {
    cents, que es otra cosa: una nota equivocada puede estar bien afinada. */
 .desviaciones-carril .nota-fallada { color: var(--desviada); }
 
+/* Una cuerda de un acorde, sabida por presencia y no por ataque propio: no
+   lleva tiempo ni afinación medidos, así que se escribe más tenue. NO se pinta
+   de otro color: no es un veredicto distinto, es la misma nota acertada con
+   menos dicho de ella, y darle color la convertiría en una categoría. */
+.desviaciones-carril .nota-por-presencia { opacity: 0.75; }
+
 /* --- Vista escrita --- */
 .conmutador-vista { display: flex; gap: 8px; margin: 8px 0; }
 .conmutador-vista button[aria-pressed="true"] { border-color: var(--acento, currentColor); font-weight: 600; }

@@ -18,8 +18,12 @@ en silencio.
 """
 
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 
+import numpy as np
+
+from nucleo.analisis.acordes import DetectorAcordes
 from nucleo.analisis.pipeline import ResultadoAnalisis
 from nucleo.ejercicios.pulsaciones import (
     VENTANA_ATAQUE_COMO_ONSET_S,
@@ -140,11 +144,21 @@ def validar_plan(pieza: Pieza, plan: PlanDePasada) -> PlanDePasada:
 class CompasDelInforme:
     """Lo que paso en un compas de una pasada.
 
-    `notas_medibles` son menos que `notas_escritas` cuando hay acordes: las notas
-    de un acorde comparten instante, el detector de tono es MONOFONICO y lee una
-    sola altura, asi que de un acorde de cuatro notas solo una se puede medir. Las
-    otras tres no se cuentan como falladas porque no son un fallo del alumno, son
-    un limite del programa.
+    `notas_medibles` son menos que `notas_escritas` cuando hay acordes, y lo que
+    cuenta es los ATAQUES: las notas de un acorde comparten instante y el rasgueo
+    tiene un solo ataque, asi que de un acorde de cuatro notas solo una tiene
+    tiempo medible. Es el denominador de `a_tiempo`, `pronto`, `tarde` y `limpias`,
+    y nada mas.
+
+    **NO es el denominador de `acertadas`, y desde la etapa 2b ya no lo era.** El
+    carril cobra las demas cuerdas del acorde por PRESENCIA
+    (`SeguidorPieza._cobrar_el_resto_del_acorde`), asi que las cuatro notas se
+    pueden acertar aunque solo una tenga ataque: ahi el denominador es
+    `notas_escritas`. Por eso `acertadas` puede ser MAYOR que `notas_medibles`, y
+    quien divida una cosa por la otra saca una proporcion por encima de 1.
+
+    Lo que sigue en pie es que el RITMO de un acorde se mide una vez por rasgueo, y
+    por eso `proporcion_limpia` deja fuera los compases con acordes.
 
     `desfase_medio_s` lleva SIGNO, y es el dato que de verdad diagnostica:
     "el 19 lo tocas entero 40 ms tarde" es accionable, "fallas el 19" no. Negativo
@@ -388,12 +402,21 @@ class SesionDeEstudio:
         pieza: Pieza,
         plan: PlanDePasada = PlanDePasada(),
         detector: DetectorPulsaciones | None = None,
+        detector_acordes: DetectorAcordes | None = None,
+        proveedor_de_muestras: Callable[[int], np.ndarray | None] | None = None,
     ) -> None:
         # Ver el docstring de la clase: reentrante, y el del seguidor va dentro.
         self._candado = threading.RLock()
         self.pieza = pieza
         self._plan = validar_plan(pieza, plan)
         self._detector = detector
+        # Los dos que hacen falta para cobrar acordes en el carril, y los dos
+        # viajan al seguidor sin que esta clase los use: `cambiar_plan` y
+        # `reiniciar_pasada` REEMPLAZAN el seguidor, asi que hay que guardarlos
+        # para volver a darselos al siguiente. Opcionales a proposito: sin ellos el
+        # carril es el monofonico de siempre (ver `SeguidorPieza`).
+        self._detector_acordes = detector_acordes
+        self._proveedor_de_muestras = proveedor_de_muestras
         self._repeticion = 1
         self._en_pausa = False
         self._cuenta_atras_restante_s = 0.0
@@ -448,7 +471,11 @@ class SesionDeEstudio:
 
     def _nuevo_seguidor(self) -> SeguidorPieza:
         return SeguidorPieza(
-            self.pieza, self._detector, factor_tempo=self._plan.factor_tempo
+            self.pieza,
+            self._detector,
+            factor_tempo=self._plan.factor_tempo,
+            detector_acordes=self._detector_acordes,
+            proveedor_de_muestras=self._proveedor_de_muestras,
         )
 
     def _segundos(self, pulsos: float) -> float:

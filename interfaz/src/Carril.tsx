@@ -80,10 +80,26 @@ const TEXTO_CLASIFICACION: Record<Clasificacion, string> = {
   tarde: "tarde",
 };
 
-/** Cómo llegó una pulsación. `null` NO es "a tiempo": es que no se supo cuándo
- * empezó, y decir que fue puntual sería inventárselo. */
-function textoClasificacion(clasificacion: Clasificacion | null): string {
-  return clasificacion === null ? "sin instante" : TEXTO_CLASIFICACION[clasificacion];
+/**
+ * Cómo llegó una nota, y por qué camino se supo.
+ *
+ * Tres casos y tres textos distintos, porque son tres cosas distintas:
+ *
+ * - Una nota cobrada por PRESENCIA (`por_presencia`) es una cuerda de un acorde
+ *   que no tuvo ataque propio: el rasgueo fue uno solo. No es que su instante se
+ *   perdiera, es que no existe, así que se dice "en el acorde" y no "sin
+ *   instante", que sonaría a medición fallida.
+ * - `clasificacion` nula con ataque sí es una medición que no se pudo hacer: no se
+ *   supo cuándo empezó.
+ * - Y si hay clasificación, se dice.
+ *
+ * En ninguno de los dos primeros casos se dice "a tiempo": sería inventárselo.
+ */
+function textoClasificacion(tocada: NotaTocada): string {
+  if (tocada.por_presencia) return "en el acorde";
+  return tocada.clasificacion === null
+    ? "sin instante"
+    : TEXTO_CLASIFICACION[tocada.clasificacion];
 }
 
 /** El desfase en milisegundos, con signo. Vacío si no se supo. */
@@ -91,6 +107,21 @@ function textoDesfase(desfaseS: number | null): string {
   if (desfaseS === null) return "";
   const ms = Math.round(desfaseS * 1000);
   return `(${ms > 0 ? "+" : ""}${ms} ms)`;
+}
+
+/**
+ * Las clases de una fila del resumen. Dos marcas independientes: fallar es una
+ * cosa y haberse sabido por presencia es otra, y una nota de acorde ausente no
+ * aparece en esta lista (se queda sin cobrar), así que las dos nunca coinciden
+ * hoy. Se escriben como clases separadas igualmente, porque combinarlas en una
+ * sola obligaría a tocar las dos el día que cambie una.
+ */
+function clasesDeFila(tocada: NotaTocada): string | undefined {
+  const clases = [
+    tocada.acertada ? null : "nota-fallada",
+    tocada.por_presencia ? "nota-por-presencia" : null,
+  ].filter((c) => c !== null);
+  return clases.length === 0 ? undefined : clases.join(" ");
 }
 
 /** El nombre de la nota PEDIDA, que lo trae la pieza y no la pulsación. */
@@ -361,14 +392,15 @@ function ResumenCarril({ pieza, estado }: { pieza: Pieza; estado: EstadoEstudio 
         {estado.tocadas.map((tocada) => (
           <li
             key={tocada.indice}
-            className={tocada.acertada ? undefined : "nota-fallada"}
+            className={clasesDeFila(tocada)}
             data-testid={tocada.acertada ? "fila-acertada" : "fila-fallada"}
+            data-por-presencia={tocada.por_presencia ? "si" : undefined}
           >
             <span
               className="punto-desviacion"
               style={{ background: colorDeDesviacion(tocada) }}
             />
-            {textoDeFila(pieza, tocada)} — {textoClasificacion(tocada.clasificacion)}{" "}
+            {textoDeFila(pieza, tocada)} — {textoClasificacion(tocada)}{" "}
             {textoDesfase(tocada.desfase_s)}
           </li>
         ))}

@@ -21,6 +21,9 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from collections.abc import Callable
+
+from nucleo.analisis.acordes import DetectorAcordes
 from nucleo.analisis.pipeline import ResultadoAnalisis
 from nucleo.ejercicios.pulsaciones import DetectorPulsaciones, Pulsacion
 from nucleo.musica import esta_afinada, midi_de_nombre, nombre_de_midi
@@ -117,6 +120,16 @@ class NotaTocada:
     clasificacion: str | None
     acertada: bool
     afinada: bool | None
+    # True cuando la nota se cobro por PRESENCIA y no por ataque propio: es una
+    # cuerda de un acorde que sonaba cuando se rasgueo el grupo, verificada con el
+    # detector de acordes sobre la ventana cruda. Lleva `cents`, `desfase_s`,
+    # `clasificacion` y `afinada` a None por fuerza y no por descuido (ver la spec
+    # de la 2b, §4.4.1): copiarle el desfase a la nota hermana que SI tuvo ataque
+    # publicaria la colocacion del rasgueo como si fuera la de cada cuerda, y
+    # cualquier promedio de tiempo saldria con una muestra repetida tantas veces
+    # como cuerdas tenga el acorde. Quien haga estadistica de tiempo filtra por
+    # este campo.
+    por_presencia: bool = False
 
     def a_dict(self) -> dict:
         return {
@@ -128,6 +141,7 @@ class NotaTocada:
             "clasificacion": self.clasificacion,
             "acertada": self.acertada,
             "afinada": self.afinada,
+            "por_presencia": self.por_presencia,
         }
 
 
@@ -143,8 +157,9 @@ class EstadoCarril:
     quiera saber si la pieza termino mira `completado`, no el indice. Si en ese
     instante hay un ACORDE -varias notas con el mismo inicio- señala a la ultima
     de ellas, que es una eleccion arbitraria entre iguales, porque el seguidor no
-    sabe seguir acordes (ver `SeguidorPieza`). Esta frontera es la que lee la
-    interfaz, asi que la arbitrariedad se dice aqui y no solo alla.
+    senala a UNA nota y un acorde son varias (ver `SeguidorPieza`). Esta frontera
+    es la que lee la interfaz, asi que la arbitrariedad se dice aqui y no solo
+    alla.
 
     `tocadas` solo trae las pulsaciones que se pudieron adjudicar. Una nota que
     nadie toco no aparece: el carril la pinta sin marca, y contar "cuantas
@@ -213,14 +228,26 @@ class SeguidorPieza:
     una nota que el alumno nunca toco acababa en el informe como tocada -y
     acertada- con un desfase absurdo.
 
-    NO SABE SEGUIR ACORDES. `Pieza` admite dos notas con el mismo
-    `inicio_pulsos` a proposito (los archivos de Guitar Pro de la etapa 3b los
-    traen), pero debajo de este seguidor hay un detector de tono MONOFONICO: de
-    un acorde lee una sola altura, y las demas notas de ese instante se quedan
-    sin cobrar por muy bien que se toquen. El carril las pintara y las contara
-    como no tocadas. Para seguir acordes hace falta deteccion polifonica, que no
-    existe en este proyecto, asi que una pieza con acordes se puede pintar pero
-    no se puede evaluar de forma justa.
+    LOS ACORDES SE COBRAN EN DOS MITADES, y solo si se le dio un detector de
+    acordes al construirlo (`detector_acordes` + `proveedor_de_muestras`). `Pieza`
+    admite dos notas con el mismo `inicio_pulsos` a proposito -los archivos de
+    Guitar Pro de la etapa 3b los traen-, y debajo de este seguidor sigue habiendo
+    un detector de tono MONOFONICO, que de un rasgueo lee UNA altura. Esa mitad no
+    cambia: el ataque se adjudica como siempre, con su desfase, su clasificacion y
+    sus cents. Lo que se anade es la otra mitad: en cuanto una nota de un grupo se
+    cobra por ataque, las DEMAS notas de ese mismo grupo se verifican por
+    PRESENCIA contra la ventana cruda (`nucleo.analisis.acordes`), y las que suenan
+    se cobran con `por_presencia=True` y sin cents ni desfase (el por que, en la
+    spec de la 2b §4.4.1 y en `NotaTocada`).
+
+    El ataque es la PUERTA, y es deliberado: sin el, los armonicos de un acorde
+    vecino cobrarian un acorde que nadie rasgueo. El detector monofonico autoriza
+    y el de acordes solo reparte.
+
+    SIN detector de acordes el comportamiento es el de antes: de un acorde se cobra
+    una sola nota y las demas quedan sin cobrar. Es el caso de todas las pruebas
+    que construyen el seguidor a secas, y de cualquier pieza seguida sin audio
+    crudo a mano.
 
     TEMPO AJUSTABLE (`factor_tempo`, 1.0 es el tempo escrito, 0.5 la mitad). Las
     tres ventanas y TODOS los instantes -los de las notas, los que toma
@@ -259,6 +286,8 @@ class SeguidorPieza:
         ventana_reclamo_minima_s: float = VENTANA_RECLAMO_MINIMA_S,
         ventana_altura_s: float = VENTANA_ALTURA_S,
         factor_tempo: float = 1.0,
+        detector_acordes: DetectorAcordes | None = None,
+        proveedor_de_muestras: Callable[[int], np.ndarray | None] | None = None,
     ) -> None:
         # `not > 0` y no `<= 0`: con NaN la segunda comparacion da False y lo dejaria pasar.
         if not factor_tempo > 0:
@@ -341,6 +370,28 @@ class SeguidorPieza:
         self._ventana_reclamo_pronto_s = max(self.ventana_a_tiempo_s, self.ventana_reclamo_minima_s)
         # Las alturas escritas, para adjudicar por nombre y no solo por cercania.
         self._midis = np.array([nota.midi for nota in pieza.notas], dtype=int)
+        # Los GRUPOS: las notas que comparten `inicio_pulsos` son un acorde. Se
+        # calculan una vez porque no cambian, y se guardan como el conjunto de
+        # indices de cada grupo indexado por nota, para que cobrar el resto de un
+        # acorde sea una busqueda y no un barrido.
+        #
+        # Se agrupa por el instante ESCRITO en pulsos y no por los segundos ya
+        # estirados: el factor de tempo multiplica a todos por igual, asi que
+        # agrupar por segundos daria el mismo resultado con un float mas de error.
+        grupos: dict[float, list[int]] = {}
+        for indice, nota in enumerate(pieza.notas):
+            grupos.setdefault(nota.inicio_pulsos, []).append(indice)
+        # Solo los grupos de mas de una nota son acordes. Una nota suelta no tiene
+        # "resto del acorde" que cobrar, y dejarla fuera del diccionario es lo que
+        # hace que el camino monofonico no pague nada por esto.
+        self._grupo_de: dict[int, tuple[int, ...]] = {
+            indice: tuple(miembros)
+            for miembros in grupos.values()
+            if len(miembros) > 1
+            for indice in miembros
+        }
+        self._detector_acordes = detector_acordes
+        self._proveedor_de_muestras = proveedor_de_muestras
         self._duracion_s = pieza.duracion_s / self._factor_tempo
         self._candado = threading.RLock()
         self.reiniciar()
@@ -349,6 +400,11 @@ class SeguidorPieza:
         """Vuelve al comienzo de la pieza y olvida lo tocado."""
         with self._candado:
             self._detector.reiniciar()
+            if self._detector_acordes is not None:
+                # El bufer del detector de acordes guarda 171 ms de audio del tramo
+                # que se abandona. Sin vaciarlo, el primer acorde del tramo nuevo se
+                # juzgaria en parte con lo que sonaba antes del salto.
+                self._detector_acordes.reiniciar()
             self._instante_pieza = 0.0
             # Instante del reloj del analisis que corresponde a `_instante_pieza`.
             # None es "todavia sin fijar": lo fija el proximo cuadro.
@@ -569,7 +625,9 @@ class SeguidorPieza:
             self._instante_pieza = instante_analisis - self._origen_analisis
             pulsacion = self._detector.procesar(resultado, instante_analisis)
             if pulsacion is not None:
-                self._adjudicar(pulsacion)
+                cobrada = self._adjudicar(pulsacion)
+                if cobrada is not None:
+                    self._cobrar_el_resto_del_acorde(cobrada)
             return self.estado
 
     def _indice_en_curso(self, instante_s: float) -> int:
@@ -580,16 +638,25 @@ class SeguidorPieza:
         quiera saber si la pieza termino mira `completado`.
 
         Con un acorde -varias notas en el mismo instante- devuelve la ultima de
-        ellas, que es una eleccion arbitraria entre iguales: este seguidor no
-        sabe seguir acordes (ver la clase).
+        ellas, que es una eleccion arbitraria entre iguales: el indice es UNA nota
+        y un acorde son varias. Cobrarlas si se sabe (ver la clase); senalar a
+        todas a la vez con un solo entero, no.
         """
         if len(self._inicios_s) == 0:
             return 0
         indice = int(np.searchsorted(self._inicios_s, instante_s, side="right")) - 1
         return max(0, indice)
 
-    def _adjudicar(self, pulsacion: Pulsacion) -> None:
+    def _adjudicar(self, pulsacion: Pulsacion) -> int | None:
         """Anota una pulsacion contra la nota sin cobrar mas cercana en el tiempo.
+
+        Devuelve el indice de la nota que cobro, o None si la descarto. Lo
+        devuelve para que `procesar` sepa sobre QUE grupo preguntar por el resto
+        del acorde: el ataque es la puerta de la mitad por presencia (ver la
+        clase), y sin este valor habria que adivinar cual fue mirando `_tocadas`.
+        Las pulsaciones de la COLA devuelven None a proposito: son de un tramo ya
+        abandonado, y la ventana cruda de ahora no dice nada de lo que sonaba
+        entonces.
 
         Cuando `pulsacion.instante` es None no se sabe cuando empezo la nota (ver
         `Pulsacion.instante`): se adjudica con el reloj de la pieza en este cuadro,
@@ -618,7 +685,7 @@ class SeguidorPieza:
         aqui se decida nada.
         """
         if not self._cobradas.size:
-            return
+            return None
 
         # Si esta pulsacion es de la COLA -atacada antes de la frontera del ultimo
         # salto continuo- se adjudica contra otro reloj y contra otro juego de
@@ -635,7 +702,7 @@ class SeguidorPieza:
             origen = self._origen_analisis
             if self._analisis_desde is not None and pulsacion.instante < self._analisis_desde:
                 if self._frontera_del_salto is None or self._origen_retirado is None:
-                    return
+                    return None
                 if pulsacion.instante < self._frontera_del_salto:
                     de_la_cola = True
                     origen = self._origen_retirado
@@ -644,7 +711,7 @@ class SeguidorPieza:
 
         cobradas = self._cobradas_de_la_cola if de_la_cola else self._cobradas
         if cobradas.all():
-            return
+            return None
 
         midi_tocado = midi_de_nombre(pulsacion.nota)
         # La ventana de reclamo es ASIMETRICA: hacia atras la manda la duracion
@@ -657,7 +724,7 @@ class SeguidorPieza:
         )
         reclamables = (~cobradas) & (distancias <= limites)
         if not reclamables.any():
-            return
+            return None
         # La altura primero, la cercania despues. Cuando las notas van a 75 ms unas
         # de otras el tiempo no puede decir cual se quiso tocar, y el nombre de la
         # nota si: adjudicar solo por cercania mandaba una nota tocada 200 ms tarde
@@ -717,6 +784,86 @@ class SeguidorPieza:
                 afinada=None if pulsacion.cents is None else esta_afinada(pulsacion.cents),
             )
         )
+        return None if de_la_cola else indice
+
+    def _cobrar_el_resto_del_acorde(self, indice_del_ataque: int) -> None:
+        """Cobra por PRESENCIA las demas notas del grupo de `indice_del_ataque`.
+
+        El ataque ya se adjudico (es `indice_del_ataque`). Lo que queda es el
+        resto de las cuerdas del mismo rasgueo, que no tienen ataque propio que
+        detectar porque el rasgueo fue uno: se verifican contra la ventana cruda
+        con el detector de acordes y se cobran las que suenan.
+
+        No hace nada, y sin coste, cuando:
+
+        - no se le dio detector de acordes o proveedor de muestras al construir el
+          seguidor (el caso por defecto: el camino monofonico de siempre);
+        - la nota del ataque no esta en ningun grupo de mas de una nota, es decir
+          no es un acorde;
+        - el proveedor no tiene todavia una ventana entera que dar (arranque de la
+          captura, o una pasada movida a mano sin audio).
+
+        **Al detector se le pasan los MIDI del grupo ENTERO, incluido el que ya se
+        cobro por ataque.** No es un descuido: el detector normaliza contra la nota
+        mas saliente de todo el mastil (ver `nucleo.analisis.acordes`), asi que lo
+        que se le pregunta no depende de la lista que se le pase; pero la nota del
+        ataque es casi siempre la mas fuerte del acorde, y dejarla fuera de la
+        pregunta no cambiaria nada del veredicto mientras oculta en la lectura que
+        el acorde que se verifica es el escrito completo.
+
+        Lo que SI depende de la lista es `faltan`, y de ahi sale la decision: se
+        cobra toda nota del grupo que este sin cobrar y NO este en `faltan`. Una
+        que falta se queda sin cobrar, igual que hoy se queda una nota suelta que
+        nadie toco: el carril la pinta sin marca. Marcar un fallo explicito por
+        cuerda es la pantalla de ejercicios, no el carril.
+
+        **Nunca cobra por la cola.** Una pulsacion de la cola devuelve None en
+        `_adjudicar` y no llega aqui: la ventana cruda es de AHORA y no dice nada
+        de lo que sonaba antes del salto.
+        """
+        detector = self._detector_acordes
+        proveedor = self._proveedor_de_muestras
+        if detector is None or proveedor is None:
+            return
+        grupo = self._grupo_de.get(indice_del_ataque)
+        if grupo is None:
+            return
+        muestras = proveedor(detector.ventana)
+        if muestras is None:
+            return
+        midis = [int(self.pieza.notas[i].midi) for i in grupo]
+        resultado = detector.procesar(muestras, midis)
+        if resultado.estado == "silencio":
+            # Ni ventana llena ni señal por encima del ruido: el detector no vio
+            # nada que juzgar. Que el ataque se haya cobrado no autoriza a dar por
+            # presentes unas cuerdas que no se midieron.
+            return
+        faltan = set(resultado.faltan)
+        for indice in grupo:
+            if self._cobradas[indice]:
+                continue
+            nota = self.pieza.notas[indice]
+            if nota.midi in faltan:
+                continue
+            self._cobradas[indice] = True
+            self._tocadas.append(
+                NotaTocada(
+                    indice=indice,
+                    midi=nota.midi,
+                    cents=None,
+                    desfase_s=None,
+                    clasificacion=None,
+                    # `acertada=True` porque la pregunta que se contesto es
+                    # precisamente «¿suena la nota ESCRITA?»: el detector verifica,
+                    # no transcribe, asi que una nota presente es la escrita por
+                    # construccion. Un dedo en el traste equivocado no sale aqui
+                    # como una nota distinta: sale como la escrita ausente, y la
+                    # escrita se queda sin cobrar.
+                    acertada=True,
+                    afinada=None,
+                    por_presencia=True,
+                )
+            )
 
     def _clasificar(self, desfase_s: float) -> str:
         """"a_tiempo", "pronto" (negativo) o "tarde" segun la ventana."""

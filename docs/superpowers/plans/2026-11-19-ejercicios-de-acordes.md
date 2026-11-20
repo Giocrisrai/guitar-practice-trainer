@@ -1422,21 +1422,42 @@ El requisito de la spec §8: se ve la digitación en el mástil y, cuando falta 
 
 ---
 
-### Task 8: El carril deja de excluir acordes — **NO HECHA**
+### Task 8: El carril deja de excluir acordes — **HECHA, con otro diseño**
 
-> **Estado real, 2026-11-19.** Las tareas 1 a 7 y la 9 están hechas; esta no.
-> Al llegar aquí se vio que el plan la había infravalorado: `SeguidorPieza`
+> **Historia, para que se entienda el código.** El 2026-11-19 esta tarea se dejó
+> sin hacer: el plan la había infravalorado. `SeguidorPieza`
 > (`nucleo/piezas/seguimiento.py`) adjudica UNA `Pulsacion` a UNA nota, con sus
 > ventanas de reclamo asimétricas y su desempate por altura, y recibe
-> `ResultadoAnalisis`, no muestras. Cobrar un acorde exige (a) llevar audio crudo
-> desde `servidor/piezas.py` hasta el seguidor, y (b) decidir qué significan
+> `ResultadoAnalisis`, no muestras. Faltaban (a) llevar audio crudo desde
+> `servidor/piezas.py` hasta el seguidor, y (b) decidir qué significan
 > `clasificacion`, `desfase_s` y `cents` de `NotaTocada` para una nota que no
-> tiene ataque propio —y eso la spec §4.4 no lo resolvió: dice «presencia, no
-> cents», pero el informe entero está escrito en el vocabulario de los cents y
-> el desfase. Es una etapa con su propio diseño, no un remate de esta.
+> tiene ataque propio —y eso la spec §4.4 no lo resolvió.
 >
-> Los pasos de abajo se dejan como estaban, porque la mitad siguen valiendo; lo
-> que falta antes de ejecutarlos es la decisión de (b).
+> **El 2026-11-20 se resolvió (b) y se hizo.** La decisión está escrita en la
+> spec, **§4.4.1**, que es de donde hay que leerla: un acorde se cobra en dos
+> mitades, el ataque por el camino monofónico de siempre y el resto de las
+> cuerdas por presencia, con los cuatro campos en `None` y un campo nuevo,
+> `por_presencia`. El ataque es la puerta: sin él no se cobra presencia ninguna.
+>
+> **Y se hizo con otro diseño que el de los pasos de abajo**, que hablaban de
+> pasar muestras por el camino del cuadro. El audio crudo entra por el
+> CONSTRUCTOR (`detector_acordes` + `proveedor_de_muestras`, una clausura sobre
+> `Sesion.leer_ventana_cruda`), no por `procesar`: así ninguna firma de la ruta
+> caliente cambia y las 1671 pruebas que había siguen valiendo tal cual. Sin esos
+> dos argumentos el carril es el monofónico de antes, que es el caso por defecto.
+>
+> Lo que se tocó: `nucleo/piezas/seguimiento.py` (el campo, los grupos,
+> `_cobrar_el_resto_del_acorde`), `nucleo/piezas/estudio.py` (los dos argumentos
+> de paso, y el docstring de `notas_medibles`, que había quedado falso),
+> `servidor/piezas.py` (`_cobro_de_acordes`), `interfaz/src/tiposPieza.ts`,
+> `interfaz/src/Carril.tsx` («en el acorde», no «sin instante»),
+> `interfaz/src/InformePasada.tsx` (la columna de acertadas ya puede dar cifra en
+> un compás con acordes; las de ritmo, no). Pruebas nuevas:
+> `tests/test_seguimiento_acordes.py` (17), seis en `tests/test_sesion_carril.py`
+> y cinco en la interfaz.
+>
+> Los pasos de abajo se dejan como quedaron escritos, para que se vea qué se
+> planeó y qué se hizo en su lugar.
 
 
 

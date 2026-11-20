@@ -163,9 +163,9 @@ y `nucleo/analisis/acordes.py` (el detector).
   una nota. Está escrito donde se decide el umbral y fijado por una prueba.
 - **Sin cejilla, sin inversiones, sin rasgueo.** Ocho formas abiertas, un acorde
   por compás, y nada sobre la mano derecha.
-- **El carril todavía se salta los acordes.** El detector existe pero el carril
-  no lo usa: ver el límite correspondiente en **El carril** y en **Practicar la
-  pieza**. Es lo que queda de esta etapa.
+- **En el carril, de un acorde se cobran las cuerdas pero no el ritmo.** El carril
+  sí cobra acordes (ver **El carril**), pero el tiempo lo da el ataque y un rasgueo
+  tiene uno: de un acorde se mide la colocación una vez, no cuerda a cuerda.
 
 ### El carril
 
@@ -271,15 +271,17 @@ el patrón sobre una guitarra desafinada a propósito**: esa prueba sigue pendie
 
 **Límites de esta etapa**, sin maquillar:
 
-- **Una sola voz, sin acordes.** El modelo de pieza admite dos notas en el mismo
-  instante, pero el carril no sabe seguirlas: su seguidor adjudica UNA pulsación
-  a UNA nota, con sus ventanas de reclamo y su desempate por altura, y de un
-  acorde el detector de tono monofónico lee una sola altura. Las demás notas se
-  quedan sin cobrar por muy bien que las toques. **Desde la etapa 2b existe un
-  detector de acordes** (`nucleo/analisis/acordes.py`) que sí sabría decir si
-  suenan todas, pero el carril todavía no lo usa: enchufarlo exige llevar audio
-  crudo hasta el seguidor y decidir qué significan la clasificación temporal y
-  los cents para una nota que no tiene ataque propio.
+- **De un acorde se cobran todas las cuerdas; el ritmo, una vez.** El carril cobra
+  los acordes en dos mitades. El rasgueo tiene UN ataque y ese ataque se adjudica
+  como siempre, con su desfase, su clasificación y sus cents. Las demás cuerdas no
+  tienen ataque propio, así que se verifican por **presencia** contra la ventana
+  cruda (`nucleo/analisis/acordes.py`) y se cobran las que suenan, con el campo
+  `por_presencia` puesto y sin cents ni desfase: no es que se perdieran, es que no
+  existen. El resumen las dice «en el acorde», no «a tiempo».
+  El ataque es la puerta: sin un ataque que el detector monofónico firme no se
+  cobra presencia ninguna, porque si no los armónicos de un acorde vecino cobrarían
+  uno que nadie rasgueó. Y una cuerda que no suena se queda sin cobrar: el carril la
+  pinta sin marca, igual que una nota suelta que nadie tocó.
 - **Sin ligados ni bends.** El modelo de nota no tiene dónde guardarlos.
 - **En las piezas que salen de un ejercicio, la digitación se elige por cercanía
   al traste anterior**, sin mirar lo que viene después (`elegir_posicion` de
@@ -455,12 +457,12 @@ partitura de una canción entera ocupa decenas de kilobytes: diez megas son dos
 
 **Límites de esta etapa**, sin maquillar:
 
-- **Los acordes se importan y no se siguen.** El modelo de pieza admite varias
-  notas en el mismo instante y el carril las pinta, pero debajo hay un detector de
-  tono monofónico: de un acorde lee una sola altura, se cobra **una** nota y las
-  demás quedan sin cobrar por bien que las toques. El detector de acordes de la
-  etapa 2b existe y funciona (ver **Cambios de acorde**), pero el carril no lo
-  usa todavía.
+- **Los acordes se cobran, pero su ritmo se mide una vez.** Las cuerdas del acorde
+  se verifican por presencia y se cobran todas las que suenan (ver **El carril**);
+  lo que no se puede medir cuerda a cuerda es la colocación, porque el rasgueo tiene
+  un solo ataque. Si la sesión de audio no da ventana cruda —un doble de prueba, una
+  captura recién abierta—, el carril vuelve al comportamiento monofónico de antes:
+  una nota por acorde.
 - **Ligados, bends y armónicos se ignoran.** No es una decisión, es que la nota de
   una pieza tiene cinco campos —altura, cuerda, traste, instante y duración— y no
   hay dónde guardarlos. En Guitar Pro una ligadura sí hace lo correcto, que es
@@ -567,12 +569,11 @@ canción, no un dato perdido.
   el cambio hasta el final, y los números de compás pueden no coincidir con la
   partitura. Se avisa antes de empezar y en el informe; avisar no es dibujarlo
   bien.
-- **En los compases con acordes solo se puede medir una nota de cada uno**, porque
-  el seguidor del carril es monofónico (el detector de acordes de la 2b no está
-  enchufado ahí). Por eso esos compases **no entran** en el
-  ranking de fallos ni en la regla del tempo automático (saldrían fallados para
-  siempre), y el informe lo dice en pantalla —«con acordes»— en vez de contarlos
-  como fallados.
+- **En los compases con acordes el RITMO solo se mide una vez por acorde**, porque
+  el tiempo lo da el ataque y un rasgueo tiene uno. Las acertadas sí salen enteras
+  —el informe dice «4 de 4» de un acorde de cuatro cuerdas—, pero las columnas de
+  ritmo dicen «una por acorde», y esos compases **no entran** en el ranking de
+  fallos ni en la regla del tempo automático: saldrían fallados para siempre.
 - **El click puede derivar del carril en una pasada larga**: corre en su propio
   hilo, con su propio reloj. Cada repetición del bucle lo rearranca, así que
   estudiando un bucle no se nota; tocando una pieza entera de seguido, sí puede.
@@ -1009,7 +1010,7 @@ grabaciones todavía no existen, así que esas pruebas aparecen como saltadas
 
 ## Estado
 
-Etapas 1, 2a, 3a, 3b, 3c, 3d y 3e completas, y la **2b a medias**, con las
+Etapas 1, 2a, **2b**, 3a, 3b, 3c, 3d y 3e completas en código, con las
 salvedades de siempre: las cinco comprobaciones de la 3b que necesitan la
 guitarra y archivos reales siguen pendientes (están listadas en **Canciones**),
 **nada se ha probado con el cable todavía** —el gemelo digital de la 3d deja ver
@@ -1018,20 +1019,20 @@ la sesión correr, pero no sustituye esa prueba (ver **El gemelo digital**)—, 
 audio, así que lo que queda del usuario está listado en **La pieza sonando de
 fondo**.
 
-De la 2b (ver **Cambios de acorde**) está hecho:
+De la 2b (ver **Cambios de acorde**) está hecho todo lo que el diseño pedía:
 
 - la detección de acordes por verificación (`nucleo/analisis/espectro.py` y
   `nucleo/analisis/acordes.py`),
 - los ocho acordes abiertos y el generador de cambios,
 - el evaluador, con el tiempo de cambio y el informe,
-- la pantalla, con el diagrama que señala la cuerda que no suena.
-
-Y queda **lo segundo que el diseño pedía: que el carril cobre los acordes de una
-canción en vez de saltárselos.** No está hecho porque el seguidor del carril
-adjudica una pulsación a una nota, con sus ventanas de reclamo y su desempate
-por altura, y cobrar un acorde exige llevar audio crudo hasta allí y decidir qué
-significan la clasificación temporal y los cents para una nota que no tiene
-ataque propio. Es una etapa, no un remate.
+- la pantalla, con el diagrama que señala la cuerda que no suena,
+- y **el carril cobrando los acordes de una canción** en vez de saltárselos: el
+  ataque por el camino monofónico de siempre y las demás cuerdas por presencia
+  (ver **El carril**). La decisión que esto exigía —qué significan la
+  clasificación temporal, el desfase y los cents de una nota sin ataque propio—
+  está escrita en la spec, §4.4.1: los cuatro valen `null`, y un campo nuevo,
+  `por_presencia`, es lo que impide que un rasgueo cuente como seis mediciones de
+  tiempo.
 
 Lo que hace falta de ti para cerrar la 2b, y que ninguna prueba puede dar:
 
@@ -1042,5 +1043,4 @@ Lo que hace falta de ti para cerrar la 2b, y que ninguna prueba puede dar:
 
 Las siguientes, según el diseño:
 
-2b (resto). El carril cobrando acordes
 4. Grabación de sesiones, medición de progreso, entrenamiento de oído y efectos

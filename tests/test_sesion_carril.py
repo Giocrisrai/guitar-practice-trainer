@@ -8,8 +8,10 @@ doble con las tres cosas que `SesionCarril` le pide.
 import pathlib
 import threading
 
+import numpy as np
 import pytest
 
+from nucleo.analisis.acordes import VENTANA_ACORDES
 from nucleo.analisis.pipeline import ResultadoAnalisis
 from nucleo.piezas.conductor import ESPERA_SIN_CUADROS_S as ESPERA_DEL_NUCLEO
 from nucleo.piezas.conductor import TECHO_TRAMO_S as TECHO_DEL_NUCLEO
@@ -1340,3 +1342,93 @@ def test_una_pieza_que_acaba_antes_de_su_barra_de_compas_tampoco_espera_notas():
 
     sesion_carril.detener()
     sesion.detener()
+
+
+# --- el cobro de acordes del carril (etapa 2b, tarea 8) ---------------------
+#
+# Lo que se prueba aqui es el CABLEADO, no el veredicto: que la sesion monta el
+# detector cuando toca, que no lo monta cuando no, y que el grifo de audio crudo
+# que le pasa al seguidor es el de la sesion de audio. El veredicto -que suena y
+# que no- es de `tests/test_seguimiento_acordes.py`.
+
+
+def pieza_con_acorde(tempo=60):
+    """Tres notas con el mismo `inicio_pulsos`: un acorde."""
+    notas = tuple(
+        NotaEnPieza(midi=m, cuerda=5 - i, traste=0, inicio_pulsos=0.0, duracion_pulsos=1.0)
+        for i, m in enumerate((48, 52, 55))
+    )
+    return Pieza(nombre="p", perfil="guitarra_estandar", tempo=tempo, compas=(4, 4), notas=notas)
+
+
+class SesionAudioConVentana(SesionAudioFalsa):
+    """El doble de arriba mas las dos cosas que el cobro de acordes necesita."""
+
+    def __init__(self, ventana=None):
+        super().__init__()
+        self.configuracion = Configuracion()
+        self.ventana = ventana
+        self.pedidas = []
+
+    def leer_ventana_cruda(self, muestras):
+        self.pedidas.append(muestras)
+        return self.ventana
+
+
+def test_una_pieza_con_acordes_monta_el_detector_y_el_grifo():
+    reloj = RelojFalso()
+    sesion = SesionAudioConVentana(np.zeros(VENTANA_ACORDES))
+    sesion_carril = SesionCarril(sesion, reloj=reloj)
+    detector, proveedor = sesion_carril._cobro_de_acordes(pieza_con_acorde())
+    assert detector is not None
+    # El grifo es el de la sesion de audio y no una copia: lo que se le pide se
+    # ve en el doble, que es lo que hace observable el cableado.
+    assert proveedor(VENTANA_ACORDES) is sesion.ventana
+    assert sesion.pedidas == [VENTANA_ACORDES]
+
+
+def test_una_pieza_sin_acordes_no_monta_detector_ninguno():
+    """Nadie paga un bufer de 8192 muestras por una melodia de una nota a la vez."""
+    reloj = RelojFalso()
+    sesion = SesionAudioConVentana()
+    sesion_carril = SesionCarril(sesion, reloj=reloj)
+    assert sesion_carril._cobro_de_acordes(pieza_de([40, 45, 50])) == (None, None)
+
+
+def test_sin_ventana_cruda_en_la_sesion_el_carril_sigue_siendo_monofonico():
+    """Un doble antiguo no tiene `leer_ventana_cruda`, y eso no puede reventar."""
+    reloj = RelojFalso()
+    sesion = SesionAudioFalsa()
+    sesion.configuracion = Configuracion()
+    sesion_carril = SesionCarril(sesion, reloj=reloj)
+    assert sesion_carril._cobro_de_acordes(pieza_con_acorde()) == (None, None)
+
+
+def test_sin_configuracion_tampoco_se_monta():
+    """El detector necesita el umbral de ruido y la referencia de A4 del usuario."""
+    reloj = RelojFalso()
+    sesion = SesionAudioFalsa()
+    sesion_carril = SesionCarril(sesion, reloj=reloj)
+    assert sesion_carril._cobro_de_acordes(pieza_con_acorde()) == (None, None)
+
+
+def test_comenzar_una_pieza_con_acordes_le_da_el_detector_al_estudio():
+    reloj = RelojFalso()
+    sesion = SesionAudioConVentana(np.zeros(VENTANA_ACORDES))
+    sesion_carril = SesionCarril(sesion, reloj=reloj)
+    sesion_carril.iniciar(pieza_con_acorde())
+    try:
+        assert sesion_carril._estudio._detector_acordes is not None
+        assert sesion_carril._estudio._proveedor_de_muestras is not None
+    finally:
+        sesion_carril.detener()
+
+
+def test_el_detector_usa_el_umbral_de_ruido_de_la_configuracion():
+    """El mismo numero que el resto del programa, no uno inventado aqui."""
+    reloj = RelojFalso()
+    sesion = SesionAudioConVentana(np.zeros(VENTANA_ACORDES))
+    sesion.configuracion = Configuracion(umbral_ruido_dbfs=-30.0)
+    sesion_carril = SesionCarril(sesion, reloj=reloj)
+    detector, _ = sesion_carril._cobro_de_acordes(pieza_con_acorde())
+    assert detector.umbral_ruido_dbfs == -30.0
