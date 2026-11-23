@@ -1,0 +1,44 @@
+name: pruebas
+
+# Corre las pruebas del nucleo de audio (Python) y de la interfaz (React).
+# No necesita el cable ni microfono: el gemelo digital sintetiza el audio.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  nucleo:
+    name: nucleo y servidor (Python, macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: PortAudio (lo necesita sounddevice al importarse)
+        run: brew install portaudio
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync
+      - name: Pruebas
+        # Una prueba de sesion completa depende del reloj y puede fallar con la
+        # maquina cargada: si algo falla, se repiten solo las fallidas una vez.
+        run: uv run pytest -q || uv run pytest -q --last-failed
+
+  interfaz:
+    name: interfaz (React)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: interfaz
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: interfaz/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
+      - run: pnpm build

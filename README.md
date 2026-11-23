@@ -1,5 +1,6 @@
 # guitar-practice-trainer
 
+[![pruebas](https://github.com/Giocrisrai/guitar-practice-trainer/actions/workflows/pruebas.yml/badge.svg)](https://github.com/Giocrisrai/guitar-practice-trainer/actions/workflows/pruebas.yml)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green?style=flat-square)
 ![Python 3.13](https://img.shields.io/badge/python-3.13-3670A0?style=flat-square&logo=python&logoColor=white)
 ![React 19](https://img.shields.io/badge/React-19-61DAFB?style=flat-square&logo=react&logoColor=black)
