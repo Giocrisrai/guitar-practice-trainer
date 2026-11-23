@@ -8,6 +8,10 @@
 
 > **English:** Free software to practice guitar on macOS with the Rocksmith Real Tone USB cable. Real-time pitch detection drives a tuner and fretboard monitor, monophonic exercises (scales, arpeggios, intervals, sight-reading) graded on note, intonation and tempo, and a play-along lane for full pieces. Python audio core + React 19 interface. Not affiliated with Ubisoft. Documentation below is in Spanish.
 
+![Demo: el afinador sigue las notas en vivo y el carril corrige cada nota de la pieza, con vista de tablatura y pentagrama](docs/media/demo.gif)
+
+> El video se grabó con el gemelo digital (`uv run python -m herramientas.gemelo`): un guitarrista sintético toca por donde entra el cable, sin guitarra ni micrófono.
+
 Software libre para practicar guitarra en macOS con el cable Rocksmith Real Tone.
 Etapa 1: afinador y monitor de notas en el mástil. Etapa 2a: ejercicios
 monofónicos (escalas, arpegios, intervalos y lectura) con corrección de nota,
