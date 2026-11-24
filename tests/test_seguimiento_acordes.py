@@ -166,6 +166,50 @@ class TestLaPuertaDelAtaque:
         assert pedidas and set(pedidas) == {VENTANA_ACORDES}
 
 
+class TestElAtaqueQueSeLeeMal:
+    """Un rasgueo no es una altura: el detector monofonico lee UNA, y en un
+    acorde puede no ser ninguna de las escritas.
+
+    Pasa con un parcial fuerte o con una diferencia entre dos cuerdas. Sin esto,
+    `_adjudicar` cobraba la nota mas grave del grupo con `acertada=False` -ningun
+    MIDI coincidia, asi que gana la mas cercana en el tiempo, y en un acorde todas
+    empatan- y luego la presencia ya no podia revisarla porque estaba cobrada. El
+    informe lo leia como «3 de 4»: un error del alumno donde solo hubo una lectura
+    de altura mala.
+    """
+
+    def test_la_presencia_corrige_el_veredicto_del_ataque(self):
+        seguidor = seguidor_con(pieza_con_acorde(), rasgueo(DO_MAYOR))
+        # 72 (C5) no es ninguna nota del Do abierto: es el parcial que se leyo.
+        tocadas = rasguear(seguidor, 72)
+
+        assert len(tocadas) == len(DO_MAYOR)
+        assert all(t.acertada for t in tocadas), "la presencia demuestra que sonaron"
+
+    def test_pero_conserva_el_tiempo_que_si_se_midio(self):
+        """El rasgueo tuvo un ataque y su instante es real: lo que no vale es la
+        altura. Asi que el desfase y la clasificacion se quedan, y los cents no:
+        median la desviacion del parcial leido, no la de esta cuerda."""
+        seguidor = seguidor_con(pieza_con_acorde(), rasgueo(DO_MAYOR))
+        tocadas = rasguear(seguidor, 72)
+
+        con_ataque = [t for t in tocadas if not t.por_presencia]
+        assert len(con_ataque) == 1
+        assert con_ataque[0].desfase_s is not None
+        assert con_ataque[0].clasificacion is not None
+        assert con_ataque[0].cents is None
+        assert con_ataque[0].afinada is None
+
+    def test_si_el_acorde_no_suena_el_fallo_se_queda(self):
+        """La correccion no es una amnistia: necesita que la presencia lo
+        confirme. Con la ventana en silencio, el veredicto malo se mantiene."""
+        seguidor = seguidor_con(pieza_con_acorde(), np.zeros(VENTANA_ACORDES))
+        tocadas = rasguear(seguidor, 72)
+
+        assert len(tocadas) == 1
+        assert tocadas[0].acertada is False
+
+
 class TestQueSePublica:
     def test_la_nota_del_ataque_conserva_su_desfase_y_sus_cents(self):
         """La mitad monofonica no se toca: el ataque sigue midiendo el tiempo."""

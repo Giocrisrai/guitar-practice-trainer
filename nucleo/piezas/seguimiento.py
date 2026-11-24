@@ -17,7 +17,7 @@ pulsacion y como de tarde llego.
 """
 
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 
@@ -839,6 +839,7 @@ class SeguidorPieza:
             # presentes unas cuerdas que no se midieron.
             return
         faltan = set(resultado.faltan)
+        self._corregir_el_ataque(indice_del_ataque, faltan)
         for indice in grupo:
             if self._cobradas[indice]:
                 continue
@@ -864,6 +865,53 @@ class SeguidorPieza:
                     por_presencia=True,
                 )
             )
+
+    def _corregir_el_ataque(self, indice: int, faltan: set[int]) -> None:
+        """Revisa el veredicto de la nota del ataque con lo que dice la presencia.
+
+        Un rasgueo no es una altura. El detector monofonico lee UNA, y en un
+        acorde puede no ser ninguna de las escritas: un parcial fuerte, o la
+        diferencia entre dos cuerdas. Cuando eso pasa, `_adjudicar` no encuentra
+        ningun MIDI coincidente, cae en la nota mas cercana en el tiempo -y en un
+        acorde todas empatan, asi que sale la mas grave- y la cobra con
+        `acertada=False`. Luego esta nota ya estaba cobrada y la presencia no
+        podia revisarla, asi que el informe lo leia como «3 de 4»: un error del
+        alumno donde solo hubo una lectura de altura mala.
+
+        Asi que si la presencia dice que la nota escrita SI suena, el veredicto se
+        corrige. No es una amnistia: necesita la confirmacion, y si el detector la
+        pone en `faltan` el fallo se queda tal cual.
+
+        Que se conserva y que no:
+
+        - `desfase_s` y `clasificacion` se QUEDAN. El ataque existio y su instante
+          es real; lo que no valia era la altura. Ademas es la unica medida de
+          tiempo que este rasgueo va a dar, y tirarla dejaria el compas sin ritmo
+          medible.
+        - `cents` y `afinada` se PONEN A None. Median la desviacion del parcial
+          que se leyo, no la de esta cuerda, y publicar eso como la afinacion de
+          la nota escrita seria mentir. `NotaTocada` ya admite esa combinacion
+          -instante sin cents- y dice que `None` es "no se supo".
+        - `por_presencia` se queda en False, porque hubo ataque: esta nota SI
+          aporta una medida de tiempo, y es lo que ese campo separa.
+        - `midi` pasa a ser el ESCRITO. Publicar el parcial que se leyo junto a
+          `acertada=True` seria contradictorio -la fila diria "sono un C5" y a la
+          vez "acertaste el C3"-, y la nota que la presencia verifico es la
+          escrita por construccion: el detector comprueba, no transcribe.
+        """
+        for posicion in range(len(self._tocadas) - 1, -1, -1):
+            tocada = self._tocadas[posicion]
+            if tocada.indice != indice:
+                continue
+            if tocada.acertada:
+                return
+            escrita = int(self.pieza.notas[indice].midi)
+            if escrita in faltan:
+                return
+            self._tocadas[posicion] = replace(
+                tocada, midi=escrita, cents=None, acertada=True, afinada=None
+            )
+            return
 
     def _clasificar(self, desfase_s: float) -> str:
         """"a_tiempo", "pronto" (negativo) o "tarde" segun la ventana."""

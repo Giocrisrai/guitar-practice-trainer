@@ -134,6 +134,21 @@ class TestFallo:
         assert estado.faltan == (midis[-1],)
         assert estado.indice == 0
 
+    def test_el_silencio_olvida_las_cuerdas_que_faltaban(self):
+        """Paras para recolocar la mano y el diagrama seguia marcando «no suena»
+        sobre una guitarra callada. Misma regla que el detector, que en silencio
+        no rellena con el ultimo valor conocido."""
+        ev = evaluador()
+        midis = ev.ejercicio.acordes[0].midis
+        estado, instante = correr(
+            ev, [incompleto(midis, {midis[-1]})] * CUADROS_PARA_ACORDE_ESTABLE
+        )
+        assert estado.faltan == (midis[-1],)
+        estado, _ = correr(ev, [silencio()] * 3, instante)
+        assert estado.faltan == ()
+        # Lo que falto no se pierde: queda en el informe, que es donde se cuenta.
+        assert ev.estado.intentos == 1
+
     def test_el_silencio_no_cuenta_como_intento(self):
         ev = evaluador()
         estado, _ = correr(ev, [silencio()] * 20)
@@ -196,6 +211,107 @@ class TestFallo:
         _, instante = correr(ev, sostenido(midis), instante)
         assert ev.estado.ayuda_visible is False
         assert ev.estado.indice == 1
+
+
+class TestLaResonanciaDelAnterior:
+    """Lo que pasa entre dos acordes en una guitarra de verdad.
+
+    Las cuerdas del acorde que acabas de dar por bueno siguen vibrando varias
+    decimas mientras la mano se mueve, y el detector ya esta juzgando contra el
+    acorde SIGUIENTE: devuelve "incompleto" sin que nadie haya intentado nada.
+    Ninguna de las pruebas de arriba lo ve porque todas meten silencio entre
+    acorde y acorde, y en una guitarra ese silencio no existe.
+    """
+
+    @staticmethod
+    def _decayendo(ev, cuantos: int):
+        """Los cuadros en que suena el acorde ANTERIOR y se espera el siguiente.
+
+        Lo que el detector publica ahi: casi todas las notas del acorde nuevo
+        faltan, porque lo que suena es el viejo. Las que comparten (el G3 de Do y
+        de Sol) no.
+        """
+        anterior = set(ev.ejercicio.acordes[0].midis)
+        siguiente = ev.ejercicio.acordes[1].midis
+        faltan = {m for m in siguiente if m not in anterior}
+        return [incompleto(siguiente, faltan)] * cuantos
+
+    def test_no_cobra_un_intento_al_acorde_siguiente(self):
+        ev = evaluador()
+        _, instante = correr(ev, sostenido(ev.ejercicio.acordes[0].midis))
+        _, instante = correr(ev, self._decayendo(ev, 12), instante)
+        estado, _ = correr(ev, sostenido(ev.ejercicio.acordes[1].midis), instante)
+
+        assert estado.indice == 2
+        informe = ev.resultado()
+        sol = informe.acordes[1]
+        assert sol.intentos == 1, "la cola del anterior no es un intento de este"
+        assert sol.faltaron == ()
+        assert informe.a_la_primera == 2
+
+    def test_no_acusa_a_las_cuerdas_del_acorde_que_salio_bien(self):
+        """`cuerdas_problematicas` es lo que la pantalla presenta como «las que
+        mas veces no sonaron»: acusar ahi a las cuerdas de un acorde bien tocado
+        es la peor forma de equivocarse que tiene este informe."""
+        ev = evaluador()
+        _, instante = correr(ev, sostenido(ev.ejercicio.acordes[0].midis))
+        _, instante = correr(ev, self._decayendo(ev, 12), instante)
+        correr(ev, sostenido(ev.ejercicio.acordes[1].midis), instante)
+
+        assert ev.resultado().cuerdas_problematicas == ()
+
+    def test_la_cola_no_marca_cuerdas_mudas_en_el_diagrama(self):
+        ev = evaluador()
+        _, instante = correr(ev, sostenido(ev.ejercicio.acordes[0].midis))
+        estado, _ = correr(ev, self._decayendo(ev, 12), instante)
+        assert estado.faltan == ()
+
+    def test_pasada_la_gracia_el_fallo_vuelve_a_contar(self):
+        """La cola no es una amnistia indefinida: pasado el segundo, lo que suena
+        mal ya es responsabilidad de la mano."""
+        ev = evaluador()
+        _, instante = correr(ev, sostenido(ev.ejercicio.acordes[0].midis))
+        midis = ev.ejercicio.acordes[1].midis
+        estado, _ = correr(
+            ev,
+            [incompleto(midis, {midis[-1]})] * CUADROS_PARA_ACORDE_ESTABLE,
+            instante + ev.gracia_tras_acertar_s,
+        )
+        assert estado.intentos == 1
+        assert estado.faltan == (midis[-1],)
+
+    def test_apagar_las_cuerdas_corta_la_gracia_y_el_fallo_cuenta(self):
+        """Si el alumno apaga y rasguea mal, eso SI es un intento suyo: el
+        silencio prueba que lo que suena despues no es el acorde anterior."""
+        ev = evaluador()
+        _, instante = correr(ev, sostenido(ev.ejercicio.acordes[0].midis))
+        _, instante = correr(ev, [silencio()] * 3, instante)
+        midis = ev.ejercicio.acordes[1].midis
+        estado, _ = correr(
+            ev, [incompleto(midis, {midis[-1]})] * CUADROS_PARA_ACORDE_ESTABLE, instante
+        )
+        assert estado.intentos == 1
+
+    def test_un_cuadro_incompleto_suelto_no_cuenta_como_soltar(self):
+        """El decaimiento normal hace que una cuerda baje del umbral un cuadro y
+        vuelva. Si eso valiera por soltar, un unico rasgueo sostenido cobraria
+        los dos Do de un ejercicio «Do, Do» sin mover un dedo."""
+        do = acorde_de_clave("do", GUITARRA)
+        ejercicio = Ejercicio(
+            clave="do_do",
+            nombre="Do, Do",
+            descripcion="",
+            notas=(),
+            acordes=(do, do),
+            tempo=60,
+            perfil="guitarra_estandar",
+        )
+        ev = EvaluadorCambios(ejercicio)
+        _, instante = correr(ev, sostenido(do.midis))
+        # Un solo cuadro con una cuerda por debajo, y vuelta al acorde completo.
+        _, instante = correr(ev, [incompleto(do.midis, {do.midis[0]})], instante)
+        estado, _ = correr(ev, sostenido(do.midis, CUADROS_PARA_ACORDE_ESTABLE * 4), instante)
+        assert estado.indice == 1, "un bache de un cuadro no es haber soltado"
 
 
 class TestTiempoDeCambio:

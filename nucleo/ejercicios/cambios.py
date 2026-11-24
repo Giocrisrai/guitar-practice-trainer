@@ -39,6 +39,25 @@ from nucleo.ejercicios.modelo import AcordeEsperado, Ejercicio
 # cuente UN intento y no cuatro.
 CUADROS_PARA_ACORDE_ESTABLE = 4
 
+# Cuanto se le perdona al alumno despues de dar un acorde por bueno.
+#
+# Un segundo. No es generosidad pedagogica: es que durante ese rato lo que suena
+# NO es lo que el alumno esta tocando. Las cuerdas de un acorde abierto siguen
+# vibrando mas de un segundo, y el detector ya esta juzgando contra el acorde
+# siguiente, asi que publica "incompleto" sin que nadie haya intentado nada.
+# Contar eso como intento fallido acusaba a las cuerdas del acorde que acababa de
+# salir BIEN.
+#
+# El silencio corta la gracia de inmediato: si el alumno apaga las cuerdas y
+# rasguea mal, eso si es un intento suyo y se cuenta. Y pasado el segundo, los
+# cuadros incompletos vuelven a contar aunque la cuerda siga sonando: a partir de
+# ahi es responsabilidad de la mano.
+#
+# El coste de equivocarse por este lado es un intento fallido que no se cuenta -el
+# del alumno que rasguea torcido dentro del primer segundo sin apagar nada-. El de
+# equivocarse por el otro era contar un fallo por cada cambio de acorde, siempre.
+GRACIA_TRAS_ACERTAR_S = 1.0
+
 
 @dataclass(frozen=True)
 class IntentoAcorde:
@@ -176,6 +195,7 @@ class EvaluadorCambios:
         intentos_para_ayuda: int = INTENTOS_PARA_AYUDA,
         segundos_para_ayuda: float = SEGUNDOS_PARA_AYUDA,
         cuadros_para_acorde_estable: int = CUADROS_PARA_ACORDE_ESTABLE,
+        gracia_tras_acertar_s: float = GRACIA_TRAS_ACERTAR_S,
     ) -> None:
         if not ejercicio.acordes:
             raise ValueError(
@@ -188,6 +208,7 @@ class EvaluadorCambios:
         self.intentos_para_ayuda = intentos_para_ayuda
         self.segundos_para_ayuda = segundos_para_ayuda
         self.cuadros_para_acorde_estable = cuadros_para_acorde_estable
+        self.gracia_tras_acertar_s = gracia_tras_acertar_s
         # Mismo motivo que en EvaluadorEjercicio: se muta desde el hilo de
         # analisis y se lee desde el hilo HTTP/WS a 30 Hz. Reentrante porque
         # `_procesar_bajo_candado` construye la instantanea con `self.estado`.
@@ -213,6 +234,12 @@ class EvaluadorCambios:
             # racha de completo nunca se rompe y el segundo se regala sin que el
             # alumno mueva un dedo.
             self._hay_que_soltar = False
+            # Cuantos cuadros seguidos llevamos viendo que el acorde anterior se
+            # suelta. Ver la rama de `_hay_que_soltar` en `_procesar_bajo_candado`.
+            self._racha_soltando = 0
+            # Hasta cuando no se cuentan fallos, por la cola del acorde anterior.
+            # None es "no hay gracia en curso". Ver `GRACIA_TRAS_ACERTAR_S`.
+            self._fin_de_la_gracia: float | None = None
             # Respaldo temporal de la ayuda: desde cuando corre el reloj de este
             # acorde, y si ha habido alguna senal que pudiera ser un intento.
             self._instante_acorde_actual: float | None = None
@@ -268,7 +295,19 @@ class EvaluadorCambios:
             # ademas lo que cuenta como soltar entre dos acordes iguales.
             self._racha_completo = 0
             self._racha_incompleto = 0
+            self._racha_soltando = 0
             self._hay_que_soltar = False
+            # Y olvida lo que faltaba. `faltan` viaja al diagrama, que pinta las
+            # cuerdas que no suenan: dejarlo puesto hacia que una guitarra
+            # callada -el alumno para a recolocar la mano- siguiera marcando "no
+            # suena" indefinidamente. Es la misma regla que cumple el detector,
+            # que en silencio no rellena con el ultimo valor conocido. Lo que
+            # falto no se pierde: queda en `_faltaron_este`, que es lo que el
+            # informe cuenta.
+            self._faltan = ()
+            # Y corta la gracia: apagar las cuerdas prueba que lo que suene
+            # despues ya es del alumno, no del acorde anterior.
+            self._fin_de_la_gracia = None
         elif resultado.estado == "completo":
             self._racha_incompleto = 0
             if self._hay_que_soltar:
@@ -281,12 +320,51 @@ class EvaluadorCambios:
                     self._acertar(instante)
         else:
             self._racha_completo = 0
-            self._racha_incompleto += 1
-            self._hubo_senal = True
-            self._faltan = resultado.faltan
-            self._hay_que_soltar = False
-            if self._racha_incompleto == self.cuadros_para_acorde_estable:
-                self._fallar(resultado.faltan)
+            # SOLTAR se prueba con una racha, no con un cuadro.
+            #
+            # Soltar es lo que permite cobrar el acorde siguiente aunque sea el
+            # mismo (ver `_hay_que_soltar` en `reiniciar`), y hasta ahora un
+            # unico cuadro incompleto lo daba por hecho. Con eso basta el bache
+            # del decaimiento normal -una cuerda baja del umbral un instante y
+            # vuelve- para que un solo rasgueo sostenido cobre los dos Do de un
+            # ejercicio "Do, Do" sin mover un dedo. Una racha no se da por
+            # accidente.
+            if self._hay_que_soltar:
+                self._racha_soltando += 1
+                if self._racha_soltando >= self.cuadros_para_acorde_estable:
+                    self._hay_que_soltar = False
+                    self._racha_soltando = 0
+            # `_racha_incompleto` NO se toca aqui. Los cuadros que prueban que se
+            # solto son casi siempre los de la cola, y esos ya no cuentan como
+            # intento porque caen dentro de la gracia. Reiniciarla ademas dejaba
+            # sin contar el fallo del alumno que sigue sonando pasado el segundo:
+            # la racha se rompia justo antes de llegar a cuatro.
+
+            if self._en_la_gracia(instante):
+                # La cola del acorde ANTERIOR, no un intento de este.
+                #
+                # Las cuerdas del acorde que se acaba de dar por bueno siguen
+                # vibrando mientras la mano se mueve, y el detector ya juzga
+                # contra el acorde SIGUIENTE: devuelve "incompleto" sin que nadie
+                # haya intentado nada. Cobrarlo como fallo hacia dos danos a la
+                # vez: `a_la_primera` no contaba casi ningun acorde que no fuera
+                # el primero, y `cuerdas_problematicas` -lo que la pantalla
+                # presenta como "las que mas veces no sonaron"- acusaba a las
+                # cuerdas del acorde que el alumno acababa de tocar BIEN.
+                #
+                # Por que esto es por TIEMPO y lo de soltar por RACHA, siendo los
+                # dos "la cola del anterior": son dos preguntas distintas. Soltar
+                # pregunta si el acorde dejo de estar completo, y eso se ve en
+                # cuatro cuadros. La gracia pregunta cuanto dura la cola, y eso no
+                # se ve en el dato: una cuerda al aire suena mas de un segundo.
+                # Ver `GRACIA_TRAS_ACERTAR_S`.
+                pass
+            else:
+                self._racha_incompleto += 1
+                self._hubo_senal = True
+                self._faltan = resultado.faltan
+                if self._racha_incompleto == self.cuadros_para_acorde_estable:
+                    self._fallar(resultado.faltan)
 
         # El reloj del respaldo temporal no arranca mientras no haya habido
         # senal que pueda ser un intento de ESTE acorde: hasta entonces se
@@ -305,6 +383,10 @@ class EvaluadorCambios:
             self._ayuda_mostrada = True
 
         return self.estado
+
+    def _en_la_gracia(self, instante: float) -> bool:
+        """Si lo que suena todavia puede ser la cola del acorde anterior."""
+        return self._fin_de_la_gracia is not None and instante < self._fin_de_la_gracia
 
     def _acertar(self, instante: float) -> None:
         """El acorde sono completo y sostenido: se cobra y se pasa al siguiente."""
@@ -335,9 +417,11 @@ class EvaluadorCambios:
         self._faltaron_este = []
         self._racha_completo = 0
         self._racha_incompleto = 0
+        self._racha_soltando = 0
         # Hay que soltar antes de poder acertar el siguiente, aunque sea el mismo
         # acorde: ver `_hay_que_soltar` en `reiniciar`.
         self._hay_que_soltar = True
+        self._fin_de_la_gracia = instante + self.gracia_tras_acertar_s
         self._instante_acorde_actual = instante
         self._hubo_senal = False
 
