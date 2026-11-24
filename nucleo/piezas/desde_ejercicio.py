@@ -32,8 +32,53 @@ def elegir_posicion(
     return min(posiciones, key=lambda p: (abs(p.traste - traste_anterior), -p.cuerda))
 
 
+def _notas_de_los_acordes(ejercicio: Ejercicio) -> list[NotaEnPieza]:
+    """Un acorde del ejercicio es un GRUPO de notas con el mismo instante.
+
+    Que es exactamente lo que el carril sabe cobrar desde la tarea 8 de la 2b: el
+    ataque del rasgueo por el camino monofonico y las demas cuerdas por presencia
+    (spec 2b, §4.4.1). Antes de eso traducir un ejercicio de acordes no tenia
+    sentido, porque el carril se habria quedado con una nota de cada acorde.
+
+    Aqui NO se elige posicion. `elegir_posicion` existe para una nota que vive en
+    varios sitios del mastil, y un acorde abierto ya trae la digitacion escrita:
+    `AcordeEsperado.posiciones` dice en que cuerda y traste va cada nota, en el
+    mismo orden que `midis`. Pasarlo por la heuristica del traste anterior
+    produciria una digitacion correcta en teoria que ninguna mano toca, que es la
+    razon por la que la tabla de digitaciones esta escrita a mano.
+    """
+    notas: list[NotaEnPieza] = []
+    inicio = 0.0
+    for acorde in ejercicio.acordes:
+        for posicion, midi in zip(acorde.posiciones, acorde.midis):
+            notas.append(
+                NotaEnPieza(
+                    midi=midi,
+                    cuerda=posicion.cuerda,
+                    traste=posicion.traste,
+                    inicio_pulsos=inicio,
+                    duracion_pulsos=acorde.pulsos,
+                )
+            )
+        inicio += acorde.pulsos
+    return notas
+
+
 def pieza_desde_ejercicio(ejercicio: Ejercicio) -> Pieza:
-    """Traduce un ejercicio a una pieza, acumulando los pulsos y fijando posicion."""
+    """Traduce un ejercicio a una pieza, acumulando los pulsos y fijando posicion.
+
+    Sirve para los dos tipos de ejercicio, que son excluyentes por construccion
+    (`Ejercicio.__post_init__`): notas sueltas una tras otra, o acordes, cada uno
+    un grupo de notas simultaneas (ver `_notas_de_los_acordes`).
+    """
+    if ejercicio.acordes:
+        return Pieza(
+            nombre=ejercicio.nombre,
+            perfil=ejercicio.perfil,
+            tempo=ejercicio.tempo,
+            compas=(4, 4),
+            notas=tuple(_notas_de_los_acordes(ejercicio)),
+        )
     notas: list[NotaEnPieza] = []
     inicio = 0.0
     traste_anterior: int | None = None

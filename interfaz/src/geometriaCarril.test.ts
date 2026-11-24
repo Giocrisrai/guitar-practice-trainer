@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  acordesVisibles,
   colorDeCuerda,
+  ligaduraDeAcorde,
   colorDeTextoSobre,
   colorDeDesviacion,
   ESTELA_S,
@@ -9,6 +11,7 @@ import {
   VENTANA_VISIBLE_S,
   yDeLaLineaDeAtaque,
 } from "./geometriaCarril";
+import type { NotaDePieza } from "./tiposPieza";
 
 const LIENZO = { ancho: 600, alto: 400, cuerdas: 6 };
 
@@ -173,5 +176,48 @@ describe("colorDeTextoSobre", () => {
       const texto = colorDeTextoSobre(colorDeCuerda(cuerda));
       expect(["#12161b", "#ffffff"]).toContain(texto);
     }
+  });
+});
+
+describe("acordesVisibles", () => {
+  const nota = (cuerda: number, inicio: number): NotaDePieza => ({
+    midi: 40 + cuerda, nombre: "x", cuerda, traste: 0,
+    inicio_pulsos: inicio, duracion_pulsos: 1,
+  });
+
+  it("agrupa las notas que se atacan en el mismo instante", () => {
+    const grupos = acordesVisibles([nota(5, 0), nota(4, 0), nota(3, 0)]);
+    expect(grupos).toHaveLength(1);
+    expect(grupos[0]).toHaveLength(3);
+  });
+
+  it("una nota suelta no es un acorde: una pieza monofónica no paga nada", () => {
+    expect(acordesVisibles([nota(6, 0), nota(5, 1), nota(4, 2)])).toEqual([]);
+  });
+
+  it("separa dos acordes seguidos", () => {
+    const grupos = acordesVisibles([nota(5, 0), nota(4, 0), nota(5, 4), nota(4, 4)]);
+    expect(grupos).toHaveLength(2);
+  });
+});
+
+describe("ligaduraDeAcorde", () => {
+  const lienzo = { ancho: 600, alto: 400, cuerdas: 6 };
+  const nota = (cuerda: number): NotaDePieza => ({
+    midi: 40 + cuerda, nombre: "x", cuerda, traste: 0,
+    inicio_pulsos: 0, duracion_pulsos: 1,
+  });
+
+  it("va por los centros de los carriles, no de borde a borde del lienzo", () => {
+    // Cuerdas 5 a 2 de seis: carriles de 100 px, centros en 450 y 150.
+    const l = ligaduraDeAcorde([nota(5), nota(4), nota(3), nota(2)], 0, 60, lienzo, 2);
+    expect(l.desde).toBe(150);
+    expect(l.hasta).toBe(450);
+  });
+
+  it("se queda a la altura del borde de ataque", () => {
+    const l = ligaduraDeAcorde([nota(5), nota(4)], 0, 60, lienzo, 2);
+    const rectangulo = rectanguloDeNota(nota(5), 0, 60, lienzo, 2);
+    expect(l.y).toBe(rectangulo.y);
   });
 });

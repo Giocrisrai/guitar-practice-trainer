@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 
+import { SelectorDeAcordes } from "./SelectorDeAcordes";
 import { cuerdasElegibles, raicesElegibles } from "./presentacionEjercicio";
 import type { FamiliaEjercicio, InstrumentoEjercicio } from "./tiposEjercicio";
 
@@ -22,6 +23,15 @@ interface Control {
   /** Si el valor viaja al servidor como número. */
   numerico: boolean;
   catalogo?: Catalogo;
+  /**
+   * Si lo pinta un control propio en vez de un `input` o un `select`.
+   *
+   * Hace falta porque `claves` no es un valor, es una SECUENCIA de acordes, y
+   * ningún campo de los de esta pantalla la representa: viaja como lista y se
+   * elige con `SelectorDeAcordes`. Declararlo aquí y no fuera mantiene la regla
+   * de que un parámetro que esta tabla no conoce no se pinta y no se envía.
+   */
+  propio?: "acordes";
 }
 
 /**
@@ -42,6 +52,7 @@ const CONTROLES: Record<string, Control> = {
   traste_minimo: { etiqueta: "Traste mínimo", numerico: true },
   traste_maximo: { etiqueta: "Traste máximo", numerico: true },
   repeticiones: { etiqueta: "Repeticiones", numerico: true },
+  claves: { etiqueta: "Acordes", numerico: false, propio: "acordes" },
 };
 
 /**
@@ -90,6 +101,13 @@ export function Configurador() {
   const [clave, setClave] = useState("");
   /** Solo los parámetros que el usuario ha tocado. Vacío = todo por defecto. */
   const [valores, setValores] = useState<Record<string, string>>({});
+  /**
+   * Los acordes elegidos, en orden. Aparte de `valores` porque es una lista y
+   * `valores` guarda texto: meter aquí un "do,sol,re" obligaría a partirlo y a
+   * volver a unirlo en cada render, y el orden -que ES el ejercicio- quedaría
+   * guardado en una cadena en vez de en una lista.
+   */
+  const [acordes, setAcordes] = useState<string[]>([]);
   const [conMetronomo, setConMetronomo] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [enviando, setEnviando] = useState(false);
@@ -118,6 +136,7 @@ export function Configurador() {
     // Los parámetros de la familia anterior no valen para la nueva: arrastrarlos
     // podría mandar una clave que esta familia no declara.
     setValores({});
+    setAcordes([]);
   };
 
   const cambiar = (nombre: string, valor: string) => {
@@ -141,9 +160,16 @@ export function Configurador() {
   const cuerpoParametros = (elegida: FamiliaEjercicio): Record<string, unknown> => {
     const parametros: Record<string, unknown> = {};
     for (const nombre of elegida.parametros) {
+      const control = CONTROLES[nombre];
+      // Los acordes viajan como LISTA, y vacía no viaja: sin elegir ninguno el
+      // generador aplica su propio valor por defecto, igual que con el tempo.
+      if (control?.propio === "acordes") {
+        if (acordes.length > 0) parametros[nombre] = acordes;
+        continue;
+      }
       const valor = valores[nombre];
       if (valor === undefined || valor === "") continue;
-      parametros[nombre] = CONTROLES[nombre]?.numerico ? Number(valor) : valor;
+      parametros[nombre] = control?.numerico ? Number(valor) : valor;
     }
     return parametros;
   };
@@ -213,6 +239,12 @@ export function Configurador() {
 
             const control = CONTROLES[nombre];
             if (control === undefined) return null;
+
+            if (control.propio === "acordes") {
+              return (
+                <SelectorDeAcordes key={nombre} elegidas={acordes} alCambiar={setAcordes} />
+              );
+            }
 
             return (
               <div className="control" key={nombre}>

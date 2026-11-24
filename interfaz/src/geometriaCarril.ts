@@ -242,3 +242,59 @@ export function colorDeTextoSobre(fondo: string): string {
   const luminancia = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
   return luminancia > 0.55 ? TEXTO_SOBRE_CLARO : TEXTO_SOBRE_OSCURO;
 }
+
+/**
+ * Las notas visibles agrupadas por el instante en que se atacan.
+ *
+ * Un acorde es eso y nada más: varias notas con el mismo `inicio_pulsos` (así lo
+ * reconoce también el núcleo, en `SeguidorPieza`). Lo que el carril necesita de
+ * la agrupación es poder dibujar el rasgueo como UN gesto en vez de como cinco
+ * notas que coinciden por casualidad.
+ *
+ * Solo devuelve los grupos de MÁS DE UNA: una nota suelta no es un acorde y no
+ * lleva ligadura, así que una pieza monofónica no paga nada por esto.
+ *
+ * Se agrupa por el valor ESCRITO en pulsos y no por segundos ya estirados, por
+ * el mismo motivo que el núcleo: el factor de tempo las escala a todas igual, y
+ * comparar flotantes que han pasado por una multiplicación es como se pierde un
+ * grupo por un bit.
+ */
+export function acordesVisibles(notas: NotaDePieza[]): NotaDePieza[][] {
+  const porInstante = new Map<number, NotaDePieza[]>();
+  for (const nota of notas) {
+    const grupo = porInstante.get(nota.inicio_pulsos);
+    if (grupo === undefined) porInstante.set(nota.inicio_pulsos, [nota]);
+    else grupo.push(nota);
+  }
+  return [...porInstante.values()].filter((grupo) => grupo.length > 1);
+}
+
+/**
+ * De dónde a dónde va la ligadura de un acorde, y a qué altura.
+ *
+ * Va por los CENTROS de los carriles de la cuerda más aguda y la más grave del
+ * grupo, no por los bordes del lienzo: un acorde de cuatro cuerdas no cruza las
+ * seis, y dibujarlo de lado a lado diría que hay que rasguearlas todas.
+ *
+ * La altura es el borde de ATAQUE (`rectangulo.y`), el que llega primero a la
+ * línea: es el instante del rasgueo, que es lo que la ligadura representa. Las
+ * notas de un acorde pueden tener duraciones distintas -una pieza de verdad
+ * suelta una cuerda antes que otra- y entonces sus bordes de arriba no coinciden;
+ * el de ataque sí, por definición del grupo.
+ */
+export function ligaduraDeAcorde(
+  grupo: NotaDePieza[],
+  instanteS: number,
+  tempo: number,
+  lienzo: LienzoCarril,
+  ventanaS: number
+): { desde: number; hasta: number; y: number } {
+  const anchoCarril = lienzo.ancho / lienzo.cuerdas;
+  const centros = grupo.map((nota) => (nota.cuerda - 0.5) * anchoCarril);
+  const primera = rectanguloDeNota(grupo[0], instanteS, tempo, lienzo, ventanaS);
+  return {
+    desde: Math.min(...centros),
+    hasta: Math.max(...centros),
+    y: primera.y,
+  };
+}

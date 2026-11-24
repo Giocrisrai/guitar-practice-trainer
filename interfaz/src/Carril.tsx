@@ -2,15 +2,18 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   VENTANA_VISIBLE_S,
+  acordesVisibles,
   colorDeCuerda,
   colorDeDesviacion,
   colorDeTextoSobre,
+  ligaduraDeAcorde,
   notasVisibles,
   rectanguloDeNota,
   yDeLaLineaDeAtaque,
   type LienzoCarril,
 } from "./geometriaCarril";
 import { ControlesEstudio } from "./ControlesEstudio";
+import { SelectorDeAcordes } from "./SelectorDeAcordes";
 import type { PerfilAfinacion } from "./tipos";
 import type { FamiliaEjercicio } from "./tiposEjercicio";
 import type { EstadoEstudio } from "./tiposEstudio";
@@ -73,6 +76,22 @@ const ALFA_FRANJA_CUERDA = 0.05;
  * color: los colores de cuerda y los del veredicto comparten gama, y la
  * posición (encima o debajo de la línea) no basta en el instante del cruce. */
 const COLOR_BORDE_TOCADA = "#ffffff";
+/**
+ * La ligadura que une las notas de un acorde: un trazo a la altura del ataque,
+ * del centro de la cuerda más grave al de la más aguda del grupo.
+ *
+ * Es BLANCA y no del color de ninguna cuerda porque no es de ninguna: cada
+ * cuerda ya tiene su color, y pintar la ligadura de uno de ellos diría que esa
+ * manda. Y es el único trazo blanco del lienzo además de la línea de ataque, que
+ * es lo que las empareja: la línea dice *cuándo* se toca y la ligadura *qué* se
+ * toca de una vez.
+ *
+ * Tenue (`ALFA_LIGADURA`) a propósito: une sin tapar. Lo que se lee es la nota y
+ * su traste; la ligadura solo dice que van juntas.
+ */
+const COLOR_LIGADURA = "#e6e9ee";
+const ALFA_LIGADURA = 0.45;
+const GROSOR_LIGADURA_PX = 3;
 
 const TEXTO_CLASIFICACION: Record<Clasificacion, string> = {
   a_tiempo: "a tiempo",
@@ -252,7 +271,31 @@ function pintarCuadro(
   contexto.textAlign = "center";
   contexto.textBaseline = "middle";
   const tempoEfectivo = tempoParaDibujar(pieza, estado);
-  for (const nota of notasVisibles(pieza.notas, instanteS, tempoEfectivo, VENTANA_VISIBLE_S)) {
+  const visibles = notasVisibles(pieza.notas, instanteS, tempoEfectivo, VENTANA_VISIBLE_S);
+
+  // La ligadura del rasgueo, DEBAJO de las notas: un acorde es un gesto, no
+  // cinco notas que coinciden. Sin ella hay que comparar cinco alturas para
+  // saber si hay que rasguear o puntear, y es lo primero que la mano necesita
+  // saber. Va antes del bucle de las notas para que ellas se pinten encima.
+  for (const grupo of acordesVisibles(visibles)) {
+    const ligadura = ligaduraDeAcorde(
+      grupo, instanteS, tempoEfectivo, lienzo, VENTANA_VISIBLE_S
+    );
+    const distancia = Math.min(Math.max((lineaAtaque - ligadura.y) / lineaAtaque, 0), 1);
+    // Se desvanece con la distancia igual que las notas: si no, un acorde del
+    // fondo del carril llegaba antes al ojo que la nota que hay que tocar ahora.
+    contexto.globalAlpha = (1 - DESVANECIDO_MAXIMO * distancia) * ALFA_LIGADURA;
+    contexto.strokeStyle = COLOR_LIGADURA;
+    contexto.lineWidth = GROSOR_LIGADURA_PX;
+    contexto.lineCap = "round";
+    contexto.beginPath();
+    contexto.moveTo(ligadura.desde, ligadura.y);
+    contexto.lineTo(ligadura.hasta, ligadura.y);
+    contexto.stroke();
+    contexto.globalAlpha = 1;
+  }
+
+  for (const nota of visibles) {
     const rectangulo = rectanguloDeNota(nota, instanteS, tempoEfectivo, lienzo, VENTANA_VISIBLE_S);
     const indice = indices.get(nota);
     const tocada = indice === undefined ? undefined : tocadas.get(indice);
@@ -446,6 +489,16 @@ export function Carril({ peticion = null }: PropiedadesCarril) {
   // seleccionada, igual que en `Configurador`.
   const [familia, setFamilia] = useState("");
   const [tempo, setTempo] = useState("");
+  /**
+   * Los acordes elegidos para la familia de cambios, en orden. Vacío = los que
+   * traiga el generador.
+   *
+   * El carril se alimenta del MISMO catálogo de familias que el configurador de
+   * ejercicios, así que «Cambios de acorde» es elegible aquí; y desde que
+   * `pieza_desde_ejercicio` traduce los acordes a grupos de notas simultáneas,
+   * tocarlos en el carril es una pasada de verdad, con su informe.
+   */
+  const [acordesElegidos, setAcordesElegidos] = useState<string[]>([]);
   // Carril para tocar a tempo; escrita para leer la pieza y repasar lo tocado.
   const [vista, setVista] = useState<"carril" | "escrita">("carril");
   // El informe de la pasada, tal como estaba al pedirlo: es una foto, no se
@@ -587,10 +640,22 @@ export function Carril({ peticion = null }: PropiedadesCarril) {
       return <p className="aviso-carril">Preparando la canción…</p>;
     }
 
+    /**
+     * Si la familia elegida pide acordes. Se deduce de los PARÁMETROS que el
+     * servidor publica para ella, no de su clave: comparar con "cambios" sería
+     * escribir aquí una clave del catálogo, que es justo lo que esta pantalla
+     * evita (ver `familia`).
+     */
+    const elegida = familias.find((f) => f.clave === familia);
+    const pideAcordes = elegida?.parametros.includes("claves") === true;
+
     const empezar = () => {
       const parametros: Record<string, unknown> = {};
       const numero = Number(tempo);
       if (tempo !== "" && Number.isFinite(numero)) parametros.tempo = numero;
+      // Solo si la familia elegida los declara: mandar `claves` a una escala es
+      // un 400, y la lista vacía deja que el generador ponga los suyos.
+      if (pideAcordes && acordesElegidos.length > 0) parametros.claves = acordesElegidos;
       // Si el catálogo todavía no ha llegado, la familia viaja vacía y el
       // servidor contesta cuáles hay (`SesionPractica.generar`). Es mejor que
       // adivinar una clave: lo que se ve seleccionado y lo que viaja son siempre
@@ -601,7 +666,9 @@ export function Carril({ peticion = null }: PropiedadesCarril) {
     return (
       <section className="configurador carril-configurador">
         <p className="descripcion-familia">
-          Las notas vienen hacia ti: toca cada una cuando llegue a la línea de abajo.
+          {pideAcordes
+            ? "Los acordes vienen hacia ti: rasguea cada uno cuando llegue a la línea de abajo."
+            : "Las notas vienen hacia ti: toca cada una cuando llegue a la línea de abajo."}
         </p>
         <div className="selector">
           {familias.length > 0 && (
@@ -619,6 +686,10 @@ export function Carril({ peticion = null }: PropiedadesCarril) {
                 ))}
               </select>
             </>
+          )}
+
+          {pideAcordes && (
+            <SelectorDeAcordes elegidas={acordesElegidos} alCambiar={setAcordesElegidos} />
           )}
 
           <div className="control">

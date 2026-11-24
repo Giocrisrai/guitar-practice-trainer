@@ -23,7 +23,7 @@ from fastapi.staticfiles import StaticFiles
 
 from nucleo.afinaciones import PERFILES, PERFILES_DE_FABRICA
 from nucleo.analisis.pipeline import ResultadoAnalisis
-from nucleo.ejercicios.generadores.acordes import DIGITACIONES
+from nucleo.ejercicios.generadores.acordes import DIGITACIONES, acorde_de_clave
 from nucleo.ejercicios.teoria import ACORDES, ESCALAS, INTERVALOS
 from nucleo.piezas.desde_ejercicio import pieza_desde_ejercicio
 from nucleo.piezas.estudio import PlanDePasada
@@ -539,6 +539,39 @@ def crear_app(
                 {"numero": cuerda.numero, "nota": cuerda.nota} for cuerda in perfil.cuerdas
             ],
         }
+
+    @app.get("/api/ejercicios/acordes")
+    def leer_acordes() -> list[dict]:
+        """El catálogo de acordes abiertos, con su digitación en ESTE instrumento.
+
+        Existe para que el selector de acordes de la interfaz no tenga nada
+        escrito a mano. `/api/ejercicios/familias` publica las claves (`do`,
+        `la_menor`), que son identificadores y no se pueden mostrar a nadie: el
+        nombre en castellano y la digitación viven en `DIGITACIONES`, en el
+        núcleo. Sin este endpoint la pantalla tendría que repetir las dos cosas, y
+        añadir un acorde a la tabla dejaría la interfaz mintiendo en silencio.
+
+        Lo que devuelve es la MISMA forma que `AcordeEsperado.a_dict()`, la que ya
+        viaja en el estado del ejercicio de cambios, más la clave. Así el
+        diagrama que la pantalla de cambios dibuja mientras tocas sirve también
+        para elegir, sin un segundo modelo de datos ni un segundo dibujo.
+
+        Se traduce con el perfil ACTIVO, por el mismo motivo que
+        `/api/ejercicios/instrumento`: un acorde que este instrumento no alcanza
+        no se puede ofrecer. Y por eso un acorde que `acorde_de_clave` rechaza se
+        OMITE en vez de romper la lista: con un bajo de cuatro cuerdas puesto, el
+        catálogo queda corto, que es la verdad, y no en un 500.
+        """
+        clave_perfil = app.state.sesion.configuracion.perfil
+        perfil = PERFILES[clave_perfil]
+        catalogo = []
+        for clave in DIGITACIONES:
+            try:
+                acorde = acorde_de_clave(clave, perfil)
+            except ValueError:
+                continue
+            catalogo.append({"clave": clave, **acorde.a_dict()})
+        return catalogo
 
     @app.get("/api/ejercicios/familias")
     def leer_familias() -> list[dict]:

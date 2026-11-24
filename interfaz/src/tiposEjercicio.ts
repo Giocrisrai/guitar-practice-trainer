@@ -24,6 +24,19 @@ export interface AcordeEjercicio {
   pulsos: number;
 }
 
+/**
+ * Un acorde del catálogo, tal y como lo manda `GET /api/ejercicios/acordes`:
+ * la misma forma que `AcordeEjercicio` más la CLAVE con la que se pide.
+ *
+ * La clave es un identificador (`do`, `la_menor`) y no se muestra nunca: lo que
+ * se lee es `nombre`. Las dos cosas viajan juntas desde el servidor para que
+ * ninguna pantalla tenga que traducir una en la otra, que es la tabla escrita a
+ * mano que este endpoint existe para borrar.
+ */
+export interface AcordeDelCatalogo extends AcordeEjercicio {
+  clave: string;
+}
+
 export interface EjercicioServidor {
   clave: string;
   nombre: string;

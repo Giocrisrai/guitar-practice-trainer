@@ -411,3 +411,147 @@ body {
 .informe-cambios h2 {
   font-variant-numeric: tabular-nums;
 }
+
+/* --- Selector de acordes (etapa 2b) ---
+   La vuelta arriba —lo que vas a practicar, con las flechas puestas— y el
+   catálogo abajo. Los dos usan la misma ficha, porque son el mismo objeto en dos
+   sitios; lo que cambia es el borde. */
+
+.selector-acordes { margin-top: 10px; width: 100%; }
+
+.titulo-selector-acordes {
+  margin: 6px 0 6px;
+  color: var(--tenue);
+  font-size: 13px;
+}
+
+/* Seis huecos del ancho de un dedo, pegados: lo que se lee es la silueta.
+   `inline-grid` y no flex para que los seis midan exactamente lo mismo aunque
+   uno lleve dos cifras (el traste 10 de una forma con cejilla, el día que
+   entren). */
+.forma-acorde {
+  display: inline-grid;
+  grid-template-columns: repeat(6, 11px);
+  gap: 2px;
+}
+
+.hueco-acorde {
+  height: 16px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 16px;
+  text-align: center;
+}
+
+/* La cuerda que el acorde no toca ocupa su sitio y se queda en hueco: a este
+   tamaño una `×` -la del diagrama grande- es una mancha, y la forma se lee peor
+   con ella que sin ella. */
+.hueco-acorde.vacio {
+  border: 1px dashed var(--borde);
+  border-radius: 3px;
+}
+
+.vuelta-acordes {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.vuelta-acordes li { display: flex; align-items: center; gap: 2px; }
+
+/* La flecha es un trazo dibujado, no un glifo: a 13px una “→” del sistema se
+   sienta mal sobre la línea y cambia de grosor con la fuente. */
+.flecha-vuelta {
+  width: 18px;
+  height: 1px;
+  background: var(--tenue);
+  position: relative;
+}
+
+.flecha-vuelta::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  top: -2px;
+  width: 5px;
+  height: 5px;
+  border-top: 1px solid var(--tenue);
+  border-right: 1px solid var(--tenue);
+  transform: rotate(45deg);
+}
+
+/* La última apunta hacia atrás: la vuelta vuelve a empezar, y una flecha que
+   siguiera hacia la derecha diría que hay un acorde más. */
+.flecha-vuelta.vuelve { transform: scaleX(-1) }
+
+.cierre-vuelta { gap: 6px }
+.texto-cierre { color: var(--tenue); font-size: 12px; font-style: italic }
+
+.vuelta-vacia, .aviso-selector-acordes {
+  margin: 0;
+  color: var(--tenue);
+  font-size: 13px;
+}
+
+.aviso-selector-acordes { margin-top: 6px; color: var(--desviada) }
+
+.catalogo-acordes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+/* Una ficha es la forma más el nombre. Hereda del panel, no del botón verde de
+   “Empezar”: elegir un acorde no es empezar nada, y un botón de acento por cada
+   acorde dejaría la pantalla sin saber dónde está la acción. */
+.ficha-acorde, .paso-vuelta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 6px 10px;
+  background: var(--panel);
+  color: var(--texto);
+  border: 1px solid var(--borde);
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 120ms ease-out, background-color 120ms ease-out;
+}
+
+.ficha-acorde:hover, .paso-vuelta:hover { border-color: var(--tenue) }
+
+.ficha-acorde.puesta {
+  border-color: var(--afinada);
+  background: color-mix(in srgb, var(--afinada) 12%, var(--panel));
+}
+
+/* El paso de la vuelta ya está elegido: lo que ofrece al pulsarlo es quitarlo,
+   y eso se dice al pasar por encima en vez de con un aspa permanente que
+   ensuciaría la secuencia. */
+.paso-vuelta { border-color: var(--afinada) }
+.paso-vuelta:hover {
+  border-color: var(--desviada);
+  background: color-mix(in srgb, var(--desviada) 12%, var(--panel));
+}
+
+.selector-acordes button:focus-visible,
+.carril-configurador button:focus-visible {
+  outline: 2px solid var(--afinada);
+  outline-offset: 2px;
+}
+
+@media (max-width: 480px) {
+  /* En el móvil el catálogo cabe a dos columnas y el nombre completo sobra
+     menos que la forma: lo que se toca es la ficha entera, así que crece. */
+  .catalogo-acordes { display: grid; grid-template-columns: 1fr 1fr }
+  .ficha-acorde { padding: 8px 10px }
+}
