@@ -579,6 +579,81 @@ describe("Carril", () => {
   });
 
   /**
+   * El apagado que pide el PROPIO ALUMNO llega por el mismo camino que el ajeno,
+   * y durante un instante es indistinguible de él: entre el POST de «Detener» y
+   * la respuesta, el socket ya trae `arranque: 0` mientras aquí todavía hay
+   * arranque y `vistoPorElSocket`. Así que al pulsar «Otra vez» salía un aviso
+   * sobre cambiar la afinación, que nadie había cambiado.
+   */
+  it("el apagado que pedimos nosotros suelta la pieza SIN aviso", async () => {
+    let soltarLaRespuesta: () => void = () => {};
+    const detencionPendiente = new Promise<Response>((resolver) => {
+      soltarLaRespuesta = () => resolver({ ok: true, status: 200 } as Response);
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        const direccion = String(url);
+        if (direccion.includes("/api/ejercicios/familias")) return responder(FAMILIAS);
+        if (direccion.includes("/api/perfiles")) return responder(PERFILES);
+        if (direccion.includes("/api/piezas/iniciar")) return responder(RESPUESTA_INICIAR);
+        // La detención se queda en vuelo: es la ventana que hay que probar.
+        if (direccion.includes("/api/piezas/detener")) return detencionPendiente;
+        return responder(ESTADO_APAGADO);
+      })
+    );
+    render(<Carril />);
+    await pulsarEmpezar();
+
+    enviarEstado({
+      instante_s: 1.0, indice_actual: 1, total: 3, completado: false, pausado: false,
+      tocadas: [],
+    });
+    expect(screen.getByText("2 / 3")).toBeTruthy();
+
+    // Se pulsa Detener y, con el POST todavía en vuelo, llega el apagado.
+    fireEvent.click(screen.getByRole("button", { name: /detener/i }));
+    act(() => {
+      WebSocketFalso.ultimo!.enviar(ESTADO_APAGADO);
+    });
+
+    // La pieza se suelta -el apagado es de verdad- pero sin inventar un motivo.
+    expect(screen.queryByText("2 / 3")).toBeNull();
+    expect(screen.queryByTestId("lienzo-carril")).toBeNull();
+    expect(screen.queryByText(/se detuvo desde el servidor/i)).toBeNull();
+    expect(screen.getByRole("button", { name: /empezar/i })).toBeTruthy();
+
+    await act(async () => {
+      soltarLaRespuesta();
+      await detencionPendiente;
+    });
+  });
+
+  /**
+   * Y la bandera de la detención propia no se queda levantada: una vez soltada la
+   * pieza, un apagado ajeno de la pieza SIGUIENTE vuelve a avisar.
+   */
+  it("tras detener a mano, un apagado ajeno posterior sí avisa", async () => {
+    vi.stubGlobal("fetch", crearFetchFalso());
+    render(<Carril />);
+    await pulsarEmpezar();
+    await act(async () => {
+      screen.getByRole("button", { name: /detener/i }).click();
+    });
+
+    await pulsarEmpezar();
+    enviarEstado({
+      instante_s: 1.0, indice_actual: 1, total: 3, completado: false, pausado: false,
+      tocadas: [],
+    });
+    act(() => {
+      WebSocketFalso.ultimo!.enviar(ESTADO_APAGADO);
+    });
+
+    expect(screen.getByText(/se detuvo desde el servidor/i)).toBeTruthy();
+  });
+
+  /**
    * Los dos paquetes de carril apagado son indistinguibles por su contenido: el
    * de antes de empezar y el de haberse apagado ya llevan los dos `arranque: 0`.
    * Lo que los separa es el orden del socket, que entrega en orden: uno que llega

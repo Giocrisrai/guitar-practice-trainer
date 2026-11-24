@@ -241,6 +241,21 @@ export function useCarril(
    * canal y no está ordenado respecto a los paquetes del socket.
    */
   const vistoPorElSocket = useRef(false);
+  /**
+   * Si la detención la pedimos NOSOTROS y todavía no se ha soltado la pieza.
+   *
+   * `detener` manda el POST y suelta la pieza al volver, y entre esas dos cosas
+   * hay una ventana: el servidor ya apagó el carril y el socket ya está
+   * emitiendo `arranque: 0`, pero aquí seguimos teniendo arranque y
+   * `vistoPorElSocket`, que es exactamente lo que la guarda de `recibir` lee
+   * como "el servidor te apagó la pieza". El alumno pulsaba «Otra vez» y lo que
+   * le salía era un aviso sobre cambiar la afinación, que nadie había cambiado.
+   *
+   * Así que durante esa ventana el apagado se acepta -es el final de nuestra
+   * pieza, de verdad- pero SIN aviso: no hay nada que avisar de lo que acaba de
+   * pedir el propio alumno.
+   */
+  const detencionPedida = useRef(false);
   /** El último instante que `instante` llegó a devolver, es decir el que se
    * pintó. Es lo que se congela al entrar en pausa (ver `instante`). */
   const instanteMostrado = useRef(0);
@@ -257,6 +272,10 @@ export function useCarril(
     relojCaduco.current = true;
     instanteMostrado.current = 0;
     vistoPorElSocket.current = false;
+    // La ventana de `detencionPedida` se cierra aquí: ya no hay pieza que
+    // apagar, y el próximo apagado que llegue por el socket -si llega- ya no es
+    // el de la detención que pedimos.
+    detencionPedida.current = false;
     // Sin pieza no hay arranque nuestro, así que ningún paquete vuelve a entrar
     // hasta que se arranque otra.
     arranque.current = null;
@@ -297,8 +316,11 @@ export function useCarril(
           arranque.current !== null &&
           vistoPorElSocket.current
         ) {
+          const loPedimosNosotros = detencionPedida.current;
           soltarLaPieza();
-          setError(AVISO_APAGADO_DESDE_EL_SERVIDOR);
+          // Y el aviso solo si el apagado NO es el que acabamos de pedir: ver
+          // `detencionPedida`. `soltarLaPieza` ya bajó la bandera.
+          if (!loPedimosNosotros) setError(AVISO_APAGADO_DESDE_EL_SERVIDOR);
           return;
         }
         paqueteEnEspera.current = nuevo;
@@ -422,9 +444,22 @@ export function useCarril(
     [adoptarPieza]
   );
 
+  /**
+   * Apaga el carril: lo pide al servidor y suelta la pieza de la pantalla.
+   *
+   * La bandera se levanta ANTES del POST, porque el apagado puede llegar por el
+   * socket antes de que la respuesta vuelva (ver `detencionPedida`), y se baja
+   * en `soltarLaPieza`, que corre pase lo que pase con la petición: si el
+   * servidor no contesta, la pieza se suelta igual —es lo que el alumno pidió— y
+   * la bandera no se queda levantada tapando un apagado ajeno posterior.
+   */
   const detener = useCallback(async () => {
-    await fetch("/api/piezas/detener", { method: "POST" });
-    soltarLaPieza();
+    detencionPedida.current = true;
+    try {
+      await fetch("/api/piezas/detener", { method: "POST" });
+    } finally {
+      soltarLaPieza();
+    }
   }, [soltarLaPieza]);
 
   /**
