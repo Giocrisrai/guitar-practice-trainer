@@ -128,6 +128,28 @@ INTERVALO_NOMINAL_MS = INTERVALO_DE_ANALISIS_S * 1000.0
 # techo de calidad: es la condicion para poder aplicar el modelo.
 CUADROS_MINIMOS_PARA_MEDIR = 20
 
+# La cadencia mas lenta a la que una pasada todavia sirve para medir, en ms por
+# cuadro. MEDIDO, y es la condicion de uso del instrumento, no un techo de calidad:
+#
+# * En reposo el analisis corre a 24,7-25,9 ms (23 pasadas en este equipo; la
+#   cabecera habla de ~30 en el equipo donde se escribio, 117-128 cuadros) y la
+#   cadena reporta las ocho notas en todas.
+# * Con otro hilo de Python disputandole el interprete, a 37,3 y 37,8 ms todavia
+#   reporta las ocho; a 40,5 pierde la primera; entre 47 y 52 pierde una en cada
+#   pasada; de 66 en adelante reporta cuatro o menos; por encima de 100, ninguna.
+#
+# O sea: por encima de unos 40 ms la maquina no esta sosteniendo el tiempo real, y
+# lo que la pasada pierde no lo pierde la cadena sino el reloj. Eso es lo que hacia
+# rojas estas pruebas en medio de la suite entera (los hilos que dejan otras
+# pruebas) y en un runner compartido, donde fallaban tambien corridas a solas.
+# 36 queda por encima de todo lo sano medido y por debajo de la primera perdida.
+CADENCIA_MAXIMA_PARA_MEDIR_MS = 36.0
+
+# Cuantas veces se monta la pasada antes de rendirse. Una carga pasajera -otra
+# prueba soltando sus hilos- se va sola; tres intentos son unos doce segundos de
+# reloj en el peor caso, y en una maquina sana se usa uno.
+INTENTOS_DE_LA_PASADA = 3
+
 # Ya no hay `DIVERGENCIA_MEDIDA_MS`, y su ausencia es el arreglo de la ronda 3: era
 # una cifra fija (50 ms) medida en un equipo en reposo y afirmada bajo carga, y hacia
 # la prueba intermitente -tres fallos de cada seis pasadas de la suite-. El techo se
@@ -288,6 +310,39 @@ def _correr_la_sesion_entera(pieza, interpretacion: Interpretacion) -> PasadaCom
     )
 
 
+def _correr_la_sesion_a_tiempo_real(pieza, interpretacion: Interpretacion) -> PasadaCompleta:
+    """Una pasada que la maquina SOSTUVO a tiempo real, o ninguna.
+
+    Estas pruebas pagan el tiempo en el reloj de pared, asi que solo dicen algo de
+    la cadena si el hilo de analisis corrio a su cadencia. Cuando no corre -la
+    maquina cargada, un runner lento- la pasada pierde notas que la cadena habria
+    visto, y afirmarla seria medir la maquina y llamarlo defecto del producto: ver
+    `CADENCIA_MAXIMA_PARA_MEDIR_MS`, con las medidas.
+
+    Por eso la pasada se repite hasta `INTENTOS_DE_LA_PASADA` veces y se devuelve
+    la primera que se sostuvo. Si ninguna lo hace, las pruebas se SALTAN diciendo
+    las cadencias medidas: no pasan, porque no se ha comprobado nada, y no fallan,
+    porque tampoco se ha visto ningun defecto. El salto queda en el informe de
+    pytest (`-rs`), que es donde tiene que verse que este equipo no midio.
+
+    NO se elige la mejor de varias pasadas ni se reintenta una pasada que corrio a
+    cadencia sana y salio mal: esa es justo la que estas pruebas existen para ver.
+    """
+    cadencias: list[float] = []
+    for _ in range(INTENTOS_DE_LA_PASADA):
+        viva = _correr_la_sesion_entera(pieza, interpretacion)
+        if viva.cadencia_ms <= CADENCIA_MAXIMA_PARA_MEDIR_MS:
+            return viva
+        cadencias.append(viva.cadencia_ms)
+    medidas = ", ".join(f"{cadencia:.1f}" for cadencia in cadencias)
+    pytest.skip(
+        "la maquina no sostuvo el tiempo real: el analisis corrio a "
+        f"{medidas} ms por cuadro en {INTENTOS_DE_LA_PASADA} pasadas, y por encima de "
+        f"{CADENCIA_MAXIMA_PARA_MEDIR_MS:.0f} la pasada pierde notas por el reloj y no "
+        "por la cadena"
+    )
+
+
 def _pasar_por_la_cadena_directa(pieza, interpretacion: Interpretacion):
     """La misma interpretacion por el camino rapido, para comparar los dos niveles."""
     estudio = SesionDeEstudio(pieza, PLAN)
@@ -308,7 +363,7 @@ def pasada():
     """
     pieza = escala_de_ocho_notas(tempo=TEMPO)
     interpretacion = interpretar(pieza, PERFECTO)
-    viva = _correr_la_sesion_entera(pieza, interpretacion)
+    viva = _correr_la_sesion_a_tiempo_real(pieza, interpretacion)
     registro_directo, veredicto_directo = _pasar_por_la_cadena_directa(
         pieza, interpretacion
     )

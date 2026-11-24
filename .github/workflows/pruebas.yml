@@ -19,14 +19,10 @@ jobs:
       - uses: astral-sh/setup-uv@v5
       - run: uv sync
       - name: Pruebas
-        # Dos pruebas de sesion completa corren contra el reloj real (el gemelo
-        # toca en tiempo real y la cadena debe oir las ocho notas). En el runner
-        # compartido pierden la primera nota por carga de la maquina, asi que
-        # aqui se excluyen; en un Mac local pasan y siguen siendo parte de la suite.
-        run: >
-          uv run pytest -q
-          --deselect tests/test_gemelo_sesion_completa.py::test_la_pieza_corta_atraviesa_la_sesion_entera
-          --deselect tests/test_gemelo_sesion_completa.py::test_la_sesion_completa_concuerda_con_la_cadena_directa
+        # `-rs` deja a la vista los saltos: las pruebas de sesion completa corren
+        # contra el reloj real y se SALTAN, diciendo la cadencia medida, si el
+        # runner no sostiene el tiempo real (ver tests/test_gemelo_sesion_completa.py).
+        run: uv run pytest -q -rs
 
   interfaz:
     name: interfaz (React)
