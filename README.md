@@ -155,7 +155,9 @@ y `nucleo/analisis/acordes.py` (el detector).
   decaimiento): una nota que suena queda entre 0,58 y 0,87, una cuerda muda
   entre 0,27 y 0,32, y el umbral está en 0,45, en medio del hueco. Una pastilla
   eléctrica reparte los armónicos de otra manera, así que **el umbral está por
-  calibrar** (`UMBRAL_PRESENCIA` en `nucleo/analisis/acordes.py`).
+  calibrar** (`UMBRAL_PRESENCIA` en `nucleo/analisis/acordes.py`). Para eso está
+  `herramientas/calibrar_presencia.py`, que lo mide con tu guitarra (ver
+  **Calibrar la deteccion de acordes**).
 - **Hay un falso positivo medido y asumido.** Si tocas un acorde EQUIVOCADO, una
   de sus notas puede colarse como presente cuando sus armónicos coinciden con lo
   que sí suena (medido: 0,46 frente al umbral de 0,45). El veredicto sigue bien
@@ -960,6 +962,25 @@ Pulsa una cuerda ocho veces separadas y la herramienta propone el salto y el
 refractario que mejor cuentan tus pulsaciones. Los valores por defecto estan
 elegidos a ojo; esto los ajusta a tu pua y tu pastilla.
 
+## Calibrar la deteccion de acordes
+
+```bash
+uv run python -m herramientas.calibrar_presencia
+uv run python -m herramientas.calibrar_presencia --acordes do,sol   # solo dos
+uv run python -m herramientas.calibrar_presencia --umbral-ruido -45 # tocas flojo
+```
+
+Dos tomas por acorde —una completa y otra con la 1.ª cuerda apagada— y la
+herramienta propone `UMBRAL_PRESENCIA` (`nucleo/analisis/acordes.py`). El 0,45 de
+hoy sale de cuerdas sinteticas, que son demasiado limpias; esto lo mide con tu
+pastilla.
+
+Lo que imprime es un hueco: la presencia mas baja de una cuerda que SI suena
+frente a la mas alta de una que NO. El umbral tiene que caer entre las dos, y el
+valor propuesto va en medio. **Si el hueco sale negativo no hay umbral que
+sirva** y lo dice en vez de proponer uno: ahi el problema no es el numero, es la
+medida (`saliencia_de_nota`, en `nucleo/analisis/espectro.py`).
+
 ## Pruebas
 
 ```bash
@@ -1039,7 +1060,9 @@ Lo que hace falta de ti para cerrar la 2b, y que ninguna prueba puede dar:
 - Rasguear los ocho acordes y comprobar que salen «completos».
 - Dejar una cuerda muda a propósito y comprobar que el software nombra **esa**.
 - Calibrar `UMBRAL_PRESENCIA` con señal real: el 0,45 sale del hueco sintético, y
-  el hueco real puede ser más estrecho.
+  el hueco real puede ser más estrecho. No hay que hacerlo a ojo:
+  `uv run python -m herramientas.calibrar_presencia` lo mide y propone el valor
+  (ver **Calibrar la deteccion de acordes**).
 
 Las siguientes, según el diseño:
 

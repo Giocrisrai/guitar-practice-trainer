@@ -65,6 +65,17 @@ VENTANA_ACORDES = 8192
 # **Esta por calibrar con la guitarra del usuario.** El hueco real puede ser mas
 # estrecho que el sintetico: una pastilla electrica reparte los armonicos de otra
 # manera que ocho senoides con decaimiento.
+#
+# Para medirlo hay herramienta, no hay que estimarlo:
+#
+#     uv run python -m herramientas.calibrar_presencia
+#
+# Graba cada acorde dos veces -completo y con una cuerda apagada- y da el hueco
+# real. Si sale negativo, ningun valor de esta constante sirve y lo que hay que
+# revisar es `saliencia_de_nota` (nucleo/analisis/espectro.py); la herramienta lo
+# dice en vez de proponer un numero. Cuando se mida, los numeros nuevos van aqui,
+# al lado de la tabla sintetica de arriba, sin borrarla: la sintetica es la que
+# las pruebas vigilan.
 UMBRAL_PRESENCIA = 0.45
 
 # Fraccion de la ventana que tiene que estar llena antes de juzgar nada.
