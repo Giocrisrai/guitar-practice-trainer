@@ -511,7 +511,12 @@ body {
 /* Una ficha es la forma más el nombre. Hereda del panel, no del botón verde de
    “Empezar”: elegir un acorde no es empezar nada, y un botón de acento por cada
    acorde dejaría la pantalla sin saber dónde está la acción. */
-.ficha-acorde, .paso-vuelta {
+/* Scope en `.selector-acordes` y no a secas: `.configurador button` -el botón
+   verde de "Empezar"- gana por especificidad a un selector de una sola clase, y
+   sin esto los ocho acordes salían pintados de acento, con su margen superior y
+   todo. Ocho botones de acción en una pantalla cuya acción es una. */
+.selector-acordes .ficha-acorde,
+.selector-acordes .paso-vuelta {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -527,9 +532,10 @@ body {
   transition: border-color 120ms ease-out, background-color 120ms ease-out;
 }
 
-.ficha-acorde:hover, .paso-vuelta:hover { border-color: var(--tenue) }
+.selector-acordes .ficha-acorde:hover,
+.selector-acordes .paso-vuelta:hover { border-color: var(--tenue) }
 
-.ficha-acorde.puesta {
+.selector-acordes .ficha-acorde.puesta {
   border-color: var(--afinada);
   background: color-mix(in srgb, var(--afinada) 12%, var(--panel));
 }
@@ -537,8 +543,8 @@ body {
 /* El paso de la vuelta ya está elegido: lo que ofrece al pulsarlo es quitarlo,
    y eso se dice al pasar por encima en vez de con un aspa permanente que
    ensuciaría la secuencia. */
-.paso-vuelta { border-color: var(--afinada) }
-.paso-vuelta:hover {
+.selector-acordes .paso-vuelta { border-color: var(--afinada) }
+.selector-acordes .paso-vuelta:hover {
   border-color: var(--desviada);
   background: color-mix(in srgb, var(--desviada) 12%, var(--panel));
 }
@@ -553,5 +559,5 @@ body {
   /* En el móvil el catálogo cabe a dos columnas y el nombre completo sobra
      menos que la forma: lo que se toca es la ficha entera, así que crece. */
   .catalogo-acordes { display: grid; grid-template-columns: 1fr 1fr }
-  .ficha-acorde { padding: 8px 10px }
+  .selector-acordes .ficha-acorde { padding: 8px 10px }
 }

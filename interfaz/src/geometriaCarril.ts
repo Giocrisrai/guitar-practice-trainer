@@ -276,25 +276,34 @@ export function acordesVisibles(notas: NotaDePieza[]): NotaDePieza[][] {
  * grupo, no por los bordes del lienzo: un acorde de cuatro cuerdas no cruza las
  * seis, y dibujarlo de lado a lado diría que hay que rasguearlas todas.
  *
- * La altura es el borde de ATAQUE (`rectangulo.y`), el que llega primero a la
- * línea: es el instante del rasgueo, que es lo que la ligadura representa. Las
- * notas de un acorde pueden tener duraciones distintas -una pieza de verdad
- * suelta una cuerda antes que otra- y entonces sus bordes de arriba no coinciden;
- * el de ataque sí, por definición del grupo.
+ * Va por el borde de ARRIBA de las cabezas y no por el de ataque, que sería el
+ * sitio obvio: en el de ataque la ligadura queda debajo de las cinco cabezas y
+ * encima de la línea de ataque, es decir tapada por las dos. Por arriba no la
+ * tapa nada y sigue diciendo lo mismo, porque las cabezas de un acorde empiezan
+ * todas en el mismo instante.
+ *
+ * `altoCabeza` es lo que mide una cabeza en el lienzo. Las notas de un acorde
+ * pueden durar distinto -una pieza de verdad suelta una cuerda antes que otra- y
+ * una más corta que la cabeza no llega tan arriba, así que la ligadura se queda
+ * a la altura de la cabeza MÁS BAJA: por encima de ella cruzaría por el aire.
  */
 export function ligaduraDeAcorde(
   grupo: NotaDePieza[],
   instanteS: number,
   tempo: number,
   lienzo: LienzoCarril,
-  ventanaS: number
+  ventanaS: number,
+  altoCabeza = 0
 ): { desde: number; hasta: number; y: number } {
   const anchoCarril = lienzo.ancho / lienzo.cuerdas;
   const centros = grupo.map((nota) => (nota.cuerda - 0.5) * anchoCarril);
-  const primera = rectanguloDeNota(grupo[0], instanteS, tempo, lienzo, ventanaS);
+  const rectangulos = grupo.map((nota) =>
+    rectanguloDeNota(nota, instanteS, tempo, lienzo, ventanaS)
+  );
+  const cabeza = Math.min(altoCabeza, ...rectangulos.map((r) => r.alto));
   return {
     desde: Math.min(...centros),
     hasta: Math.max(...centros),
-    y: primera.y,
+    y: rectangulos[0].y - cabeza,
   };
 }

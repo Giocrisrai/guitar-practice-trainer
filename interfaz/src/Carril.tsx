@@ -90,7 +90,26 @@ const COLOR_BORDE_TOCADA = "#ffffff";
  * su traste; la ligadura solo dice que van juntas.
  */
 const COLOR_LIGADURA = "#e6e9ee";
-const ALFA_LIGADURA = 0.45;
+/**
+ * Lo que mide la CABEZA de una nota, en pixeles, por larga que sea la nota.
+ *
+ * 54 px es algo menos de un tercio de segundo a la velocidad del carril: lo
+ * bastante para que quepa el numero del traste dentro y para que el ojo la lea
+ * como una ficha, no como una franja.
+ */
+const ALTO_CABEZA_PX = 54;
+/** El ancho de la cola, en fraccion del carril de la cuerda. */
+const FRACCION_COLA = 0.34;
+const ALFA_COLA = 0.45;
+const ALFA_LIGADURA = 0.6;
+/**
+ * Lo que la ligadura se separa del borde de arriba de las cabezas.
+ *
+ * Pegada al borde se come la mitad de su grosor con la cabeza y lo que queda es
+ * una pestaña gris que no parece dibujada a propósito. Cinco píxeles bastan para
+ * que se lea como una barra que ata las cabezas.
+ */
+const SEPARACION_LIGADURA_PX = 5;
 const GROSOR_LIGADURA_PX = 3;
 
 const TEXTO_CLASIFICACION: Record<Clasificacion, string> = {
@@ -273,28 +292,6 @@ function pintarCuadro(
   const tempoEfectivo = tempoParaDibujar(pieza, estado);
   const visibles = notasVisibles(pieza.notas, instanteS, tempoEfectivo, VENTANA_VISIBLE_S);
 
-  // La ligadura del rasgueo, DEBAJO de las notas: un acorde es un gesto, no
-  // cinco notas que coinciden. Sin ella hay que comparar cinco alturas para
-  // saber si hay que rasguear o puntear, y es lo primero que la mano necesita
-  // saber. Va antes del bucle de las notas para que ellas se pinten encima.
-  for (const grupo of acordesVisibles(visibles)) {
-    const ligadura = ligaduraDeAcorde(
-      grupo, instanteS, tempoEfectivo, lienzo, VENTANA_VISIBLE_S
-    );
-    const distancia = Math.min(Math.max((lineaAtaque - ligadura.y) / lineaAtaque, 0), 1);
-    // Se desvanece con la distancia igual que las notas: si no, un acorde del
-    // fondo del carril llegaba antes al ojo que la nota que hay que tocar ahora.
-    contexto.globalAlpha = (1 - DESVANECIDO_MAXIMO * distancia) * ALFA_LIGADURA;
-    contexto.strokeStyle = COLOR_LIGADURA;
-    contexto.lineWidth = GROSOR_LIGADURA_PX;
-    contexto.lineCap = "round";
-    contexto.beginPath();
-    contexto.moveTo(ligadura.desde, ligadura.y);
-    contexto.lineTo(ligadura.hasta, ligadura.y);
-    contexto.stroke();
-    contexto.globalAlpha = 1;
-  }
-
   for (const nota of visibles) {
     const rectangulo = rectanguloDeNota(nota, instanteS, tempoEfectivo, lienzo, VENTANA_VISIBLE_S);
     const indice = indices.get(nota);
@@ -316,28 +313,79 @@ function pintarCuadro(
 
     const colorNota =
       tocada === undefined ? colorDeCuerda(nota.cuerda) : colorDeDesviacion(tocada);
+
+    // CABEZA Y COLA.
+    //
+    // Una nota larga -un acorde dura un compas entero, cuatro segundos a 60 ppm-
+    // pintada de una pieza es un bloque de color mas alto que la ventana: cinco
+    // de ellos a la vez son un muro, y el acorde deja de leerse. Asi que la nota
+    // se parte en lo que de verdad son dos cosas distintas: el ATAQUE, que es un
+    // instante y es lo que hay que acertar, y lo que dura, que es dejarla sonar.
+    //
+    // La cabeza mide siempre lo mismo y va pegada al borde de ataque; la cola es
+    // el resto, mas estrecha y mas tenue. Una nota corta no tiene cola y se pinta
+    // exactamente como antes: esto no cambia el carril monofonico.
+    const altoCabeza = Math.min(alto, ALTO_CABEZA_PX);
+    const arribaCabeza = rectangulo.y - altoCabeza;
+    if (alto > altoCabeza) {
+      const anchoCola = Math.max(ancho * FRACCION_COLA, 2);
+      const alfa = contexto.globalAlpha;
+      contexto.globalAlpha = alfa * ALFA_COLA;
+      contexto.fillStyle = colorNota;
+      dibujarNota(
+        contexto, x + (ancho - anchoCola) / 2, arriba, anchoCola, alto - altoCabeza
+      );
+      contexto.fill();
+      contexto.globalAlpha = alfa;
+    }
+
     contexto.fillStyle = colorNota;
-    dibujarNota(contexto, x, arriba, ancho, alto);
+    dibujarNota(contexto, x, arribaCabeza, ancho, altoCabeza);
     contexto.fill();
 
     if (tocada !== undefined) {
       contexto.strokeStyle = COLOR_BORDE_TOCADA;
       contexto.lineWidth = 2;
-      dibujarNota(contexto, x, arriba, ancho, alto);
+      dibujarNota(contexto, x, arribaCabeza, ancho, altoCabeza);
       contexto.stroke();
     }
 
-    if (alto >= ALTO_PARA_TRASTE_PX) {
+    if (altoCabeza >= ALTO_PARA_TRASTE_PX) {
       contexto.fillStyle = colorDeTextoSobre(colorNota);
       contexto.font = "700 13px system-ui, sans-serif";
-      contexto.fillText(String(nota.traste), x + ancho / 2, arriba + alto / 2);
+      contexto.fillText(String(nota.traste), x + ancho / 2, arribaCabeza + altoCabeza / 2);
     } else {
       // No cabe dentro: va justo encima, en el color de la cuerda, para que una
       // nota corta no se quede sin decir que traste es.
       contexto.fillStyle = colorNota;
       contexto.font = "700 11px system-ui, sans-serif";
-      contexto.fillText(String(nota.traste), x + ancho / 2, arriba - 8);
+      contexto.fillText(String(nota.traste), x + ancho / 2, arribaCabeza - 8);
     }
+    contexto.globalAlpha = 1;
+  }
+
+  // La ligadura del rasgueo, por ENCIMA de las cabezas: un acorde es un gesto,
+  // no cinco notas que coinciden. Sin ella hay que comparar cinco alturas para
+  // saber si hay que rasguear o puntear, y es lo primero que la mano necesita
+  // saber. Va despues del bucle de las notas porque en el borde de ataque -el
+  // sitio obvio- quedaba debajo de las cabezas y encima de la linea, tapada por
+  // las dos.
+  for (const grupo of acordesVisibles(visibles)) {
+    const ligadura = ligaduraDeAcorde(
+      grupo, instanteS, tempoEfectivo, lienzo, VENTANA_VISIBLE_S, ALTO_CABEZA_PX
+    );
+    const distancia = Math.min(Math.max((lineaAtaque - ligadura.y) / lineaAtaque, 0), 1);
+    // Se desvanece con la distancia igual que las notas: si no, un acorde del
+    // fondo del carril llegaba antes al ojo que la nota que hay que tocar ahora.
+    contexto.globalAlpha = (1 - DESVANECIDO_MAXIMO * distancia) * ALFA_LIGADURA;
+    contexto.strokeStyle = COLOR_LIGADURA;
+    contexto.lineWidth = GROSOR_LIGADURA_PX;
+    contexto.lineCap = "round";
+    contexto.beginPath();
+    const yLigadura = ligadura.y - SEPARACION_LIGADURA_PX;
+    contexto.moveTo(ligadura.desde, yLigadura);
+    contexto.lineTo(ligadura.hasta, yLigadura);
+    contexto.stroke();
     contexto.globalAlpha = 1;
   }
 

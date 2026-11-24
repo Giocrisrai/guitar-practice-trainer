@@ -215,9 +215,17 @@ describe("ligaduraDeAcorde", () => {
     expect(l.hasta).toBe(450);
   });
 
-  it("se queda a la altura del borde de ataque", () => {
-    const l = ligaduraDeAcorde([nota(5), nota(4)], 0, 60, lienzo, 2);
+  it("se queda por encima de las cabezas, no en el borde de ataque", () => {
+    const l = ligaduraDeAcorde([nota(5), nota(4)], 0, 60, lienzo, 2, 54);
     const rectangulo = rectanguloDeNota(nota(5), 0, 60, lienzo, 2);
-    expect(l.y).toBe(rectangulo.y);
+    expect(l.y).toBe(rectangulo.y - 54);
+  });
+
+  it("baja a la cabeza más corta cuando una nota del acorde dura menos", () => {
+    // Sin esto cruzaría por el aire sobre la nota corta.
+    const corta: NotaDePieza = { ...nota(4), duracion_pulsos: 0.02 };
+    const l = ligaduraDeAcorde([nota(5), corta], 0, 60, lienzo, 2, 54);
+    const rectangulo = rectanguloDeNota(corta, 0, 60, lienzo, 2);
+    expect(l.y).toBe(rectangulo.y - rectangulo.alto);
   });
 });

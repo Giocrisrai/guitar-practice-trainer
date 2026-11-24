@@ -1018,6 +1018,7 @@ describe("Carril: el dibujo sigue al tempo efectivo", () => {
   };
   const ANCHO = 600; // seis cuerdas: un carril de 100 px cada una
   const MARGEN = 5; // el hueco a cada lado que deja el carril (MARGEN_CARRIL_PX)
+  const ANCHO_CARRIL = 100; // ANCHO / 6 cuerdas
 
   beforeEach(() => vi.stubGlobal("WebSocket", WebSocketFalso));
   afterEach(() => {
@@ -1031,6 +1032,18 @@ describe("Carril: el dibujo sigue al tempo efectivo", () => {
    * devuelve `[x, y de la esquina superior, alto]` de cada nota pintada en ese cuadro,
    * con la `x` ya sin el margen del carril. */
   async function carrilesPintados(paquete: Record<string, unknown>): Promise<number[][]> {
+    // Solo las CABEZAS. Una nota larga se pinta en dos piezas -la cabeza, del
+    // ancho del carril, y la cola, mas estrecha- y lo que estas pruebas miden es
+    // que notas se ven y donde cae su ataque, que es la cabeza. La cola tiene su
+    // propia prueba.
+    const CABEZA = ANCHO_CARRIL - 2 * MARGEN;
+    return (await rectangulosPintados(paquete))
+      .filter(([, , ancho]) => Math.abs(ancho - CABEZA) < 1)
+      .map(([x, y, , alto]) => [x - MARGEN, y, alto]);
+  }
+
+  /** Lo mismo, sin filtrar ni recortar: `[x, y, ancho, alto]` de cada rectangulo. */
+  async function rectangulosPintados(paquete: Record<string, unknown>): Promise<number[][]> {
     const fetchFalso = vi.fn((url: string) => {
       const direccion = String(url);
       if (direccion.includes("/api/ejercicios/familias")) return responder(FAMILIAS);
@@ -1092,7 +1105,7 @@ describe("Carril: el dibujo sigue al tempo efectivo", () => {
     const notas = rectangulos.filter(
       (r, i) => i === 0 || r.join() !== rectangulos[i - 1].join()
     );
-    return notas.map(([x, y, , alto]) => [x - MARGEN, y, alto]);
+    return notas;
   }
 
   it("al 50 % las notas visibles son las del reloj estirado, no las del tempo escrito", async () => {
@@ -1106,10 +1119,11 @@ describe("Carril: el dibujo sigue al tempo efectivo", () => {
     // son 6 s, menos los 4 s) y dura 2 s. Con el tempo escrito saldría ya pasada
     // (y = 500) y de 100 px de alto.
     const [, arriba, alto] = carriles[0];
-    // 200 px de nota menos el hueco que la separa de la siguiente de su cuerda
-    // (SEPARACION_NOTAS_PX). El hueco se le quita al borde de ARRIBA: el de
-    // ataque, que es el que dice cuando suena, sigue cayendo en el 200.
-    expect(alto).toBe(197);
+    // La cabeza mide siempre lo mismo (ALTO_CABEZA_PX), dure lo que dure la
+    // nota: una nota de 200 px pintada entera era un bloque mas alto que la
+    // ventana. Lo que no cambia es donde cae el ATAQUE, que es lo que hay que
+    // acertar: el borde de abajo de la cabeza, en el 200.
+    expect(alto).toBe(54);
     expect(Math.abs(arriba + alto - 200)).toBeLessThan(10);
   });
 
@@ -1123,6 +1137,19 @@ describe("Carril: el dibujo sigue al tempo efectivo", () => {
   it("un tempo efectivo de 0, el del carril apagado, no rompe el dibujo ni lo vacía", async () => {
     const carriles = await carrilesPintados({ tempo_efectivo: 0 });
     expect(carriles.map(([x]) => x)).toEqual([100, 200]);
+  });
+
+  it("una nota larga lleva cola: mas estrecha, centrada y por encima de la cabeza", async () => {
+    const todos = await rectangulosPintados({ tempo_efectivo: undefined });
+    const CABEZA = ANCHO_CARRIL - 2 * MARGEN;
+    const colas = todos.filter(([, , ancho]) => ancho < CABEZA - 1);
+    expect(colas.length).toBeGreaterThan(0);
+    const [x, y, ancho, alto] = colas[0];
+    const cabeza = todos.find(([cx, , canc]) => Math.abs(canc - CABEZA) < 1 && cx <= x)!;
+    // Centrada en el carril de su nota.
+    expect(Math.abs(x + ancho / 2 - (cabeza[0] + CABEZA / 2))).toBeLessThan(1);
+    // Y encima: acaba justo donde empieza la cabeza.
+    expect(Math.abs(y + alto - cabeza[1])).toBeLessThan(1);
   });
 });
 
