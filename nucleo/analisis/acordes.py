@@ -88,19 +88,69 @@ VENTANA_ACORDES = 8192
 #     Sol mayor (6 cuerdas)  43:0,87  47:0,40  50:0,55  55:0,94  59:0,47  67:0,70
 #
 # El Do entra completo con holgura. **En el Sol, las dos terceras -B2 y B3- caen al
-# borde del umbral y la grave se queda fuera**, asi que un Sol bien tocado se lee
-# como «te falta la quinta cuerda» durante medio segundo. La causa se ve en los
-# numeros y no es el umbral: el Sol esta DOBLADO en tres octavas (43, 55, 67), la
-# saliencia se normaliza contra la nota mas fuerte de todo el mastil y las terceras
-# pierden esa carrera. Medio segundo mas tarde las dos pasan de 0,45, o sea que el
-# problema es CUANDO se mira, no si suena.
+# borde del umbral y la grave se queda fuera**, asi que un Sol bien tocado se leia
+# como «te falta la quinta cuerda». La causa se ve en los numeros y no es el
+# umbral: el Sol esta DOBLADO en tres octavas (43, 55, 67), la saliencia se
+# normaliza contra la nota mas fuerte de todo el mastil y las terceras pierden esa
+# carrera. A los 250 ms, ademas, el transitorio del rasgueo todavia manda.
 #
-# No se toca esta constante por esto, a proposito: moverla desde audio sintetico es
-# exactamente lo que el parrafo de arriba dice que no se haga, y el arreglo que los
-# numeros sugieren es otro -mirar unos cuantos cuadros en vez de uno solo, como ya
-# hace `nucleo.ejercicios.cambios`- y necesita medidas de guitarra de verdad para
-# decidirse.
+# **Lo que se arreglo no fue el umbral, fue CUANDO se mira** (`VENTANA_DE_RASGUEO_S`,
+# un poco mas abajo): el seguidor deja el grupo abierto y cobra cada
+# cuerda en cuanto la presencia la confirma, igual que ya hacia la pantalla de
+# ejercicios. Con eso el B2 entra 210 ms despues que sus hermanas y el Sol se cobra
+# entero. Esta constante no se toca: moverla desde audio sintetico es exactamente
+# lo que el parrafo de arriba dice que no se haga.
+#
+# Pero el margen sigue siendo de centesimas -las terceras cruzan 0,45 de refilon-,
+# asi que la calibracion con la guitarra del usuario NO esta hecha por esto. Una
+# pastilla electrica reparte los armonicos de otra manera que ocho senoides, y si
+# ahi el hueco sale mas estrecho todavia, lo que hay que revisar es
+# `saliencia_de_nota`.
 UMBRAL_PRESENCIA = 0.45
+
+# Cuanto tiempo despues del rasgueo le pueden seguir entrando cuerdas.
+#
+# Vive aqui, con el umbral, porque es la OTRA cara de la misma medida: cuanta
+# prueba hay de que una cuerda suena, y cuanto tarda esa prueba en aparecer. Lo
+# usa `nucleo.piezas.seguimiento`, que es quien deja el grupo abierto, y
+# `nucleo.gemelo.veredicto`, que necesita saber hasta cuando la cadena puede
+# hablar legitimamente de un rasgueo.
+#
+# **UN ACORDE NO ESTA ENTERO EN UN INSTANTE, y mirar una sola ventana es lo que
+# hacia que un acorde bien tocado saliera incompleto.** Medido con el gemelo
+# rasgueando un Sol mayor abierto -seis cuerdas, barridas, cada una con su
+# fuerza-, la presencia de las DOS terceras contra `UMBRAL_PRESENCIA = 0,45`:
+#
+#     100 ms  B2 0,35  B3 0,35      600 ms  B2 0,46  B3 0,47   <- completo
+#     200 ms  B2 0,30  B3 0,33      700 ms  B2 0,43  B3 0,39
+#     300 ms  B2 0,39  B3 0,45      800 ms  B2 0,47  B3 0,45   <- completo
+#     400 ms  B2 0,40  B3 0,40      900 ms  B2 0,44  B3 0,37
+#     500 ms  B2 0,43  B3 0,43     1000 ms  B2 0,43  B3 0,35
+#
+# El carril consultaba la presencia UNA vez, a los 250 ms del rasgueo -cuando el
+# ataque caduca-, y a los 250 ms las dos terceras estan en su peor momento: el
+# transitorio del rasgueo todavia manda y el Sol, doblado en tres octavas, se lleva
+# la normalizacion. Un Sol perfecto se leia como «te falta la quinta cuerda».
+#
+# Asi que el grupo se queda ABIERTO y cada cuerda se cobra en cuanto la presencia
+# la confirma, que es lo que ya hace la pantalla de ejercicios
+# (`nucleo.ejercicios.cambios`) y lo que la fisica pide: las cuerdas de un rasgueo
+# entran barridas y se asientan despues.
+#
+# 0,8 s por dos razones, y la segunda es el techo de verdad:
+#
+# * es donde la tabla deja de subir: lo que no ha cruzado el umbral en 800 ms ya no
+#   lo va a cruzar, porque de ahi en adelante la cuerda solo decae.
+# * **el grupo se cierra ANTES si llega el rasgueo siguiente**, y eso no es una
+#   optimizacion sino correccion: en cuanto suena el acorde que viene, la ventana
+#   cruda ya no habla del anterior. El tope real es el minimo de los dos.
+#
+# Lo que esto NO arregla es que el margen sea de centesimas: las dos terceras
+# cruzan 0,45 de refilon, asi que el umbral sigue pendiente de calibrar con la
+# guitarra del usuario (`herramientas/calibrar_presencia.py`, y el comentario de
+# `UMBRAL_PRESENCIA`, arriba). Mirar varios cuadros hace que una cuerda que suena se acabe
+# cobrando; no hace que el umbral este bien puesto.
+VENTANA_DE_RASGUEO_S = 0.8
 
 # Fraccion de la ventana que tiene que estar llena antes de juzgar nada.
 #

@@ -90,14 +90,19 @@ def suena(midi, cents=0.0) -> ResultadoAnalisis:
     )
 
 
-def rasguear(seguidor, midi_del_ataque, en=0.0):
-    """Coloca el reloj en `en` y da cuadros hasta que el detector firma el ataque."""
+def rasguear(seguidor, midi_del_ataque, en=0.0, cuadros=12):
+    """Coloca el reloj en `en` y da cuadros hasta que el detector firma el ataque.
+
+    `cuadros` son los que se dan DESPUES del silencio. Doce es de sobra para que el
+    ataque se firme y para que el grupo abierto se siga cobrando; bajarlo a uno
+    sirve para mirar solo el cuadro del ataque, que es otra pregunta.
+    """
     instante = en - 0.1
     seguidor.avanzar_a(instante)
     while instante < en:
         seguidor.procesar(silencio(), instante)
         instante += 0.021
-    for _ in range(12):
+    for _ in range(cuadros):
         seguidor.procesar(suena(midi_del_ataque), instante)
         instante += 0.021
     return seguidor.estado.tocadas
@@ -268,11 +273,23 @@ class TestLoQueNoSuena:
         assert len(tocadas) == 1
         assert tocadas[0].por_presencia is False
 
-    def test_una_ventana_a_medio_llenar_no_cobra(self):
-        """El detector exige el 90 % de la ventana: media ventana no se juzga."""
-        seguidor = seguidor_con(pieza_con_acorde(), rasgueo(DO_MAYOR, VENTANA_ACORDES // 2))
+    def test_el_grupo_abierto_espera_a_que_haya_ventana_con_que_medir(self):
+        """Un acorde que no se pudo medir al principio se cobra cuando se puede.
+
+        El detector exige el 90 % de la ventana (eso lo vigila
+        `tests/test_acordes.py`), asi que con media ventana el primer cuadro no
+        juzga nada. Pero su bufer es CIRCULAR: dos medias ventanas seguidas lo
+        llenan, y el grupo -que sigue abierto- se cobra en cuanto hay con que
+        medir. Es la razon de ser de `VENTANA_DE_RASGUEO_S`: una sola mirada, en el
+        peor instante, perdia el acorde entero.
+        """
+        media = VENTANA_ACORDES // 2
+        seguidor = seguidor_con(pieza_con_acorde(), rasgueo(DO_MAYOR, media))
+
         tocadas = rasguear(seguidor, 48)
-        assert [t.por_presencia for t in tocadas] == [False]
+
+        assert sorted(t.midi for t in tocadas) == sorted(DO_MAYOR)
+        assert any(t.por_presencia for t in tocadas)
 
 
 class TestNoSeCobraDosVeces:

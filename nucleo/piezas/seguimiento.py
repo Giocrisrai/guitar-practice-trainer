@@ -23,7 +23,7 @@ import numpy as np
 
 from collections.abc import Callable
 
-from nucleo.analisis.acordes import DetectorAcordes
+from nucleo.analisis.acordes import VENTANA_DE_RASGUEO_S, DetectorAcordes
 from nucleo.analisis.pipeline import ResultadoAnalisis
 from nucleo.ejercicios.pulsaciones import DetectorPulsaciones, Pulsacion
 from nucleo.musica import esta_afinada, midi_de_nombre, nombre_de_midi
@@ -89,8 +89,6 @@ VENTANA_RECLAMO_MINIMA_S = 0.500
 # hechas con el codigo, no el resultado de medirle el error a nadie con la
 # guitarra en la mano. Esa calibracion sigue pendiente.
 VENTANA_ALTURA_S = 0.250
-
-
 @dataclass(frozen=True)
 class NotaTocada:
     """Una pulsacion ya adjudicada a una nota de la pieza.
@@ -180,6 +178,27 @@ class EstadoCarril:
             "completado": self.completado,
             "tocadas": [tocada.a_dict() for tocada in self.tocadas],
         }
+
+
+@dataclass(frozen=True)
+class _RasgueoAbierto:
+    """Un acorde que se rasgueo y al que todavia le pueden entrar cuerdas.
+
+    `fin_s` es el reloj de la pieza en que se deja de mirar: el minimo de la
+    ventana del rasgueo y el instante escrito del grupo siguiente (ver
+    `VENTANA_DE_RASGUEO_S`).
+
+    `onset_s` es el RITMO QUE FALTA POR PUBLICAR, en el reloj de la pieza, y es
+    `None` cuando ya lo lleva una cuerda. Viaja aqui y no se tira porque el
+    rasgueo puede confirmarse en un cuadro posterior al del golpe: el instante del
+    ataque es bueno -lo firma el detector de energia- y es la UNICA medida de
+    tiempo que ese rasgueo va a dar, asi que la primera cuerda que se cobre la
+    publica, aunque se cobre tres cuadros despues.
+    """
+
+    grupo: tuple[int, ...]
+    fin_s: float
+    onset_s: float | None
 
 
 class SeguidorPieza:
@@ -444,6 +463,9 @@ class SeguidorPieza:
             # misma nota; lo que la vuelta que cierra ya tenia cobrado no se puede
             # saber desde aqui (ver `avanzar_a`).
             self._cobradas_de_la_cola = np.zeros(len(self._inicios_s), dtype=bool)
+            # Los acordes rasgueados a los que todavia les pueden entrar cuerdas
+            # (ver `VENTANA_DE_RASGUEO_S` y `_RasgueoAbierto`).
+            self._rasgueos_abiertos: list[_RasgueoAbierto] = []
 
     @property
     def factor_tempo(self) -> float:
@@ -469,6 +491,14 @@ class SeguidorPieza:
             self._cobradas[dentro] = False
             indices = set(np.flatnonzero(dentro).tolist())
             self._tocadas = [t for t in self._tocadas if t.indice not in indices]
+            # Los rasgueos abiertos del tramo que se olvida se cierran: lo que
+            # sonaba antes del salto no puede cobrar notas del tramo nuevo, que es
+            # la misma razon por la que `reiniciar` vacia el bufer del detector.
+            self._rasgueos_abiertos = [
+                abierto
+                for abierto in self._rasgueos_abiertos
+                if not set(abierto.grupo) & indices
+            ]
 
     @property
     def duracion_s(self) -> float:
@@ -644,6 +674,9 @@ class SeguidorPieza:
                 # monofonica no se puede hacer nada con el; sobre un acorde es el
                 # rasgueo entero (ver `_cobrar_el_rasgueo_sin_altura`).
                 self._cobrar_el_rasgueo_sin_altura(self._detector.ataque_sin_altura)
+            # Y en TODO cuadro, los rasgueos que siguen abiertos: a un acorde le
+            # entran cuerdas despues del golpe (ver `VENTANA_DE_RASGUEO_S`).
+            self._seguir_los_rasgueos_abiertos()
             return self.estado
 
     def _indice_en_curso(self, instante_s: float) -> int:
@@ -802,9 +835,7 @@ class SeguidorPieza:
         )
         return None if de_la_cola else indice
 
-    def _cobrar_el_resto_del_acorde(
-        self, indice_del_ataque: int, faltan: set[int] | None = None
-    ) -> None:
+    def _cobrar_el_resto_del_acorde(self, indice_del_ataque: int) -> None:
         """Cobra por PRESENCIA las demas notas del grupo de `indice_del_ataque`.
 
         El ataque ya se adjudico (es `indice_del_ataque`). Lo que queda es el
@@ -826,19 +857,118 @@ class SeguidorPieza:
         `_adjudicar` y no llega aqui: la ventana cruda es de AHORA y no dice nada
         de lo que sonaba antes del salto.
 
-        `faltan` se puede pasar YA MEDIDO, y lo hace `_cobrar_el_rasgueo_sin_altura`:
-        ese camino tiene que consultar la presencia ANTES de cobrar nada -decide con
-        ella si hubo acorde- y volver a medirla aqui seria un segundo espectro de
-        8192 muestras en el mismo cuadro para obtener el mismo numero.
+        Y NO SE MIRA UNA SOLA VEZ: el grupo se queda abierto y las cuerdas que
+        entran despues se cobran en los cuadros siguientes (ver
+        `VENTANA_DE_RASGUEO_S`, que mide por que una sola mirada no basta).
         """
         grupo = self._grupo_de.get(indice_del_ataque)
         if grupo is None:
             return
-        if faltan is None:
-            faltan = self._presencias_del_grupo(grupo)
-            if faltan is None:
-                return
-        self._corregir_el_ataque(indice_del_ataque, faltan)
+        faltan = self._presencias_del_grupo(grupo)
+        if faltan is not None:
+            self._corregir_el_ataque(indice_del_ataque, faltan)
+        # Sin ritmo que publicar: la nota del ataque ya lo lleva, puesto por
+        # `_adjudicar` con la altura que leyo.
+        self._abrir_el_rasgueo(grupo, onset_s=None, faltan=faltan)
+
+    def _abrir_el_rasgueo(
+        self, grupo: tuple[int, ...], onset_s: float | None, faltan: set[int] | None
+    ) -> None:
+        """Cobra lo que ya suena del grupo y lo deja abierto si falta alguna cuerda.
+
+        `faltan` es lo que la presencia midio en ESTE cuadro, o `None` si no se pudo
+        medir -y entonces no se cobra nada ahora, pero el grupo se abre igual: el
+        cuadro siguiente puede tener la ventana que a este le faltaba-.
+
+        El grupo no se abre, y no cuesta nada, cuando ya esta todo cobrado o cuando
+        la ventana se cierra en este mismo cuadro, que es lo que pasa con un acorde
+        del que suena todo a la primera y con uno que llega pegado al siguiente.
+        Tampoco se abre dos veces: dos golpes sobre el mismo acorde son el mismo
+        rasgueo visto dos veces, y la segunda no tiene mas ritmo que publicar.
+        """
+        if faltan is not None:
+            onset_s = self._cobrar_las_que_suenan(grupo, faltan, onset_s)
+        if all(self._cobradas[indice] for indice in grupo):
+            return
+        if any(abierto.grupo == grupo for abierto in self._rasgueos_abiertos):
+            return
+        # La ventana se mide DESDE EL RASGUEO, que es a lo que la tabla de
+        # `VENTANA_DE_RASGUEO_S` esta referida. `onset_s` lo trae cuando se conoce
+        # -el camino del golpe sin altura-; cuando no, el cuadro en curso es lo mas
+        # cercano que hay, y va como mucho un par de decimas por detras.
+        ancla_s = self._instante_pieza if onset_s is None else onset_s
+        fin_s = min(ancla_s + VENTANA_DE_RASGUEO_S, self._inicio_siguiente_s(grupo))
+        if self._instante_pieza >= fin_s:
+            return
+        self._rasgueos_abiertos.append(
+            _RasgueoAbierto(grupo=grupo, fin_s=fin_s, onset_s=onset_s)
+        )
+
+    def _inicio_siguiente_s(self, grupo: tuple[int, ...]) -> float:
+        """El instante escrito del grupo que viene detras de `grupo`, o infinito.
+
+        En segundos de la PASADA, como todo lo que sale de `_inicios_s`. Es el techo
+        de verdad de la ventana del rasgueo: en cuanto suena el acorde siguiente, la
+        ventana cruda ya no habla de este.
+        """
+        inicio = float(self._inicios_s[grupo[-1]])
+        # `_inicios_s` esta ordenado y todas las notas del grupo comparten inicio,
+        # asi que el primer inicio ESTRICTAMENTE mayor es el del grupo siguiente.
+        posicion = int(np.searchsorted(self._inicios_s, inicio, side="right"))
+        if posicion >= self._inicios_s.size:
+            return float("inf")
+        return float(self._inicios_s[posicion])
+
+    def _seguir_los_rasgueos_abiertos(self) -> None:
+        """Cobra, en cada cuadro, las cuerdas que acaban de entrar en un rasgueo.
+
+        Corre en TODOS los cuadros y no solo en los del ataque, que es justo lo que
+        arregla: a los 250 ms del rasgueo -cuando el ataque caduca y el carril
+        miraba- las cuerdas que no doblan la fundamental estan en su peor momento
+        (la tabla, en `VENTANA_DE_RASGUEO_S`). Un grupo se cierra al pasar su
+        ventana, al quedarse sin cuerdas por cobrar, o al llegar el rasgueo
+        siguiente, que es su `fin_s`.
+
+        Sin ningun rasgueo abierto no cuesta NADA, y es el caso de toda pieza
+        monofonica: la lista esta vacia y se sale en la primera linea.
+        """
+        if not self._rasgueos_abiertos:
+            return
+        siguen: list[_RasgueoAbierto] = []
+        for abierto in self._rasgueos_abiertos:
+            if self._instante_pieza >= abierto.fin_s:
+                continue
+            if all(self._cobradas[indice] for indice in abierto.grupo):
+                continue
+            faltan = self._presencias_del_grupo(abierto.grupo)
+            if faltan is not None:
+                onset_s = self._cobrar_las_que_suenan(
+                    abierto.grupo, faltan, abierto.onset_s
+                )
+                abierto = replace(abierto, onset_s=onset_s)
+            siguen.append(abierto)
+        self._rasgueos_abiertos = siguen
+
+    def _cobrar_las_que_suenan(
+        self, grupo: tuple[int, ...], faltan: set[int], onset_s: float | None
+    ) -> float | None:
+        """Cobra las cuerdas del grupo sin cobrar que NO estan en `faltan`.
+
+        Devuelve el ritmo que queda por publicar: `onset_s` tal cual si no se cobro
+        ninguna cuerda, y `None` en cuanto una se lo lleva.
+
+        **LA PRIMERA CUERDA QUE SE COBRA PUEDE LLEVAR EL RITMO.** Con `onset_s`
+        puesto -el camino del rasgueo sin altura- esa cuerda sale con `desfase_s`,
+        `clasificacion` y `por_presencia=False`: el gesto fue uno y esa es la unica
+        medida de tiempo que da. Las demas van sin tiempo y con
+        `por_presencia=True`. Con `onset_s` en `None` -el camino del acorde cuyo
+        ataque SI trajo altura- todas van por presencia, porque el ritmo ya lo
+        publico `_adjudicar`.
+
+        Una cuerda que falta se queda sin cobrar, igual que una nota suelta que
+        nadie toco: el carril la pinta sin marca. Marcar un fallo explicito por
+        cuerda es la pantalla de ejercicios, no el carril.
+        """
         for indice in grupo:
             if self._cobradas[indice]:
                 continue
@@ -846,13 +976,17 @@ class SeguidorPieza:
             if nota.midi in faltan:
                 continue
             self._cobradas[indice] = True
+            lleva_el_ritmo = onset_s is not None
+            desfase = None if onset_s is None else onset_s - float(self._inicios_s[indice])
             self._tocadas.append(
                 NotaTocada(
                     indice=indice,
                     midi=nota.midi,
+                    # Sin altura leida no hay cents que publicar: `None` es "no se
+                    # supo", que es exactamente el caso.
                     cents=None,
-                    desfase_s=None,
-                    clasificacion=None,
+                    desfase_s=desfase,
+                    clasificacion=None if desfase is None else self._clasificar(desfase),
                     # `acertada=True` porque la pregunta que se contesto es
                     # precisamente «¿suena la nota ESCRITA?»: el detector verifica,
                     # no transcribe, asi que una nota presente es la escrita por
@@ -861,9 +995,13 @@ class SeguidorPieza:
                     # escrita se queda sin cobrar.
                     acertada=True,
                     afinada=None,
-                    por_presencia=True,
+                    # False solo para la que lleva el ritmo: ese campo separa las
+                    # que aportan una medida de tiempo de las que no.
+                    por_presencia=not lleva_el_ritmo,
                 )
             )
+            onset_s = None
+        return onset_s
 
     def _presencias_del_grupo(self, grupo: tuple[int, ...]) -> set[int] | None:
         """Las notas del grupo que NO suenan, o `None` si no hubo nada que medir.
@@ -915,24 +1053,28 @@ class SeguidorPieza:
         cuerdas escritas contra la ventana cruda, igual que cuando el ataque si
         trae altura.
 
-        **EL ATAQUE NO BASTA POR SI SOLO, y de ahi el orden de este metodo.** Un
-        golpe de energia cuya altura no cuaja lo produce tambien un apagado, un
-        roce o un acorde equivocado, asi que primero se pregunta a la presencia y
-        solo se cobra si alguna cuerda escrita suena de verdad. Si no suena
-        ninguna, no se anota nada: el carril pinta el acorde sin marca, que es lo
-        mismo que hace con una nota suelta que nadie toco.
+        **EL ATAQUE NO BASTA POR SI SOLO.** Un golpe de energia cuya altura no
+        cuaja lo produce tambien un apagado, un roce o un acorde equivocado, asi
+        que no se cobra nada que la presencia no confirme. Si no suena ninguna
+        cuerda escrita, no se anota nada: el carril pinta el acorde sin marca, que
+        es lo mismo que hace con una nota suelta que nadie toco.
+
+        Lo que si se hace es DEJAR EL GRUPO ABIERTO (ver `_abrir_el_rasgueo`), para
+        que las cuerdas que entren en los cuadros siguientes se cobren y para que el
+        ritmo del golpe -que es bueno aunque la altura no lo fuera- lo pueda
+        publicar la primera que se confirme, aunque sea tres cuadros despues.
 
         No hace nada, sin coste, cuando el ataque no apunta a ningun acorde: una
         nota SUELTA cuya altura no se leyo se sigue quedando sin reportar, como
         antes. Ahi el ataque no prueba nada -no se sabe que sono- y la presencia
         de una sola nota no distingue la escrita de un armonico de su vecina.
 
-        **El ritmo lo lleva UNA cuerda**, la primera del grupo que suena, y lleva
-        `desfase_s` y `clasificacion` del instante del ataque: el gesto fue uno y
-        esa es la unica medida de tiempo que este rasgueo da. Las demas se cobran
-        por presencia, sin tiempo, igual que el resto de un acorde con ataque. Es
-        la misma reparticion que `_corregir_el_ataque` razona para el caso en que
-        la altura se lee mal.
+        **El ritmo lo lleva UNA cuerda**, la primera del grupo que se confirma, con
+        el `desfase_s` y la `clasificacion` del instante del ataque: el gesto fue
+        uno y esa es la unica medida de tiempo que este rasgueo da. Las demas se
+        cobran por presencia, sin tiempo, igual que el resto de un acorde con
+        ataque. Es la misma reparticion que `_corregir_el_ataque` razona para el
+        caso en que la altura se lee mal.
 
         **Nunca cobra por la cola**, por la razon de siempre: la ventana cruda es
         de AHORA y no dice nada de lo que sonaba antes del salto.
@@ -963,41 +1105,11 @@ class SeguidorPieza:
         grupo = self._grupo_de.get(indice)
         if grupo is None:
             return
-        faltan = self._presencias_del_grupo(grupo)
-        if faltan is None:
-            return
-        suenan = [
-            miembro
-            for miembro in grupo
-            if not self._cobradas[miembro]
-            and int(self.pieza.notas[miembro].midi) not in faltan
-        ]
-        if not suenan:
-            return
-
-        portadora = suenan[0]
-        nota = self.pieza.notas[portadora]
-        desfase = float(instante_onset - self._inicios_s[portadora])
-        self._cobradas[portadora] = True
-        self._tocadas.append(
-            NotaTocada(
-                indice=portadora,
-                midi=nota.midi,
-                # Sin altura leida no hay cents que publicar: `None` es "no se
-                # supo", que es exactamente el caso.
-                cents=None,
-                desfase_s=desfase,
-                clasificacion=self._clasificar(desfase),
-                # `acertada=True` porque la presencia acaba de confirmar que la
-                # nota ESCRITA suena, que es la pregunta que el detector contesta.
-                acertada=True,
-                afinada=None,
-                # False: esta cuerda SI aporta una medida de tiempo, y es lo que
-                # ese campo separa.
-                por_presencia=False,
-            )
+        self._abrir_el_rasgueo(
+            grupo,
+            onset_s=instante_onset,
+            faltan=self._presencias_del_grupo(grupo),
         )
-        self._cobrar_el_resto_del_acorde(portadora, faltan)
 
     def _corregir_el_ataque(self, indice: int, faltan: set[int]) -> None:
         """Revisa el veredicto de la nota del ataque con lo que dice la presencia.

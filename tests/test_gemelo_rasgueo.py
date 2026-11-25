@@ -21,7 +21,11 @@ sean numeros MEDIDOS de las presencias y no un «sale limpio».
 import numpy as np
 
 from nucleo.afinaciones import PERFILES
-from nucleo.analisis.acordes import VENTANA_ACORDES, DetectorAcordes
+from nucleo.analisis.acordes import (
+    VENTANA_ACORDES,
+    VENTANA_DE_RASGUEO_S,
+    DetectorAcordes,
+)
 from nucleo.ejercicios.pulsaciones import VENTANA_ATAQUE_COMO_ONSET_S
 from nucleo.gemelo.cadena import GrifoDeAudio, pasar_por_la_cadena
 from nucleo.gemelo.interprete import interpretar
@@ -197,45 +201,64 @@ def test_el_oraculo_rasguea_los_dos_acordes_completos():
     assert por_instante == sorted(set(por_instante))
 
 
-def test_el_carril_cobra_el_rasgueo_entero_menos_la_tercera_del_sol():
-    """El camino completo de la etapa 2b sin cable, con su limite MEDIDO.
+def test_el_carril_cobra_los_dos_rasgueos_enteros():
+    """El camino completo de la etapa 2b sin cable, once cuerdas de once.
 
     Lo que recorre: el gemelo rasguea, `DetectorAtaques` oye el gesto por nivel,
     la altura NO cuaja (un acorde no tiene una), `_cobrar_el_rasgueo_sin_altura`
-    lo resuelve por presencia contra la ventana cruda del grifo y el veredicto
-    compara las once cuerdas que sonaron con las que la cadena reporto.
+    lo resuelve por presencia contra la ventana cruda del grifo, el grupo se queda
+    abierto mientras entran las cuerdas que faltan, y el veredicto compara las once
+    que sonaron con las que la cadena reporto.
 
-    **DIEZ DE ONCE, Y LA QUE FALTA ES UNA MEDIDA, no un defecto de este camino.**
-    En el cuadro en que el ataque caduca -0,25 s despues del rasgueo,
-    `VENTANA_ATAQUE_COMO_ONSET_S`- las presencias son
+    **Y HARIA FALTA MIRAR MAS DE UNA VENTANA, que es lo que esta pasada midio.**
+    Con una sola mirada, en el cuadro en que el ataque caduca -0,25 s despues del
+    rasgueo-, las presencias son
 
         Do mayor (5 cuerdas)   48:0,56  52:0,70  55:0,88  60:1,00  64:0,73
         Sol mayor (6 cuerdas)  43:0,87  47:0,40  50:0,55  55:0,94  59:0,47  67:0,70
 
-    contra `UMBRAL_PRESENCIA = 0,45`. El Do entra completo con holgura; en el Sol
-    las DOS terceras -B2 y B3- caen al borde y la grave se queda fuera. La causa
-    se lee en los numeros: el Sol esta doblado en tres octavas (43, 55, 67), la
-    saliencia se normaliza contra la nota mas fuerte de todo el mastil y las
-    terceras pierden esa carrera. Medio segundo mas tarde las dos pasan de 0,45,
-    asi que es cuando se mira y no si suena.
+    contra `UMBRAL_PRESENCIA = 0,45`: el Do entra completo con holgura y el Sol
+    pierde su tercera grave, el B2. Un Sol perfecto se leia como «te falta la
+    quinta cuerda», y a los 0,25 s es que el transitorio del rasgueo todavia manda.
+    Con el grupo abierto (`VENTANA_DE_RASGUEO_S`) el B2 entra 210 ms despues que
+    las otras cinco cuerdas del mismo acorde, y el veredicto sale limpio.
 
-    Esta prueba fija ese numero para que un cambio lo mueva a la vista. Lo que
-    hay que hacer con el -recalibrar el umbral con la guitarra del usuario
-    (`herramientas/calibrar_presencia.py`), o dejar el grupo abierto unos cuadros
-    en vez de mirar una sola ventana- es una decision con medidas de guitarra de
-    verdad detras, y no se toma desde audio sintetico.
+    Lo que esto NO arregla es el margen: las terceras cruzan 0,45 de refilon, asi
+    que el umbral sigue pendiente de calibrar con la guitarra del usuario
+    (`herramientas/calibrar_presencia.py`).
     """
     pieza, interpretacion = interpretacion_de_rasgueos()
 
     registro = conducir_con_grifo(pieza, interpretacion)
     veredicto = juzgar(interpretacion, registro)
 
+    assert veredicto.perdidas == ()
     assert veredicto.inventadas == 0
     assert veredicto.mal_adjudicadas == ()
+    assert veredicto.limpio is True
     assert veredicto.notas_tocadas == 11
-    # La nota 6 es el B2 del Sol: la tercera grave, con 0,40 de presencia.
-    assert veredicto.perdidas == ((1, 6),)
-    assert int(pieza.notas[6].midi) == 47
+    del pieza
+
+
+def test_la_cuerda_que_tarda_en_levantarse_llega_despues_que_las_demas():
+    """Es la razon de ser de la ventana del rasgueo, y se afirma con el reloj.
+
+    El B2 del Sol (la nota 6) no esta por encima del umbral de presencia cuando el
+    carril mira por primera vez. Si el grupo no se quedara abierto, esa cuerda no
+    se cobraria nunca; abierto, se cobra en un cuadro POSTERIOR al de las otras
+    cinco, y eso es lo que esta prueba mira: que llegue, y que llegue despues.
+    """
+    pieza, interpretacion = interpretacion_de_rasgueos()
+
+    registro = conducir_con_grifo(pieza, interpretacion)
+
+    del pieza
+    por_indice = {reporte.tocada.indice: reporte for reporte in registro.reportes}
+    tardia = por_indice[6]
+    hermanas = [por_indice[indice].instante_pasada_s for indice in (5, 7, 8, 9, 10)]
+    assert tardia.instante_pasada_s > max(hermanas)
+    # Y dentro de la ventana del rasgueo, no en el acorde siguiente.
+    assert tardia.instante_pasada_s - max(hermanas) < VENTANA_DE_RASGUEO_S
 
 
 def test_el_rasgueo_llega_al_carril_con_su_ritmo_medido():
@@ -255,6 +278,7 @@ def test_el_rasgueo_llega_al_carril_con_su_ritmo_medido():
     ]
     assert len(con_tiempo) == 2
     assert all(not reporte.tocada.por_presencia for reporte in con_tiempo)
+    assert sum(reporte.tocada.por_presencia for reporte in registro.reportes) == 9
     assert all(reporte.tocada.clasificacion is not None for reporte in con_tiempo)
     # Y son las dos cuerdas mas graves de cada acorde: la primera del grupo que
     # la presencia confirma.

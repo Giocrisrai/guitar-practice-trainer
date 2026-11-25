@@ -70,6 +70,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from nucleo.analisis.acordes import VENTANA_DE_RASGUEO_S
 from nucleo.analisis.pipeline import INTERVALO_DE_ANALISIS_S
 from nucleo.ejercicios.ataques import MUESTRAS_REFERENCIA
 from nucleo.ejercicios.pulsaciones import VENTANA_ATAQUE_COMO_ONSET_S
@@ -96,38 +97,35 @@ from nucleo.piezas.modelo import Pieza, pulsos_a_segundos
 # mediria la tolerancia y no la cadena.
 TOLERANCIA_DE_EMPAREJAMIENTO_MS = VENTANA_ATAQUE_COMO_ONSET_S * 1000.0
 
-# Lo que un RASGUEO tarda de mas que una nota suelta en llegar al registro.
+# La holgura de emparejamiento de un RASGUEO, que es otra y mucho mas ancha.
 #
-# **Un acorde no se resuelve por altura, se resuelve cuando el ataque CADUCA.** Los
-# dos caminos de `DetectorPulsaciones` necesitan una nota creible y cinco cuerdas a
-# la vez no tienen una (los numeros, en `DetectorPulsaciones.ataque_sin_altura`),
-# asi que el carril lo cobra por presencia en el cuadro en que la lectura pendiente
-# se abandona -el techo de arriba- y no antes. Al techo hay que sumarle entonces:
+# **Un acorde no llega al registro en un instante, llega durante toda su ventana.**
+# El carril no lo resuelve por altura -cinco cuerdas a la vez no tienen una; los
+# numeros, en `DetectorPulsaciones.ataque_sin_altura`- sino por PRESENCIA, y la
+# presencia de las cuerdas que no doblan la fundamental tarda en levantarse: el
+# seguidor deja el grupo abierto `VENTANA_DE_RASGUEO_S` y cobra cada cuerda en
+# cuanto la ve. Una cuerda puede entonces reportarse medio segundo despues del
+# golpe, legitimamente. A eso se le suman los `MUESTRAS_REFERENCIA` cuadros que
+# `DetectorAtaques` puede tardar en VER el golpe cuando el acorde anterior todavia
+# suena -el caso normal de un ejercicio de cambios: el salto de 6 dB sobre el nivel
+# de referencia tarda mas en aparecer cuando el nivel de partida ya es alto- y un
+# cuadro mas, el que lo nota.
 #
-# * los `MUESTRAS_REFERENCIA` cuadros que `DetectorAtaques` puede tardar en VER el
-#   golpe cuando el acorde anterior todavia suena. Ese es el caso normal de un
-#   ejercicio de cambios, no un borde: el salto de 6 dB sobre el nivel de
-#   referencia tarda mas en aparecer cuando el nivel de partida ya es alto.
-# * un cuadro mas, el que nota la caducidad.
+# MEDIDO sobre dos acordes abiertos seguidos (Do y Sol, 60 ppm) con el techo pelado
+# de 250 ms: las once cuerdas de los dos acordes salian POR CONSTRUCCION como
+# perdidas y sus reportes como inventados -el veredicto medira la tolerancia y no
+# la cadena, que es justo lo que el comentario de arriba advierte-.
 #
-# MEDIDO sobre dos acordes abiertos seguidos (Do y Sol, 60 ppm): el cabezal marca
-# 272 ms sobre la cuerda mas grave del primero y 325 sobre la del segundo -el que
-# llega con el anterior sonando-. Con el techo pelado de 250, las once cuerdas de
-# los dos acordes salian POR CONSTRUCCION como perdidas y sus reportes como
-# inventados: el veredicto medira la tolerancia y no la cadena, que es justo lo que
-# el comentario de arriba advierte. Con el techo mas seis cuadros -376 ms- el peor
-# caso medido deja 51 ms, dos cuadros y medio de margen.
-#
-# **SE SUMA SOLO A LOS EVENTOS DE UN ACORDE**, y por eso es una constante aparte y
-# no un techo nuevo para todos: una nota suelta sigue emparejandose con 250 ms, que
-# es lo que mantiene el veredicto afilado donde puede estarlo. Un reporte inventado
-# a 300 ms de una nota suelta se sigue contando como inventado.
-#
-# Y lo que NO cambia es lo que la holgura significa: sigue siendo de
-# EMPAREJAMIENTO, no de calidad. Que un acorde se resuelva un cuarto de segundo
-# despues del rasgueo es una latencia real de la cadena, y aparece donde tiene que
-# aparecer, en `desfase_introducido_ms`.
-HOLGURA_DE_MAS_DEL_RASGUEO_S = (MUESTRAS_REFERENCIA + 1) * INTERVALO_DE_ANALISIS_S
+# **ES UNA HOLGURA FLOJA Y SE DICE EN VOZ ALTA.** Casi un segundo no distingue gran
+# cosa en el tiempo, y por eso se aplica SOLO a los eventos de un acorde: una nota
+# suelta sigue emparejandose con 250 ms, que es donde el veredicto puede estar
+# afilado y lo esta. De un acorde, lo que el veredicto sigue afirmando con fuerza
+# es que la cuerda se reporto y con la altura escrita; que se reportara pronto lo
+# dice `desfase_introducido_ms`, que es el sitio donde esa latencia tiene que
+# aparecer, y no una tolerancia apretada que convertiria la latencia en perdidas.
+HOLGURA_DEL_RASGUEO_S = (
+    VENTANA_DE_RASGUEO_S + (MUESTRAS_REFERENCIA + 1) * INTERVALO_DE_ANALISIS_S
+)
 
 
 @dataclass(frozen=True)
@@ -289,10 +287,10 @@ def juzgar(
             continue
         puesto = (vuelta, evento.indice_pretendido)
         instante_real_s = evento.instante_s - adelantos_s[vuelta]
-        holgura_s = tolerancia_s + (
-            HOLGURA_DE_MAS_DEL_RASGUEO_S
+        holgura_s = (
+            max(tolerancia_s, HOLGURA_DEL_RASGUEO_S)
             if evento.indice_pretendido in de_un_acorde
-            else 0.0
+            else tolerancia_s
         )
         posicion = por_puesto.get(puesto)
         reporte = None if posicion is None else registro.reportes[posicion]
