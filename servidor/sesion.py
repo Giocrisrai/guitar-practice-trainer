@@ -70,10 +70,18 @@ class Sesion:
         configuracion: Configuracion,
         crear_captura: Callable | None = None,
         listar: Callable | None = None,
+        reloj: Callable[[], float] | None = None,
     ) -> None:
         self.configuracion = configuracion
         self._crear_captura = crear_captura or (lambda **kw: CapturaAudio(**kw))
         self._listar = listar or listar_dispositivos_entrada
+        # El reloj monotono del hilo de analisis, inyectable. Es la tercera
+        # costura de esta clase, por la misma razon que las otras dos: la
+        # aritmetica del plazo acumulado (`_esperar_el_cuadro`) no es afirmable
+        # contra el reloj de verdad, y parchear `time.monotonic` en el modulo lo
+        # parchea para TODOS los hilos que esten corriendo -se intento, y dejo la
+        # suite intermitente-.
+        self._reloj = reloj or time.monotonic
         self._captura = None
         self._analizador: Analizador | None = None
         self._hilo: threading.Thread | None = None
@@ -504,6 +512,57 @@ class Sesion:
         self._fallos_observador_anunciados.add(clave)
         _registro.error("Fallo en el observador %s: %s: %s", nombre, type(error).__name__, error)
 
+    def _esperar_el_cuadro(self, plazo: float) -> float:
+        """Espera hasta `plazo` y devuelve el plazo del cuadro siguiente.
+
+        **ESPERAR UN INTERVALO NO ES CORRER A UN INTERVALO, Y ESTABA MEDIDO.** El
+        hilo pedía `plazo = self._esperar_el_cuadro(plazo)` en cada vuelta, y en un
+        MacBook M1 `Event.wait(0,021)` tarda unos 27 ms: macOS agrupa los
+        temporizadores y nunca despierta antes de lo pedido, así que cada vuelta
+        pagaba su retraso Y el de todas las anteriores. Analizar la ventana cuesta
+        0,15 ms, de modo que el trabajo no era la causa.
+
+        Medido sobre el gemelo PERFECTO rasgueando los ocho acordes abiertos, el
+        desfase que el carril le firma (ventana de acierto: 80 ms):
+
+            cadena directa, 21 ms exactos   +20 +73 +63 +74 +64 +75 +65 +76 ms
+            sesión, esperando fijo (26,3 ms) +44 +88 +83 +88 +79 +70 +82 +57 ms
+            sesión, con plazo (21,0 ms)      +20 +33 +22 +76 +24 +75 +25 +77 ms
+
+        Cuatro de ocho «tarde» antes, cero después, con el MISMO audio y el MISMO
+        seguidor: ese sesgo entero era la cadencia del hilo. La mediana baja de
+        +80,5 a +29 ms y la cadencia efectiva de 26,25 a 21,05.
+
+        **LO QUE EL ARREGLO NO ARREGLA, Y HAY QUE LEERLO ANTES DE CELEBRARLO.**
+        Repetida cuatro veces, la pasada da 0, 2, 2 y 0 acordes «tarde»: el sesgo
+        se fue, el borde no. Un rasgueo gasta hasta 76 ms de los 80 en latencia
+        honesta del detector -`DetectorAtaques` necesita un salto de 6 dB sobre el
+        nivel de referencia, y ese salto tarda más cuando el acorde anterior sigue
+        sonando-, así que la ventana no tiene sitio para un acorde ni con el reloj
+        perfecto: los 11 ms de tembleque que queda del tiempo real bastan para
+        pasarse. Eso YA NO es un defecto de este módulo, es la pregunta de diseño
+        de si 80 ms es la ventana correcta para un gesto que cuesta 76, y está
+        pendiente de decidir. Lo que este arreglo compra es que la pregunta se
+        pueda hacer sin un error de reloj encima.
+
+        Lo que hace: el plazo no se recalcula desde «ahora» sino que se ACUMULA, de
+        forma que una vuelta lenta la recupera la siguiente en vez de arrastrarla.
+        Es el mismo patrón que `nucleo.sintesis` usa para el metrónomo, con su
+        misma guarda: si el plazo siguiente ya quedó más de un intervalo atrás, se
+        realinea con el reloj. Sin esa guarda, un parón -el equipo dormido, una
+        captura que se reabre- soltaría de golpe todas las vueltas atrasadas en
+        ráfaga, que es peor que haberlas perdido.
+
+        Devuelve el plazo siguiente para que la vuelta lo arrastre; `detener()`
+        sigue cortando la espera, porque la espera sigue siendo la del evento.
+        """
+        self._parar.wait(max(0.0, plazo - self._reloj()))
+        plazo += INTERVALO_ANALISIS
+        ahora = self._reloj()
+        if plazo < ahora - INTERVALO_ANALISIS:
+            plazo = ahora + INTERVALO_ANALISIS
+        return plazo
+
     def _trabajar(self) -> None:
         """Hilo de trabajo: abre, vigila y analiza.
 
@@ -536,6 +595,8 @@ class Sesion:
         proximo_intento = 0.0
         proxima_revision = time.monotonic() + self.intervalo_revision
         silencio_publicado = False
+        # El plazo del cuadro siguiente, acumulado. Ver `_esperar_el_cuadro`.
+        plazo = time.monotonic() + INTERVALO_ANALISIS
 
         while not self._parar.is_set():
             try:
@@ -547,7 +608,7 @@ class Sesion:
                     if ahora >= proximo_intento:
                         proximo_intento = ahora + self.espera_reintento
                         self._abrir_captura()
-                    self._parar.wait(INTERVALO_ANALISIS)
+                    plazo = self._esperar_el_cuadro(plazo)
                     continue
 
                 if ahora >= proxima_revision:
@@ -558,7 +619,7 @@ class Sesion:
                         # Tras cerrar, la generación ya cambió: se publica con la
                         # nueva para que el silencio sí llegue a la pantalla.
                         self._publicar(self._resultado_silencio(), self._generacion)
-                        self._parar.wait(INTERVALO_ANALISIS)
+                        plazo = self._esperar_el_cuadro(plazo)
                         continue
 
                 total = captura.total_capturado
@@ -577,7 +638,7 @@ class Sesion:
                     silencio_publicado = True
                     self._publicar(self._resultado_silencio(), generacion)
 
-                self._parar.wait(INTERVALO_ANALISIS)
+                plazo = self._esperar_el_cuadro(plazo)
             except Exception as error:
                 # Una excepción a mitad de vuelta (un fallo de PortAudio, por
                 # ejemplo) mataría el hilo en silencio, y con el hilo muerto la
@@ -589,7 +650,7 @@ class Sesion:
                 self._anunciar_error_una_vez()
                 self._cerrar_captura()
                 proximo_intento = time.monotonic() + self.espera_reintento
-                self._parar.wait(INTERVALO_ANALISIS)
+                plazo = self._esperar_el_cuadro(plazo)
 
     def _resultado_silencio(self) -> ResultadoAnalisis:
         """Silencio por falta de muestras nuevas, no por falta de energía."""

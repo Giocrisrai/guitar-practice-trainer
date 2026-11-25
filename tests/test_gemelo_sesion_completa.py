@@ -128,6 +128,19 @@ INTERVALO_NOMINAL_MS = INTERVALO_DE_ANALISIS_S * 1000.0
 # techo de calidad: es la condicion para poder aplicar el modelo.
 CUADROS_MINIMOS_PARA_MEDIR = 20
 
+# Cuanto puede quedar la cadencia MEDIA por debajo del intervalo nominal sin que
+# eso signifique nada. Correr mas rapido que el nominal es imposible -el hilo
+# espera hasta un plazo que avanza de 21 en 21 ms y al realinearse solo se mueve
+# hacia adelante-, pero la MEDIA si puede quedar unas centesimas por debajo: se
+# mide como (ultimo - primero) / (cuadros - 1), y si el primer cuadro llego tarde
+# -el arranque de la pasada- ese retraso se reparte entre los mil y pico cuadros y
+# sale restando. MEDIDO: 20,99 ms sobre 1548 cuadros, o sea una centesima.
+#
+# 1 ms es tres ordenes de magnitud por encima de eso y sigue siendo imposible de
+# alcanzar por una regresion: para arañar 1 ms de media haria falta que el primer
+# cuadro llegara 1,5 s tarde. No es una tolerancia aflojada, es el ancho del borde.
+HOLGURA_DE_LA_CADENCIA_MS = 1.0
+
 # La cadencia mas lenta a la que una pasada todavia sirve para medir, en ms por
 # cuadro. MEDIDO, y es la condicion de uso del instrumento, no un techo de calidad:
 #
@@ -446,10 +459,22 @@ def test_la_sesion_completa_concuerda_con_la_cadena_directa(pasada):
       fallado ni una vez, y es el que distingue «llega tarde» de «no llega».
     * Ninguno adjudica una nota a otra altura.
     * La mediana del desfase se separa como mucho lo que la CADENCIA MEDIDA de esta
-      misma pasada explica, y la sesion completa va SIEMPRE por detras. La direccion
-      se afirma aparte del tamaño porque es lo que nombra la causa; una asercion en
-      valor absoluto habria dejado pasar una sesion completa que publicara PRONTO,
-      que no se explica con nada de esto.
+      misma pasada explica, y la sesion completa no va NUNCA por delante mas de un
+      borde de cuadro. La direccion se afirma aparte del tamaño porque es lo que
+      nombra la causa; una asercion en valor absoluto dejaria pasar una sesion
+      completa que publicara PRONTO, que no se explica con nada de esto.
+
+    **EL SIGNO YA NO SE AFIRMA ESTRICTO, Y ESO ES EL ARREGLO DE LA CADENCIA.**
+    Decia `diferencia > 0.0`: la sesion completa publicaba SIEMPRE mas tarde, y era
+    verdad mientras corria a ~30 ms contra los 21 de la cadena. Con el plazo
+    acumulado (`Sesion._esperar_el_cuadro`) las dos cadencias son la misma -21,0
+    contra 21,0- y la diferencia se queda en el ruido alrededor de cero: medido, una
+    de cada ocho pasadas da -0,3 ms. No es un fallo, es el medio cuadro de
+    cuantizacion que esta misma prueba ya modelaba como su margen, asomando ahora
+    que el termino grande se fue. Asi que el signo se afirma contra ese margen y no
+    contra cero: lo que sigue siendo imposible -y lo que la asercion sigue cazando-
+    es que la sesion vea un ataque ANTES que la cadena, porque recorre el mismo
+    audio con el mismo detector.
 
     **LA TERCERA AFIRMACION YA NO ES UNA CIFRA FIJA, Y ESO ES LO QUE SE ARREGLO.**
     Valia `DIVERGENCIA_MEDIDA_MS = 50`, medida con una sonda suelta en un equipo en
@@ -489,8 +514,8 @@ def test_la_sesion_completa_concuerda_con_la_cadena_directa(pasada):
     la mediana de las ocho lleva una parte de el. Medio cuadro es la cota, y escala
     con la cadencia como todo lo demas.
 
-    MEDIDO, siete pasadas con la cadencia entre 28,75 y 30,11 ms (el regimen de la
-    suite), residuo = divergencia real menos la explicada:
+    MEDIDO, siete pasadas con la cadencia entre 28,75 y 30,11 ms, residuo =
+    divergencia real menos la explicada:
 
         -5,3  -10,6  +0,2  -14,4  -5,9  -4,0  +1,3   ms
 
@@ -499,17 +524,28 @@ def test_la_sesion_completa_concuerda_con_la_cadena_directa(pasada):
     un colchon para que pase. Se dice asi para que nadie lea el margen como una
     tolerancia aflojada.
 
-    **LO QUE ESTA PRUEBA YA NO VIGILA: LA CADENCIA MISMA.** Al derivar el techo de
-    la cadencia medida, una regresion que hiciera el analisis el doble de lento
-    pasaria por aqui contenta -el techo crece con ella-. Es deliberado: esta prueba
-    mide el ACUERDO entre los dos niveles, no la velocidad de produccion. Que
-    produccion corra a ~30 ms cuando las constantes del detector estan calibradas a
-    21 es un **defecto abierto**, nombrado como tal en la cabecera de
-    `nucleo/gemelo/cadena.py`, con el arreglo escrito y la razon de no haberlo hecho
-    (toca la calibracion del detector de ataques y obliga a remedir la etapa). **Hoy
-    no hay ninguna prueba que vigile la cadencia de produccion**, y quien quiera
-    vigilarla tiene que escribirla: lo que esta prueba afirma de la cadencia es solo
-    que se pudo medir (ver la asercion de `cuadros`).
+    **ESE REGIMEN DE 29-30 ms YA NO ES EL DE LA SUITE**, y las cifras de arriba se
+    quedan como la medida que justifico la forma del techo, no como el regimen
+    vigente: con el plazo acumulado la cadencia corre a 21,0-21,35 ms. El termino
+    grande del modelo -`cuadros * (medida - nominal)`- se encoge casi a cero con
+    ella, de modo que hoy el techo lo pone practicamente solo el medio cuadro de
+    cuantizacion (unos 10,5 ms). El modelo no cambia: lo que cambia es que ya no
+    tiene casi nada que explicar.
+
+    **LO QUE ESTA PRUEBA NO VIGILA: LA CADENCIA MISMA.** Al derivar el techo de la
+    cadencia medida, una regresion que hiciera el analisis el doble de lento pasaria
+    por aqui contenta -el techo crece con ella-. Es deliberado: esta prueba mide el
+    ACUERDO entre los dos niveles, no la velocidad de produccion.
+
+    Que produccion corriera a ~30 ms con las constantes del detector calibradas a 21
+    fue un defecto abierto durante toda la etapa, y **ya no lo es**: el hilo espera
+    con plazo acumulado y corre a 21,0-21,35 ms. La aritmetica de esa espera la
+    vigilan tres pruebas en `tests/test_sesion.py` con un reloj inyectado, porque
+    contra el reloj de verdad no es afirmable. Lo que esta prueba sigue afirmando de
+    la cadencia es solo que se pudo medir (la asercion de `cuadros`) y que no salio
+    mas rapida que el nominal (`HOLGURA_DE_LA_CADENCIA_MS`); vigilar la VELOCIDAD de
+    produccion contra el reloj de pared sigue sin tener prueba, y quien la quiera
+    tiene que escribirla sabiendo que dependera de la maquina.
     """
     viva, registro_directo, directo = pasada
 
@@ -534,9 +570,15 @@ def test_la_sesion_completa_concuerda_con_la_cadena_directa(pasada):
     diferencia = (
         viva.veredicto.desfase_introducido_ms - directo.desfase_introducido_ms
     )
-    assert diferencia > 0.0, (
-        f"la sesion completa deberia publicar mas tarde que la cadena directa y "
-        f"la diferencia salio {diferencia:+.1f} ms"
+    # El medio cuadro de cuantizacion, que ahora vale para las DOS aserciones: la
+    # del signo y la del tamaño. Ver el docstring, apartado del signo.
+    margen_ms = viva.cadencia_ms / 2.0
+    assert diferencia >= -margen_ms, (
+        f"la sesion completa publico {-diferencia:.1f} ms ANTES que la cadena "
+        f"directa, mas de los {margen_ms:.1f} ms de cuantizacion que un borde de "
+        "cuadro explica. Publicar antes no lo explica nada de este modelo: la "
+        "sesion recorre el mismo audio con el mismo detector y nunca puede ver un "
+        "ataque antes de que la cadena lo vea"
     )
 
     # La cadencia se midio de verdad: sin cuadros no hay modelo que aplicar, y un
@@ -547,15 +589,16 @@ def test_la_sesion_completa_concuerda_con_la_cadena_directa(pasada):
         f"pasada, y hacen falta {CUADROS_MINIMOS_PARA_MEDIR} para que la cadencia "
         "medida signifique algo"
     )
-    assert viva.cadencia_ms >= INTERVALO_NOMINAL_MS, (
+    assert viva.cadencia_ms >= INTERVALO_NOMINAL_MS - HOLGURA_DE_LA_CADENCIA_MS, (
         f"la cadencia medida ({viva.cadencia_ms:.2f} ms) es mas rapida que el "
         f"intervalo nominal ({INTERVALO_NOMINAL_MS:.0f} ms), que es imposible: el "
-        "hilo de analisis espera ese intervalo en cada vuelta"
+        "hilo de analisis espera hasta un plazo que avanza de un intervalo en un "
+        "intervalo, y al realinearse solo se mueve hacia adelante. Ver "
+        "HOLGURA_DE_LA_CADENCIA_MS, que es el ancho del borde de la medida"
     )
 
     cuadros_de_la_cadena = directo.desfase_introducido_ms / INTERVALO_NOMINAL_MS
     explicada_ms = cuadros_de_la_cadena * (viva.cadencia_ms - INTERVALO_NOMINAL_MS)
-    margen_ms = viva.cadencia_ms / 2.0
     assert diferencia <= explicada_ms + margen_ms, (
         f"los dos niveles del gemelo se separan {diferencia:+.1f} ms de mediana "
         f"(sesion completa {viva.veredicto.desfase_introducido_ms:.1f} ms contra "

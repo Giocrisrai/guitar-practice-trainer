@@ -2,6 +2,7 @@ import threading
 import time
 
 import numpy as np
+import pytest
 
 from nucleo.captura import NOMBRE_ROCKSMITH, DispositivoAudio
 from servidor.configuracion import Configuracion
@@ -557,3 +558,85 @@ def test_un_indice_viejo_guardado_se_migra_a_nombre():
     assert C.desde_dict({"dispositivo": "Rocksmith USB Guitar Adapter"}).dispositivo == (
         "Rocksmith USB Guitar Adapter"
     )
+
+
+# -- la cadencia del hilo de analisis -----------------------------------------
+#
+# El hilo pedia `wait(INTERVALO_ANALISIS)` en cada vuelta y corria a 26-30 ms,
+# porque `Event.wait` nunca despierta antes de lo pedido y cada vuelta pagaba su
+# retraso y el de todas las anteriores. El arreglo -plazo acumulado- esta medido
+# en `Sesion._esperar_el_cuadro`; estas pruebas vigilan su aritmetica con un
+# reloj falso, porque el reloj de verdad no es afirmable.
+
+
+class EsperaApuntada:
+    """Doble de `_parar` que apunta lo que se le pidio esperar y no espera."""
+
+    def __init__(self):
+        self.esperas = []
+
+    def wait(self, plazo):
+        self.esperas.append(plazo)
+        return False
+
+    def is_set(self):
+        return False
+
+
+def _sesion_con_reloj(instantes):
+    """Una sesion cuyo reloj inyectado devuelve `instantes` en orden.
+
+    Por la costura y no con `monkeypatch`: parchear `servidor.sesion.time.monotonic`
+    parchea el modulo `time` COMPARTIDO, asi que afecta a los hilos que otras
+    pruebas dejaron vivos. Se intento primero y dejo la suite intermitente -un
+    `IndexError: pop from empty list` en un hilo ajeno-.
+    """
+    restantes = list(instantes)
+    sesion = Sesion(
+        Configuracion(),
+        crear_captura=lambda **_: None,
+        listar=lambda: [],
+        reloj=lambda: restantes.pop(0),
+    )
+    espera = EsperaApuntada()
+    sesion._parar = espera
+    return sesion, espera
+
+
+def test_una_vuelta_puntual_espera_lo_que_le_queda_del_intervalo():
+    """La vuelta costo 5 ms, asi que espera los 16 que faltan de los 21."""
+    # El reloj se lee dos veces: al descontar la espera y al comprobar la deriva.
+    sesion, espera = _sesion_con_reloj([100.005, 100.021])
+    siguiente = sesion._esperar_el_cuadro(100.021)
+    assert espera.esperas == [pytest.approx(0.016)]
+    assert siguiente == pytest.approx(100.042)
+
+
+def test_una_vuelta_lenta_la_recupera_la_siguiente_en_vez_de_arrastrarla():
+    """ESTO es el arreglo: el plazo se acumula, no se recalcula desde ahora.
+
+    La vuelta se paso 8 ms del plazo (llego a 100.029 con plazo en 100.021). No
+    espera nada, y el plazo siguiente sigue siendo el que tocaba -100.042-, no
+    «ahora mas 21», que seria 100.050. Esos 8 ms los recupera la vuelta siguiente,
+    que es justo lo que el `wait` fijo no hacia: con el fijo cada retraso se
+    sumaba al de todos los anteriores y la cadencia derivaba a 26-30 ms.
+    """
+    sesion, espera = _sesion_con_reloj([100.029, 100.029])
+    siguiente = sesion._esperar_el_cuadro(100.021)
+    assert espera.esperas == [0.0]
+    assert siguiente == pytest.approx(100.042)
+
+
+def test_un_paron_mas_largo_que_un_intervalo_realinea_en_vez_de_soltar_la_rafaga():
+    """Sin esta guarda, un paron soltaria de golpe todas las vueltas atrasadas.
+
+    El equipo se durmio medio segundo: el plazo siguiente (100.042) quedo mucho
+    mas de un intervalo por detras del reloj (100.500). Se realinea con el reloj
+    en vez de dejar que las vueltas corran sin esperar hasta ponerse al dia, que
+    es peor que haberlas perdido -y es el mismo criterio que `nucleo.sintesis`
+    aplica al metronomo-.
+    """
+    sesion, espera = _sesion_con_reloj([100.500, 100.500])
+    siguiente = sesion._esperar_el_cuadro(100.021)
+    assert espera.esperas == [0.0]
+    assert siguiente == pytest.approx(100.521)

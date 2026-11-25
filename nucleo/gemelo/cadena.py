@@ -79,22 +79,30 @@ from nucleo.piezas.seguimiento import NotaTocada
 # trabajo del servidor alimenta esta cadena, de modo que las dos piden la misma
 # cadencia.
 #
-# **PEDIRLA NO ES CORRERLA, Y ESTO ESTA MEDIDO (Task 11).** El hilo de trabajo del
-# servidor NO corre a estos 21 ms: corre a unos 30 (mediana 29,91 ms sobre 133
-# cuadros seguidos), porque espera con `self._parar.wait(INTERVALO_DE_ANALISIS_S)`
-# y en este equipo `Event.wait(0,021)` tarda 27 ms -macOS agrupa los
-# temporizadores-; analizar la ventana cuesta 0,15 ms, asi que no es el trabajo.
-# Esta cadena, en cambio, recorre el audio a 21 ms EXACTOS.
+# **PEDIRLA NO ES CORRERLA, Y ESTO ESTABA MEDIDO (Task 11) Y YA ESTA ARREGLADO.**
+# El hilo de trabajo del servidor NO corria a estos 21 ms: corria a unos 30
+# (mediana 29,91 ms sobre 133 cuadros seguidos), porque esperaba con
+# `self._parar.wait(INTERVALO_DE_ANALISIS_S)` y en este equipo `Event.wait(0,021)`
+# tarda 27 ms -macOS agrupa los temporizadores-; analizar la ventana cuesta 0,15
+# ms, asi que no era el trabajo. Esta cadena, en cambio, recorre el audio a 21 ms
+# EXACTOS.
 #
-# Consecuencia, y hay que leerla antes de citar cualquier milisegundo de esta
-# etapa: **los numeros que salen de aqui subestiman la cadena real en unos 30 ms**.
-# Medido sobre la misma interpretacion por los dos caminos, la sesion completa
-# publica los ataques entre 18 y 44 ms mas tarde que esta cadena. El numero, su
-# causa y lo que hay que hacer con el estan inscritos en
-# `tests/test_gemelo_sesion_completa.py` (cabecera y `DIVERGENCIA_MEDIDA_MS`), que
-# es el unico sitio donde esa divergencia esta vigilada. Lo que este modulo
-# verifica es la cadena a su cadencia nominal; quien quiera la de pared tiene que
-# pasar por el dispositivo simulado (`nucleo.gemelo.dispositivo`).
+# Ahora el hilo espera con PLAZO ACUMULADO -`Sesion._esperar_el_cuadro`, que
+# lleva la medida del antes y el despues- y la cadencia efectiva baja a 21,0-21,35
+# ms. La divergencia sistematica entre los dos caminos se fue con ella: sobre el
+# gemelo PERFECTO rasgueando, la mediana del desfase que el carril firma pasa de
+# +80,5 a +29 ms, y los cuatro acordes «tarde» de ocho pasan a cero.
+#
+# LO QUE QUEDA, Y HAY QUE LEERLO ANTES DE CITAR CUALQUIER MILISEGUNDO DE ESTA
+# ETAPA: la cadencia es correcta, pero el tiempo real sigue temblando unos 11 ms
+# sobre esta cadena, asi que **los numeros de aqui siguen siendo el suelo de la
+# cadena real, no su valor**. Repetida cuatro veces, la pasada completa da 0, 2, 2
+# y 0 acordes «tarde» -el sesgo se fue, el borde no-, porque un rasgueo gasta
+# hasta 76 ms de los 80 de la ventana en latencia honesta del detector. Si eso es
+# un problema de la VENTANA y no del reloj es una decision de diseño pendiente.
+# Lo que este modulo verifica es la cadena a su cadencia nominal; quien quiera la
+# de pared tiene que pasar por el dispositivo simulado
+# (`nucleo.gemelo.dispositivo`).
 #
 # Y EL SALTO SIGUE SIENDO NO NEGOCIABLE, por otra razon que nada de lo anterior
 # toca: las constantes del detector estan acopladas a estos 21 ms
@@ -104,10 +112,11 @@ from nucleo.piezas.seguimiento import NotaTocada
 # rapidas. Las sondas del diseño usaron un salto de 512 y por eso sus numeros son
 # indicativos y no de referencia.
 #
-# (Que produccion corra a 30 ms cuando sus constantes estan calibradas a 21 es un
-# defecto abierto, no una decision: el arreglo -esperar con plazo acumulado- esta
-# escrito en el informe de la Task 11 y no se hizo ahi porque obliga a remedir la
-# etapa entera.)
+# (Que produccion corriera a 30 ms cuando sus constantes estan calibradas a 21 fue
+# un defecto abierto durante toda la etapa, no una decision. El arreglo que el
+# informe de la Task 11 dejaba escrito -esperar con plazo acumulado- esta hecho en
+# `servidor/sesion.py`, y la remedida de la etapa que obligaba es la suite entera
+# corriendo en verde con el.)
 
 
 class GrifoDeAudio:
