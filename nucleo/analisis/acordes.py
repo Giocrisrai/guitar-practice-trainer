@@ -76,6 +76,30 @@ VENTANA_ACORDES = 8192
 # dice en vez de proponer un numero. Cuando se mida, los numeros nuevos van aqui,
 # al lado de la tabla sintetica de arriba, sin borrarla: la sintetica es la que
 # las pruebas vigilan.
+#
+# **SEGUNDA MEDIDA, DEL GEMELO RASGUEANDO, y es mas dura que la de arriba.** La
+# tabla sintetica suma senoides con decaimiento, todas a la misma fuerza y en el
+# mismo instante. El gemelo toca las cuerdas con `cuerda_pulsada`, cada una con su
+# fuerza y barridas 8 ms, que es bastante mas parecido a una mano. Medido en el
+# cuadro en que el carril consulta la presencia -0,25 s despues del rasgueo, ver
+# `tests/test_gemelo_rasgueo.py`-:
+#
+#     Do mayor (5 cuerdas)   48:0,56  52:0,70  55:0,88  60:1,00  64:0,73
+#     Sol mayor (6 cuerdas)  43:0,87  47:0,40  50:0,55  55:0,94  59:0,47  67:0,70
+#
+# El Do entra completo con holgura. **En el Sol, las dos terceras -B2 y B3- caen al
+# borde del umbral y la grave se queda fuera**, asi que un Sol bien tocado se lee
+# como «te falta la quinta cuerda» durante medio segundo. La causa se ve en los
+# numeros y no es el umbral: el Sol esta DOBLADO en tres octavas (43, 55, 67), la
+# saliencia se normaliza contra la nota mas fuerte de todo el mastil y las terceras
+# pierden esa carrera. Medio segundo mas tarde las dos pasan de 0,45, o sea que el
+# problema es CUANDO se mira, no si suena.
+#
+# No se toca esta constante por esto, a proposito: moverla desde audio sintetico es
+# exactamente lo que el parrafo de arriba dice que no se haga, y el arreglo que los
+# numeros sugieren es otro -mirar unos cuantos cuadros en vez de uno solo, como ya
+# hace `nucleo.ejercicios.cambios`- y necesita medidas de guitarra de verdad para
+# decidirse.
 UMBRAL_PRESENCIA = 0.45
 
 # Fraccion de la ventana que tiene que estar llena antes de juzgar nada.

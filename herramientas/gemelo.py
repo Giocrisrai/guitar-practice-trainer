@@ -23,9 +23,12 @@ Por eso:
   es ademas la unica forma honesta de saber que la pantalla esta viendo lo que el
   veredicto juzga.
 * **Ningun archivo con derechos de autor entra al repositorio.** La pieza por
-  omision se construye EN CODIGO (`pieza_de_demostracion`), siempre. `--pieza`
-  existe para que el usuario toque la suya desde su disco, y lo que lee es la
-  ruta que el usuario da; nada se copia a ninguna parte.
+  omision se construye EN CODIGO (`pieza_de_demostracion`), siempre, igual que la
+  de `--acordes` (`pieza_de_rasgueos`, el ejercicio de cambios: es la unica forma
+  de ver correr el cobro de acordes por presencia sin un archivo propio, porque la
+  de demostracion es monofonica). `--pieza` existe para que el usuario toque la
+  suya desde su disco, y lo que lee es la ruta que el usuario da; nada se copia a
+  ninguna parte.
 
 **UN «CON HALLAZGOS» CON EL GEMELO PERFECTO NO ES UN FALLO DEL PRODUCTO, Y EL
 RESUMEN LO DICE.** La sesion completa publica su peor ataque a 236-250 ms de que
@@ -79,7 +82,7 @@ from nucleo.gemelo.perfiles import (
     PERFILES_DE_DESTREZA,
     PerfilDeDestreza,
 )
-from nucleo.gemelo.piezas_de_prueba import pieza_de_demostracion
+from nucleo.gemelo.piezas_de_prueba import pieza_de_demostracion, pieza_de_rasgueos
 from nucleo.gemelo.salida import StreamCapturado
 from nucleo.gemelo.veredicto import (
     TOLERANCIA_DE_EMPAREJAMIENTO_MS,
@@ -482,7 +485,9 @@ def perfil_de_destreza(nombre: str) -> PerfilDeDestreza:
     return PERFILES_DE_DESTREZA[clave]
 
 
-def pieza_pedida(ruta: str | None, perfil_afinacion: str) -> Pieza:
+def pieza_pedida(
+    ruta: str | None, perfil_afinacion: str, acordes: bool = False
+) -> Pieza:
     """La pieza que se va a tocar: la del disco si se pide, y si no la de codigo.
 
     **SIN `--pieza` LA PIEZA SE CONSTRUYE EN CODIGO**, nunca se lee de ningun
@@ -494,7 +499,13 @@ def pieza_pedida(ruta: str | None, perfil_afinacion: str) -> Pieza:
     Con `--pieza` se lee la primera pista del archivo del usuario con el mismo
     `importar` que usa el servidor. `perfil_afinacion` solo cuenta donde el archivo
     no trae afinacion propia.
+
+    Con `--acordes` se toca el ejercicio de cambios, que es el unico camino por el
+    que el escaparate ejercita el cobro por presencia: la pieza de demostracion es
+    monofonica, asi que sin esta opcion el carril de acordes no se ve nunca correr.
     """
+    if acordes:
+        return pieza_de_rasgueos()
     if ruta is None:
         return pieza_de_demostracion()
     return importar(Path(ruta), 1, perfil_afinacion)
@@ -838,6 +849,15 @@ def _analizador_de_argumentos() -> argparse.ArgumentParser:
         ),
     )
     analizador.add_argument(
+        "--acordes",
+        action="store_true",
+        help=(
+            "Toca el ejercicio de cambios (acordes abiertos alternandose) en vez "
+            "de la pieza de demostracion, que es monofonica. Es la unica forma de "
+            "ver correr el cobro de acordes por presencia sin un archivo propio."
+        ),
+    )
+    analizador.add_argument(
         "--perfil",
         default="perfecto",
         help=(
@@ -944,6 +964,12 @@ def armar_la_pasada(
             "la primera captura el fondo sin abrir altavoces y la segunda los abre "
             "de verdad. Elige una"
         )
+    if argumentos.acordes and argumentos.pieza is not None:
+        raise ValueError(
+            "`--acordes` y `--pieza` no se pueden pedir a la vez: la primera toca "
+            "el ejercicio de cambios, que se construye en codigo, y la segunda lee "
+            "tu archivo. Elige una"
+        )
     if argumentos.semilla < 0:
         raise ValueError(
             f"La semilla {argumentos.semilla} no sirve: `--semilla` tiene que ser "
@@ -958,7 +984,9 @@ def armar_la_pasada(
     primer_compas, ultimo_compas = (
         leer_bucle(argumentos.bucle) if argumentos.bucle else (1, None)
     )
-    pieza = pieza_pedida(argumentos.pieza, Configuracion().perfil)
+    pieza = pieza_pedida(
+        argumentos.pieza, Configuracion().perfil, acordes=argumentos.acordes
+    )
     interpretacion = interpretar(
         pieza,
         perfil,

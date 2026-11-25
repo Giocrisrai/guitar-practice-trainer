@@ -67,6 +67,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from nucleo.afinaciones import PERFILES
+from nucleo.analisis.acordes import DetectorAcordes
 from nucleo.analisis.pipeline import INTERVALO_DE_ANALISIS_S, Analizador
 from nucleo.gemelo.interprete import Interpretacion
 from nucleo.piezas.conductor import ConductorDeEstudio
@@ -107,6 +108,64 @@ from nucleo.piezas.seguimiento import NotaTocada
 # defecto abierto, no una decision: el arreglo -esperar con plazo acumulado- esta
 # escrito en el informe de la Task 11 y no se hizo ahi porque obliga a remedir la
 # etapa entera.)
+
+
+class GrifoDeAudio:
+    """El audio crudo de una interpretacion, con un cursor que la cadena mueve.
+
+    Es el equivalente de `Sesion.leer_ventana_cruda` para el gemelo, y existe por
+    la misma razon: el seguidor cobra el resto de un acorde por PRESENCIA, y la
+    presencia se mide sobre 8192 muestras cuando el analisis monofonico trabaja
+    con 4096. Esa ventana mas larga no viaja dentro del `ResultadoAnalisis`, asi
+    que el seguidor la pide por su cuenta a un grifo, y en vivo ese grifo es la
+    captura. Aqui es esto.
+
+    **DOS PIEZAS Y UN CURSOR.** Quien conduce tiene que darle `detector` y `leer`
+    a la `SesionDeEstudio` -se construyen antes de la pasada- y el MISMO grifo a
+    `pasar_por_la_cadena`, que es quien va moviendo el cursor cuadro a cuadro. Si
+    se le pasara a uno y no al otro, el seguidor leeria siempre la misma ventana:
+    el cobro por presencia saldria, pero no estaria mirando el audio del acorde
+    que se acaba de rasguear, y una prueba verde no significaria nada.
+
+    El cursor es el FINAL de la ventana de analisis en curso, igual que el
+    instante de cada cuadro es el final de su ventana (ver la cabecera del
+    modulo): en vivo, lo ultimo capturado cuando el cuadro se entrega.
+
+    Pasado el final del audio el grifo sirve la cola real y ceros detras, y no
+    `None`: es lo que pasa en vivo cuando el guitarrista deja de tocar con el
+    cable puesto -siguen llegando cuadros, de silencio-. Antes del principio si
+    devuelve `None`, igual que la captura mientras el bufer no se ha llenado: una
+    ventana a medio llenar no se puede juzgar.
+    """
+
+    def __init__(
+        self, interpretacion: Interpretacion, detector: DetectorAcordes | None = None
+    ) -> None:
+        self._muestras = interpretacion.muestras
+        # El perfil de la PIEZA, igual que `_analizador_de` y por lo mismo: de el
+        # sale el rango de notas sobre el que la presencia se normaliza. Y la
+        # frecuencia es la de la interpretacion, no la de por defecto, o el
+        # detector mediria frecuencias que no son las que se sintetizaron.
+        self.detector = detector or DetectorAcordes(
+            PERFILES[interpretacion.pieza.perfil],
+            frecuencia_muestreo=interpretacion.frecuencia_muestreo,
+        )
+        self._fin = 0
+
+    def colocar(self, fin: int) -> None:
+        """Pone el cursor en la muestra `fin`, el final del cuadro en curso."""
+        self._fin = fin
+
+    def leer(self, muestras: int) -> np.ndarray | None:
+        """Las ultimas `muestras` muestras hasta el cursor, o `None` si no hay tantas."""
+        if muestras <= 0 or self._fin < muestras:
+            return None
+        trozo = self._muestras[self._fin - muestras : self._fin]
+        if trozo.size == muestras:
+            return trozo
+        relleno = np.zeros(muestras, dtype=self._muestras.dtype)
+        relleno[: trozo.size] = trozo
+        return relleno
 
 
 @dataclass(frozen=True)
@@ -182,6 +241,7 @@ def pasar_por_la_cadena(
     conductor: ConductorDeEstudio,
     analizador: Analizador | None = None,
     salto: int | None = None,
+    grifo: GrifoDeAudio | None = None,
 ) -> RegistroDeLaCadena:
     """Mete el audio de `interpretacion` por la cadena y devuelve lo que reporto.
 
@@ -197,6 +257,11 @@ def pasar_por_la_cadena(
             interpretacion, porque de ella sale la ventana.
         salto: muestras entre dos ventanas. `None` es el de produccion, 21 ms
             (1008 muestras a 48 kHz). Ver `INTERVALO_DE_ANALISIS_S`.
+        grifo: el grifo de audio crudo que el seguidor del conductor tiene puesto,
+            para irle moviendo el cursor con los cuadros. Hace falta SOLO si la
+            pieza trae acordes y el conductor se armo para cobrarlos; ver
+            `GrifoDeAudio`, que explica por que los dos sitios tienen que recibir
+            el mismo objeto.
 
     Lanza `ValueError` si el analizador no trabaja a la frecuencia de la
     interpretacion o si el salto no es positivo.
@@ -283,6 +348,10 @@ def pasar_por_la_cadena(
         # nivel de referencia con el que ver el primer ataque, y como todos
         # cuentan el mismo instante, sus miradas avanzan el cabezal cero.
         instante = max(0.0, (inicio + ventana) / frecuencia - desplazamiento_s)
+        # El cursor del audio crudo, antes de mirar y de observar: el seguidor lo
+        # consulta DENTRO de `observar`, al cobrar el resto de un acorde.
+        if grifo is not None:
+            grifo.colocar(inicio + ventana)
         # MIRAR antes de OBSERVAR, y con el mismo instante, que es el orden del
         # servidor (ver `ConductorDeEstudio.observar`: «quien conduce mira y en
         # seguida observa con el mismo instante»).

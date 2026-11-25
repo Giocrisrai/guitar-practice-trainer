@@ -14,6 +14,8 @@ guitarrista haria.
 """
 
 from nucleo.afinaciones import PERFILES
+from nucleo.ejercicios.generadores.acordes import generar_cambios
+from nucleo.piezas.desde_ejercicio import pieza_desde_ejercicio
 from nucleo.piezas.digitacion import digitar
 from nucleo.piezas.modelo import NotaEnPieza, Pieza, Seccion
 
@@ -77,9 +79,13 @@ def escala_de_ocho_notas(tempo: int = 100) -> Pieza:
 def pieza_con_acorde(tempo: int = 100) -> Pieza:
     """Un compas de 4/4 con DOS notas en el segundo pulso.
 
-    El modelo admite acordes porque los archivos de verdad los traen; el gemelo
-    no sabe tocarlos y los reduce a la nota mas grave. Esta pieza es la que
-    comprueba esa reduccion.
+    El acorde mas pequeno que existe, metido entre notas sueltas: es la pieza con
+    la que se comprueba que el rasgueo de dos cuerdas sale barrido y que las
+    notas sueltas de alrededor no se enteran. Para un acorde de verdad -seis
+    cuerdas, digitacion escrita- esta `pieza_de_rasgueos`.
+
+    Hasta la etapa 2b comprobaba lo contrario: que el gemelo REDUCIA el acorde a
+    su nota mas grave. Ya no lo reduce (ver `_pulsaciones_escritas`).
     """
     midis = (55, 60, 64, 62)
     inicios = (0.0, 1.0, 1.0, 2.0)
@@ -148,3 +154,19 @@ def pieza_de_demostracion(tempo: int = 92) -> Pieza:
         ),
         secciones=tuple(secciones),
     )
+
+
+def pieza_de_rasgueos(claves: tuple[str, ...] = ("do", "sol"), tempo: int = 60) -> Pieza:
+    """Acordes abiertos de verdad, alternandose: el ejercicio de cambios tal cual.
+
+    No se escribe aqui nota a nota: se le pide al generador de cambios y se
+    traduce con `pieza_desde_ejercicio`, que es el camino de produccion -el mismo
+    que recorre un ejercicio de cambios cuando el usuario lo manda al carril-. Una
+    version escrita a mano seria una pieza parecida a la que el programa toca, y
+    entonces lo que el gemelo verificaria seria la pieza de la prueba.
+
+    De ahi sale ademas la digitacion escrita del acorde abierto, que no se puede
+    deducir: la quinta al aire del Do no es una eleccion del digitador, es parte de
+    la forma del acorde.
+    """
+    return pieza_desde_ejercicio(generar_cambios(PERFIL, claves=claves, tempo=tempo))

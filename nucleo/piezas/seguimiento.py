@@ -244,6 +244,17 @@ class SeguidorPieza:
     vecino cobrarian un acorde que nadie rasgueo. El detector monofonico autoriza
     y el de acordes solo reparte.
 
+    **PERO LA PUERTA ES EL GOLPE, NO LA ALTURA.** Un rasgueo de verdad casi nunca
+    da una altura creible -medido: la confianza del detector de tono baja de 1,00
+    con una cuerda a 0,65 con dos, contra una exigencia de 0,75-, asi que la
+    primera mitad falla y con ella fallaba la segunda: un acorde rasgueado no
+    producia NI UN reporte en todo el carril. El gemelo lo delato en cuanto supo
+    rasguear. De ahi `_cobrar_el_rasgueo_sin_altura`, el tercer camino: cuando el
+    ataque de energia caduca sin altura y apunta a un acorde, la presencia lo
+    resuelve entera -una cuerda lleva el ritmo y las demas van por presencia-.
+    Sobre una nota SUELTA ese camino no se abre: ahi el golpe no prueba que sonara
+    nada.
+
     SIN detector de acordes el comportamiento es el de antes: de un acorde se cobra
     una sola nota y las demas quedan sin cobrar. Es el caso de todas las pruebas
     que construyen el seguidor a secas, y de cualquier pieza seguida sin audio
@@ -628,6 +639,11 @@ class SeguidorPieza:
                 cobrada = self._adjudicar(pulsacion)
                 if cobrada is not None:
                     self._cobrar_el_resto_del_acorde(cobrada)
+            elif self._detector.ataque_sin_altura is not None:
+                # Un ataque de energia cuya altura no cuajo. En una pieza
+                # monofonica no se puede hacer nada con el; sobre un acorde es el
+                # rasgueo entero (ver `_cobrar_el_rasgueo_sin_altura`).
+                self._cobrar_el_rasgueo_sin_altura(self._detector.ataque_sin_altura)
             return self.estado
 
     def _indice_en_curso(self, instante_s: float) -> int:
@@ -786,7 +802,9 @@ class SeguidorPieza:
         )
         return None if de_la_cola else indice
 
-    def _cobrar_el_resto_del_acorde(self, indice_del_ataque: int) -> None:
+    def _cobrar_el_resto_del_acorde(
+        self, indice_del_ataque: int, faltan: set[int] | None = None
+    ) -> None:
         """Cobra por PRESENCIA las demas notas del grupo de `indice_del_ataque`.
 
         El ataque ya se adjudico (es `indice_del_ataque`). Lo que queda es el
@@ -794,24 +812,11 @@ class SeguidorPieza:
         detectar porque el rasgueo fue uno: se verifican contra la ventana cruda
         con el detector de acordes y se cobran las que suenan.
 
-        No hace nada, y sin coste, cuando:
+        No hace nada, y sin coste, cuando la nota del ataque no esta en ningun
+        grupo de mas de una nota -o sea no es un acorde-, ni cuando la presencia no
+        se puede medir, que son los tres casos de `_presencias_del_grupo`.
 
-        - no se le dio detector de acordes o proveedor de muestras al construir el
-          seguidor (el caso por defecto: el camino monofonico de siempre);
-        - la nota del ataque no esta en ningun grupo de mas de una nota, es decir
-          no es un acorde;
-        - el proveedor no tiene todavia una ventana entera que dar (arranque de la
-          captura, o una pasada movida a mano sin audio).
-
-        **Al detector se le pasan los MIDI del grupo ENTERO, incluido el que ya se
-        cobro por ataque.** No es un descuido: el detector normaliza contra la nota
-        mas saliente de todo el mastil (ver `nucleo.analisis.acordes`), asi que lo
-        que se le pregunta no depende de la lista que se le pase; pero la nota del
-        ataque es casi siempre la mas fuerte del acorde, y dejarla fuera de la
-        pregunta no cambiaria nada del veredicto mientras oculta en la lectura que
-        el acorde que se verifica es el escrito completo.
-
-        Lo que SI depende de la lista es `faltan`, y de ahi sale la decision: se
+        De `faltan` sale la decision: se
         cobra toda nota del grupo que este sin cobrar y NO este en `faltan`. Una
         que falta se queda sin cobrar, igual que hoy se queda una nota suelta que
         nadie toco: el carril la pinta sin marca. Marcar un fallo explicito por
@@ -820,25 +825,19 @@ class SeguidorPieza:
         **Nunca cobra por la cola.** Una pulsacion de la cola devuelve None en
         `_adjudicar` y no llega aqui: la ventana cruda es de AHORA y no dice nada
         de lo que sonaba antes del salto.
+
+        `faltan` se puede pasar YA MEDIDO, y lo hace `_cobrar_el_rasgueo_sin_altura`:
+        ese camino tiene que consultar la presencia ANTES de cobrar nada -decide con
+        ella si hubo acorde- y volver a medirla aqui seria un segundo espectro de
+        8192 muestras en el mismo cuadro para obtener el mismo numero.
         """
-        detector = self._detector_acordes
-        proveedor = self._proveedor_de_muestras
-        if detector is None or proveedor is None:
-            return
         grupo = self._grupo_de.get(indice_del_ataque)
         if grupo is None:
             return
-        muestras = proveedor(detector.ventana)
-        if muestras is None:
-            return
-        midis = [int(self.pieza.notas[i].midi) for i in grupo]
-        resultado = detector.procesar(muestras, midis)
-        if resultado.estado == "silencio":
-            # Ni ventana llena ni señal por encima del ruido: el detector no vio
-            # nada que juzgar. Que el ataque se haya cobrado no autoriza a dar por
-            # presentes unas cuerdas que no se midieron.
-            return
-        faltan = set(resultado.faltan)
+        if faltan is None:
+            faltan = self._presencias_del_grupo(grupo)
+            if faltan is None:
+                return
         self._corregir_el_ataque(indice_del_ataque, faltan)
         for indice in grupo:
             if self._cobradas[indice]:
@@ -865,6 +864,140 @@ class SeguidorPieza:
                     por_presencia=True,
                 )
             )
+
+    def _presencias_del_grupo(self, grupo: tuple[int, ...]) -> set[int] | None:
+        """Las notas del grupo que NO suenan, o `None` si no hubo nada que medir.
+
+        `None` -y no un conjunto vacio- en los tres casos en que el detector no
+        puede pronunciarse, que son distintos de «no falta ninguna»:
+
+        - no se le dio detector de acordes o proveedor de muestras al construir el
+          seguidor (el caso por defecto: el camino monofonico de siempre);
+        - el proveedor no tiene todavia una ventana entera que dar (arranque de la
+          captura, o una pasada movida a mano sin audio);
+        - el detector dice "silencio": ni ventana llena ni señal por encima del
+          ruido. Que haya habido un ataque no autoriza a dar por presentes unas
+          cuerdas que no se midieron.
+
+        **Al detector se le pasan los MIDI del grupo ENTERO, incluido el que ya se
+        cobro por ataque.** No es un descuido: el detector normaliza contra la nota
+        mas saliente de todo el mastil (ver `nucleo.analisis.acordes`), asi que lo
+        que se le pregunta no depende de la lista que se le pase; pero la nota del
+        ataque es casi siempre la mas fuerte del acorde, y dejarla fuera de la
+        pregunta no cambiaria nada del veredicto mientras oculta en la lectura que
+        el acorde que se verifica es el escrito completo.
+        """
+        detector = self._detector_acordes
+        proveedor = self._proveedor_de_muestras
+        if detector is None or proveedor is None:
+            return None
+        muestras = proveedor(detector.ventana)
+        if muestras is None:
+            return None
+        midis = [int(self.pieza.notas[i].midi) for i in grupo]
+        resultado = detector.procesar(muestras, midis)
+        if resultado.estado == "silencio":
+            return None
+        return set(resultado.faltan)
+
+    def _cobrar_el_rasgueo_sin_altura(self, instante_ataque: float) -> None:
+        """Cobra un acorde del que solo se oyo el GOLPE, sin altura que leer.
+
+        Es el camino que hace tocable un acorde en el carril, y hasta que existio
+        no lo era: los dos caminos de `DetectorPulsaciones` exigen una nota
+        creible, y cinco cuerdas a la vez no tienen UNA altura que leer (los
+        numeros, en `DetectorPulsaciones.ataque_sin_altura`). El gemelo lo delato:
+        rasgueando dos acordes abiertos, el carril no producia NI UN reporte.
+
+        Lo que si hay es el ataque de energia, que `DetectorAtaques` firma mirando
+        solo el nivel, y la pieza escrita, que dice que se esperaba un acorde en
+        ese instante. Con esas dos cosas la presencia hace el resto: verifica las
+        cuerdas escritas contra la ventana cruda, igual que cuando el ataque si
+        trae altura.
+
+        **EL ATAQUE NO BASTA POR SI SOLO, y de ahi el orden de este metodo.** Un
+        golpe de energia cuya altura no cuaja lo produce tambien un apagado, un
+        roce o un acorde equivocado, asi que primero se pregunta a la presencia y
+        solo se cobra si alguna cuerda escrita suena de verdad. Si no suena
+        ninguna, no se anota nada: el carril pinta el acorde sin marca, que es lo
+        mismo que hace con una nota suelta que nadie toco.
+
+        No hace nada, sin coste, cuando el ataque no apunta a ningun acorde: una
+        nota SUELTA cuya altura no se leyo se sigue quedando sin reportar, como
+        antes. Ahi el ataque no prueba nada -no se sabe que sono- y la presencia
+        de una sola nota no distingue la escrita de un armonico de su vecina.
+
+        **El ritmo lo lleva UNA cuerda**, la primera del grupo que suena, y lleva
+        `desfase_s` y `clasificacion` del instante del ataque: el gesto fue uno y
+        esa es la unica medida de tiempo que este rasgueo da. Las demas se cobran
+        por presencia, sin tiempo, igual que el resto de un acorde con ataque. Es
+        la misma reparticion que `_corregir_el_ataque` razona para el caso en que
+        la altura se lee mal.
+
+        **Nunca cobra por la cola**, por la razon de siempre: la ventana cruda es
+        de AHORA y no dice nada de lo que sonaba antes del salto.
+        """
+        if self._origen_analisis is None or not self._cobradas.size:
+            return
+        if self._analisis_desde is not None and instante_ataque < self._analisis_desde:
+            return
+        instante_onset = instante_ataque - self._origen_analisis
+
+        # La misma ventana asimetrica de reclamo que `_adjudicar`, y NO se comparte
+        # con ella: alli la altura desempata entre vecinas y hay que decidir ademas
+        # si la pulsacion es de la cola. Aqui no hay altura con la que desempatar y
+        # la cola ya se descarto arriba, asi que lo que queda es la nota sin cobrar
+        # mas cercana en el tiempo, que son estas cuatro lineas. Compartirlas
+        # obligaria a fabricar una `Pulsacion` sin nota, que es justo el dato que
+        # este camino no tiene.
+        desfases = instante_onset - self._inicios_s
+        limites = np.where(
+            desfases >= 0, self._ventanas_reclamo_s, self._ventana_reclamo_pronto_s
+        )
+        distancias = np.abs(desfases)
+        reclamables = (~self._cobradas) & (distancias <= limites)
+        if not reclamables.any():
+            return
+        indice = int(np.argmin(np.where(reclamables, distancias, np.inf)))
+
+        grupo = self._grupo_de.get(indice)
+        if grupo is None:
+            return
+        faltan = self._presencias_del_grupo(grupo)
+        if faltan is None:
+            return
+        suenan = [
+            miembro
+            for miembro in grupo
+            if not self._cobradas[miembro]
+            and int(self.pieza.notas[miembro].midi) not in faltan
+        ]
+        if not suenan:
+            return
+
+        portadora = suenan[0]
+        nota = self.pieza.notas[portadora]
+        desfase = float(instante_onset - self._inicios_s[portadora])
+        self._cobradas[portadora] = True
+        self._tocadas.append(
+            NotaTocada(
+                indice=portadora,
+                midi=nota.midi,
+                # Sin altura leida no hay cents que publicar: `None` es "no se
+                # supo", que es exactamente el caso.
+                cents=None,
+                desfase_s=desfase,
+                clasificacion=self._clasificar(desfase),
+                # `acertada=True` porque la presencia acaba de confirmar que la
+                # nota ESCRITA suena, que es la pregunta que el detector contesta.
+                acertada=True,
+                afinada=None,
+                # False: esta cuerda SI aporta una medida de tiempo, y es lo que
+                # ese campo separa.
+                por_presencia=False,
+            )
+        )
+        self._cobrar_el_resto_del_acorde(portadora, faltan)
 
     def _corregir_el_ataque(self, indice: int, faltan: set[int]) -> None:
         """Revisa el veredicto de la nota del ataque con lo que dice la presencia.
