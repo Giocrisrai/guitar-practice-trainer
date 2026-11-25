@@ -470,9 +470,24 @@ function elTramoEsLaPiezaEntera(estado: EstadoEstudio): boolean {
   return estado.primer_compas === 1 && estado.ultimo_compas === estado.total_de_compases;
 }
 
-/** El resumen de la pieza terminada: cómo llegó cada nota que se pudo adjudicar. */
+/**
+ * El resumen de la pieza terminada: cómo llegó cada nota que se pudo adjudicar.
+ *
+ * **Se lee EN EL ORDEN ESCRITO y no en el de llegada.** `estado.tocadas` viene en
+ * el orden en que la cadena las cobró, y las cuerdas de un acorde no se cobran a
+ * la vez: el seguidor deja el grupo abierto y cada una entra en cuanto la
+ * presencia la confirma, así que la que tarda —en un Sol abierto, la tercera—
+ * aparecía al final de su acorde y no en su sitio. Sobre la pantalla eso se lee
+ * como un desorden, no como un dato: el resumen es la partitura de lo que acabas
+ * de tocar, y una partitura va en su orden.
+ *
+ * `indice` es el de `Pieza.notas`, así que ordenar por él ES el orden escrito. No
+ * se repite dentro de una vuelta: el estudio vacía lo cobrado al cerrar cada
+ * repetición, que es lo mismo que hace que `indice` sirva de `key`.
+ */
 function ResumenCarril({ pieza, estado }: { pieza: Pieza; estado: EstadoEstudio }) {
   const acertadas = estado.tocadas.filter((tocada) => tocada.acertada).length;
+  const enOrdenEscrito = [...estado.tocadas].sort((una, otra) => una.indice - otra.indice);
   return (
     <div className="resumen-carril">
       <h3>Pieza terminada</h3>
@@ -480,7 +495,7 @@ function ResumenCarril({ pieza, estado }: { pieza: Pieza; estado: EstadoEstudio 
         {acertadas} de {estado.total} notas acertadas
       </p>
       <ul className="desviaciones-carril">
-        {estado.tocadas.map((tocada) => (
+        {enOrdenEscrito.map((tocada) => (
           <li
             key={tocada.indice}
             className={clasesDeFila(tocada)}

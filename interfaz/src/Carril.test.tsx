@@ -426,6 +426,38 @@ describe("Carril", () => {
     expect(screen.getAllByTestId("fila-acertada")).toHaveLength(1);
   });
 
+  /**
+   * Las cuerdas de un acorde no se cobran a la vez: el seguidor deja el grupo
+   * abierto y cada una entra cuando la presencia la confirma, así que la que tarda
+   * llegaba la última de su acorde. Sobre la pantalla eso se lee como un desorden.
+   */
+  it("el resumen pone las cuerdas del acorde en el orden escrito, no en el de llegada", async () => {
+    vi.stubGlobal("fetch", crearFetchFalso());
+    render(<Carril />);
+    fireEvent.click(await screen.findByRole("button", { name: /empezar/i }));
+    enviarEstado({
+      instante_s: 4.0, indice_actual: 2, total: 3, completado: true, pausado: false,
+      // Llegan 0, 2, 1: la nota 1 es la cuerda que tardó en levantarse.
+      tocadas: [
+        { indice: 0, midi: 40, nombre: "E2", cents: null, desfase_s: 0.01,
+          clasificacion: "a_tiempo", acertada: true, afinada: null, por_presencia: false },
+        { indice: 2, midi: 50, nombre: "D3", cents: null, desfase_s: null,
+          clasificacion: null, acertada: true, afinada: null, por_presencia: true },
+        { indice: 1, midi: 45, nombre: "A2", cents: null, desfase_s: null,
+          clasificacion: null, acertada: true, afinada: null, por_presencia: true },
+      ],
+    });
+
+    await screen.findByText(/Pieza terminada/i);
+    const filas = [...document.querySelectorAll(".desviaciones-carril li")].map(
+      (fila) => fila.textContent ?? "",
+    );
+    expect(filas).toHaveLength(3);
+    expect(filas[0]).toMatch(/E2/);
+    expect(filas[1]).toMatch(/A2/);
+    expect(filas[2]).toMatch(/D3/);
+  });
+
   it("escucha el WebSocket del carril, no el de los ejercicios", async () => {
     vi.stubGlobal("fetch", crearFetchFalso());
     render(<Carril />);
