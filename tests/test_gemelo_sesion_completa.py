@@ -116,9 +116,11 @@ MARGEN_DE_SEGURIDAD_S = 6.0
 # tambien el salto exacto al que la cadena directa recorre el audio. Sale del nucleo
 # y no se escribe el numero: es la misma constante que alimenta las dos.
 #
-# Pedirlo no es correrlo -produccion corre a unos 30 ms, y es un defecto abierto
-# nombrado en `nucleo/gemelo/cadena.py`-, y de esa diferencia sale toda la
+# Pedirlo no era correrlo -produccion corria a unos 30 ms por un defecto que ya
+# esta arreglado (`Sesion._esperar_el_cuadro`)-, y de esa diferencia salia toda la
 # divergencia que `test_la_sesion_completa_concuerda_con_la_cadena_directa` acota.
+# Ahora produccion corre a 21,0-21,35 ms y lo que queda por acotar es el tembleque
+# del tiempo real, no un sesgo: el docstring de esa prueba lleva la cuenta.
 INTERVALO_NOMINAL_MS = INTERVALO_DE_ANALISIS_S * 1000.0
 
 # Cuantos cuadros tiene que haber publicado el analisis durante la pasada para que

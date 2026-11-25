@@ -902,19 +902,61 @@ Lo que sí sabe hacer la medida: si un bloque cae fuera de la ventana de búsque
 publicar un número pequeño y falso. Antes no: un desfase real de +600 ms se
 publicaba como +498,8 ms sin que nada chirriara.
 
-### Los milisegundos de esta etapa son más benignos que el programa real
+### Los milisegundos de esta etapa ya no son más benignos que el programa real
 
-**El gemelo es unos 30 ms más benigno que la cadena de producción, y está
-medido.** El hilo de análisis del servidor no corre a los 21 ms que declara su
-constante, sino a unos 30 (mediana 29,91 ms sobre 133 cuadros seguidos): espera
-con `Event.wait(0,021)` y en este equipo esa espera tarda 27 ms —macOS agrupa los
-temporizadores—. No es el trabajo: analizar la ventana cuesta 0,15 ms. Es un
-**defecto abierto**, no una decisión, y está nombrado en
-`nucleo/gemelo/cadena.py`; el arreglo —esperar con plazo acumulado— obliga a
-remedir la etapa entera. **Hoy no hay ninguna prueba que vigile esa cadencia.**
-Así que cualquier milisegundo que salga de esta etapa **subestima la cadena real
-en ese tanto**: la cadena a cadencia nominal publica los ataques entre 18 y 44 ms
-antes que la sesión completa.
+**Lo fueron, por un defecto que ya está arreglado.** El hilo de análisis del
+servidor no corría a los 21 ms que declara su constante, sino a unos 30 (mediana
+29,91 ms sobre 133 cuadros seguidos): esperaba con `Event.wait(0,021)` y en este
+equipo esa espera tarda 27 ms —macOS agrupa los temporizadores—, así que cada
+vuelta pagaba su retraso y el de todas las anteriores. No era el trabajo:
+analizar la ventana cuesta 0,15 ms.
+
+Ahora espera con **plazo acumulado** (`Sesion._esperar_el_cuadro`, que lleva la
+medida del antes y el después) y corre a 21,0–21,35 ms. Lo que destapó el defecto
+fue el gemelo rasgueando: al gemelo **perfecto** el carril le decía «tarde» en
+cuatro de ocho acordes, y con el mismo audio y el mismo seguidor la cadena
+directa no le decía «tarde» a ninguno. La diferencia entera era el reloj. La
+mediana del desfase baja de +80,5 a +29 ms. La aritmética de esa espera la
+vigilan tres pruebas en `tests/test_sesion.py` con un reloj inyectado, porque
+contra el reloj de verdad no es afirmable.
+
+Lo que queda, y hay que leerlo antes de citar un milisegundo de esta etapa: la
+cadencia es correcta, pero el tiempo real sigue temblando unos 11 ms sobre la
+cadena directa, así que **los números de la cadena siguen siendo el suelo de la
+cadena real, no su valor**. Y el borde no se fue con el sesgo: repetida cuatro
+veces, la pasada completa da 0, 2, 2 y 0 acordes «tarde». La causa de eso es
+otra y está medida —ver la sección siguiente—.
+
+### El detector marca los ataques tarde, y eso lo paga el alumno
+
+`DetectorAtaques` firma el ataque en el cuadro donde el nivel supera la
+referencia reciente por 6 dB, y ese cuadro llega **después** de que la cuerda
+empezara a sonar: cuanto más alto esté lo que ya suena —una nota que no se ha
+apagado, las cuerdas vecinas de un acorde—, más tarda la subida en despegarse de
+la mediana. Medido sobre el gemelo **perfecto**, que toca en el instante escrito,
+así que todo retraso es del detector:
+
+```
+escala de ocho notas sueltas   0  21  21  42  21  84  21   0   ms
+ocho acordes abiertos          0   0  63   0  63   0  63  ...  ms
+```
+
+Contra la ventana de acierto de 80 ms, los 84 ms de la escala son el borde
+entero: ésa es la nota que el carril firma a +89 ms y marca «tarde» sin que nadie
+haya tocado mal. **Y el peor caso está en una nota suelta, no en un acorde**, que
+es lo contrario de lo que parecía al ver fallar los acordes. En los acordes el
+patrón es alterno —dos ataques por rasgueo, el primero en su sitio y el segundo
+63 ms tarde— y la mediana sale cero.
+
+La corrección obvia —retroceder el instante hasta el inicio de la subida— **no
+está hecha, y no por descuido**: no se puede calibrar con audio sintético, porque
+la rapidez con que sube la envolvente es justo lo que distingue una pulsación
+real (ruido de púa, decaimiento irregular, resonancia de las vecinas) de un seno
+con sobretonos. Retroceder demasiado sería peor que no retroceder: marcaría el
+ataque antes de que la cuerda sonara y le daría la razón a un alumno que llegó
+tarde. El número que decide si vale la pena, y de cuánto, lo da tu guitarra:
+`uv run python -m herramientas.calibrar_ataques` (ver **Calibrar la deteccion de
+ataques**).
 
 ### El gemelo NO sustituye la prueba con el cable
 
@@ -1084,6 +1126,10 @@ Lo que hace falta de ti para cerrar la 2b, y que ninguna prueba puede dar:
   el hueco real puede ser más estrecho. No hay que hacerlo a ojo:
   `uv run python -m herramientas.calibrar_presencia` lo mide y propone el valor
   (ver **Calibrar la deteccion de acordes**).
+- Correr `uv run python -m herramientas.calibrar_ataques` y **apuntar el retraso
+  que dé**: es el número que decide si el detector tiene que retroceder el
+  instante del ataque, y por tanto si un rasgueo bien tocado seguirá saliendo
+  «tarde» (ver **El detector marca los ataques tarde**).
 
 Las siguientes, según el diseño:
 
