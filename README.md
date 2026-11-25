@@ -91,8 +91,9 @@ configuración. El valor vigente se muestra siempre junto al botón.
 
 ### Ejercicios
 
-Junto al afinador hay un módulo de ejercicios con cuatro familias: escalas,
-arpegios, intervalos y lectura (posiciones sueltas en el mástil). Cada
+Junto al afinador hay un módulo de ejercicios con cinco familias: escalas,
+arpegios, intervalos, lectura (posiciones sueltas en el mástil) y **cambios de
+acorde** (ver más abajo, porque funciona distinto). Las cuatro primeras: cada
 ejercicio se resuelve nota a nota: mientras no toques la nota pedida el
 ejercicio no avanza, y si te equivocas se te dice qué nota sonó en su lugar.
 Una nota correcta pero desafinada **sí** cuenta como acierto —la afinación no
@@ -126,6 +127,59 @@ sale de una sola nota en lugar de repetirla. Si aun así te quedas sin poder
 avanzar, lo que evita que te atasques es el aviso por tiempo: resalta la nota en
 el mástil a los doce segundos de haber detectado señal que pudiera ser un intento
 de la nota pedida. Ese reloj se reinicia al acertar, no al fallar.
+
+#### Cambios de acorde
+
+La quinta familia no se resuelve nota a nota, porque un acorde no es una nota.
+Te pide Do, luego Sol, luego Re, y mide dos cosas:
+
+1. **Si el acorde suena completo**, y si no, **qué cuerda no suena**. Eso es lo
+   que distingue este ejercicio de una pantalla que diga «mal»: cuando un cambio
+   sale torcido lo que pasa casi siempre es que un dedo quedó mudo, y el software
+   puede decir cuál. En el diagrama esa cuerda aparece apagada y marcada.
+2. **El tiempo de cambio**: los segundos entre un acorde dado por bueno y el
+   siguiente. Es la cifra de cabecera del informe, y es el número que baja al
+   practicar.
+
+Hay ocho acordes abiertos: Do, Sol, Re, La, Mi, La menor, Mi menor y Re menor.
+Son una tabla escrita a mano y no se derivan del patrón de intervalos: un Do
+abierto es `x32010` porque así se toca, y derivarlo del conjunto {0,4,7} daría
+digitaciones correctas en teoría que ninguna mano alcanza.
+
+Cómo lo sabe, por debajo: **no reconoce acordes, los comprueba**. En los dos
+casos de uso el programa ya sabe qué notas espera, así que la pregunta no es
+«¿qué acorde es esto?» —transcripción polifónica, un problema de
+investigación— sino «¿están sonando estas cinco notas?», que se responde midiendo
+la energía en los armónicos de cada nota esperada sobre una ventana de 8192
+muestras (171 ms). El código está en `nucleo/analisis/espectro.py` (la capa pura)
+y `nucleo/analisis/acordes.py` (el detector).
+
+**Límites de los acordes**, sin maquillar:
+
+- **No nombra un acorde que no se haya pedido.** Si rasgueas un Mi menor por tu
+  cuenta, el programa no tiene nada que decir: solo sabe comprobar acordes que
+  él mismo pidió, o que la pieza trae escritos.
+- **No mide cents dentro del acorde.** En polifonía la desviación por nota no es
+  fiable con este método, y prometerla sería mentir. Un acorde da presencia, no
+  afinación.
+- **Nada de esto se ha probado con el cable.** Los números que separan «suena»
+  de «no suena» están medidos con cuerdas sintéticas (ocho armónicos con
+  decaimiento): una nota que suena queda entre 0,58 y 0,87, una cuerda muda
+  entre 0,27 y 0,32, y el umbral está en 0,45, en medio del hueco. Una pastilla
+  eléctrica reparte los armónicos de otra manera, así que **el umbral está por
+  calibrar** (`UMBRAL_PRESENCIA` en `nucleo/analisis/acordes.py`). Para eso está
+  `herramientas/calibrar_presencia.py`, que lo mide con tu guitarra (ver
+  **Calibrar la deteccion de acordes**).
+- **Hay un falso positivo medido y asumido.** Si tocas un acorde EQUIVOCADO, una
+  de sus notas puede colarse como presente cuando sus armónicos coinciden con lo
+  que sí suena (medido: 0,46 frente al umbral de 0,45). El veredicto sigue bien
+  —faltan las otras— pero la lista exacta de ausencias puede quedarse corta en
+  una nota. Está escrito donde se decide el umbral y fijado por una prueba.
+- **Sin cejilla, sin inversiones, sin rasgueo.** Ocho formas abiertas, un acorde
+  por compás, y nada sobre la mano derecha.
+- **En el carril, de un acorde se cobran las cuerdas pero no el ritmo.** El carril
+  sí cobra acordes (ver **El carril**), pero el tiempo lo da el ataque y un rasgueo
+  tiene uno: de un acorde se mide la colocación una vez, no cuerda a cuerda.
 
 ### El carril
 
@@ -231,10 +285,17 @@ el patrón sobre una guitarra desafinada a propósito**: esa prueba sigue pendie
 
 **Límites de esta etapa**, sin maquillar:
 
-- **Una sola voz, sin acordes.** El modelo de pieza admite dos notas en el mismo
-  instante, pero el carril no sabe seguirlas: el detector de tono es monofónico y
-  de un acorde lee una sola altura. Las demás notas se quedan sin cobrar por muy
-  bien que las toques.
+- **De un acorde se cobran todas las cuerdas; el ritmo, una vez.** El carril cobra
+  los acordes en dos mitades. El rasgueo tiene UN ataque y ese ataque se adjudica
+  como siempre, con su desfase, su clasificación y sus cents. Las demás cuerdas no
+  tienen ataque propio, así que se verifican por **presencia** contra la ventana
+  cruda (`nucleo/analisis/acordes.py`) y se cobran las que suenan, con el campo
+  `por_presencia` puesto y sin cents ni desfase: no es que se perdieran, es que no
+  existen. El resumen las dice «en el acorde», no «a tiempo».
+  El ataque es la puerta: sin un ataque que el detector monofónico firme no se
+  cobra presencia ninguna, porque si no los armónicos de un acorde vecino cobrarían
+  uno que nadie rasgueó. Y una cuerda que no suena se queda sin cobrar: el carril la
+  pinta sin marca, igual que una nota suelta que nadie tocó.
 - **Sin ligados ni bends.** El modelo de nota no tiene dónde guardarlos.
 - **En las piezas que salen de un ejercicio, la digitación se elige por cercanía
   al traste anterior**, sin mirar lo que viene después (`elegir_posicion` de
@@ -410,10 +471,12 @@ partitura de una canción entera ocupa decenas de kilobytes: diez megas son dos
 
 **Límites de esta etapa**, sin maquillar:
 
-- **Los acordes se importan y no se siguen.** El modelo de pieza admite varias
-  notas en el mismo instante y el carril las pinta, pero debajo hay un detector de
-  tono monofónico: de un acorde lee una sola altura, se cobra **una** nota y las
-  demás quedan sin cobrar por bien que las toques.
+- **Los acordes se cobran, pero su ritmo se mide una vez.** Las cuerdas del acorde
+  se verifican por presencia y se cobran todas las que suenan (ver **El carril**);
+  lo que no se puede medir cuerda a cuerda es la colocación, porque el rasgueo tiene
+  un solo ataque. Si la sesión de audio no da ventana cruda —un doble de prueba, una
+  captura recién abierta—, el carril vuelve al comportamiento monofónico de antes:
+  una nota por acorde.
 - **Ligados, bends y armónicos se ignoran.** No es una decisión, es que la nota de
   una pieza tiene cinco campos —altura, cuerda, traste, instante y duración— y no
   hay dónde guardarlos. En Guitar Pro una ligadura sí hace lo correcto, que es
@@ -520,11 +583,11 @@ canción, no un dato perdido.
   el cambio hasta el final, y los números de compás pueden no coincidir con la
   partitura. Se avisa antes de empezar y en el informe; avisar no es dibujarlo
   bien.
-- **En los compases con acordes solo se puede medir una nota de cada uno**, porque
-  el detector de tono es monofónico. Por eso esos compases **no entran** en el
-  ranking de fallos ni en la regla del tempo automático (saldrían fallados para
-  siempre), y el informe lo dice en pantalla —«con acordes»— en vez de contarlos
-  como fallados.
+- **En los compases con acordes el RITMO solo se mide una vez por acorde**, porque
+  el tiempo lo da el ataque y un rasgueo tiene uno. Las acertadas sí salen enteras
+  —el informe dice «4 de 4» de un acorde de cuatro cuerdas—, pero las columnas de
+  ritmo dicen «una por acorde», y esos compases **no entran** en el ranking de
+  fallos ni en la regla del tempo automático: saldrían fallados para siempre.
 - **El click puede derivar del carril en una pasada larga**: corre en su propio
   hilo, con su propio reloj. Cada repetición del bucle lo rearranca, así que
   estudiando un bucle no se nota; tocando una pieza entera de seguido, sí puede.
@@ -911,6 +974,25 @@ Pulsa una cuerda ocho veces separadas y la herramienta propone el salto y el
 refractario que mejor cuentan tus pulsaciones. Los valores por defecto estan
 elegidos a ojo; esto los ajusta a tu pua y tu pastilla.
 
+## Calibrar la deteccion de acordes
+
+```bash
+uv run python -m herramientas.calibrar_presencia
+uv run python -m herramientas.calibrar_presencia --acordes do,sol   # solo dos
+uv run python -m herramientas.calibrar_presencia --umbral-ruido -45 # tocas flojo
+```
+
+Dos tomas por acorde —una completa y otra con la 1.ª cuerda apagada— y la
+herramienta propone `UMBRAL_PRESENCIA` (`nucleo/analisis/acordes.py`). El 0,45 de
+hoy sale de cuerdas sinteticas, que son demasiado limpias; esto lo mide con tu
+pastilla.
+
+Lo que imprime es un hueco: la presencia mas baja de una cuerda que SI suena
+frente a la mas alta de una que NO. El umbral tiene que caer entre las dos, y el
+valor propuesto va en medio. **Si el hueco sale negativo no hay umbral que
+sirva** y lo dice en vez de proponer uno: ahi el problema no es el numero, es la
+medida (`saliencia_de_nota`, en `nucleo/analisis/espectro.py`).
+
 ## Pruebas
 
 ```bash
@@ -961,16 +1043,41 @@ grabaciones todavía no existen, así que esas pruebas aparecen como saltadas
 
 ## Estado
 
-Etapas 1, 2a, 3a, 3b, 3c, 3d y 3e completas, con la salvedad de que las cinco
-comprobaciones de la 3b que necesitan la guitarra y archivos reales siguen
-pendientes (están listadas en **Canciones**), de que **nada se ha probado con el
-cable todavía** —el gemelo digital de la 3d deja ver la sesión correr, pero no
-sustituye esa prueba (ver **El gemelo digital**)— y de que **el fondo de la 3e
-no lo ha oído nadie**: el entorno de desarrollo no abre audio, así que lo que
-queda del usuario está listado en **La pieza sonando de fondo**. Las siguientes,
-según el diseño:
+Etapas 1, 2a, **2b**, 3a, 3b, 3c, 3d y 3e completas en código, con las
+salvedades de siempre: las cinco comprobaciones de la 3b que necesitan la
+guitarra y archivos reales siguen pendientes (están listadas en **Canciones**),
+**nada se ha probado con el cable todavía** —el gemelo digital de la 3d deja ver
+la sesión correr, pero no sustituye esa prueba (ver **El gemelo digital**)—, y
+**el fondo de la 3e no lo ha oído nadie**: el entorno de desarrollo no abre
+audio, así que lo que queda del usuario está listado en **La pieza sonando de
+fondo**.
 
-2b. Ejercicios de acordes
+De la 2b (ver **Cambios de acorde**) está hecho todo lo que el diseño pedía:
+
+- la detección de acordes por verificación (`nucleo/analisis/espectro.py` y
+  `nucleo/analisis/acordes.py`),
+- los ocho acordes abiertos y el generador de cambios,
+- el evaluador, con el tiempo de cambio y el informe,
+- la pantalla, con el diagrama que señala la cuerda que no suena,
+- y **el carril cobrando los acordes de una canción** en vez de saltárselos: el
+  ataque por el camino monofónico de siempre y las demás cuerdas por presencia
+  (ver **El carril**). La decisión que esto exigía —qué significan la
+  clasificación temporal, el desfase y los cents de una nota sin ataque propio—
+  está escrita en la spec, §4.4.1: los cuatro valen `null`, y un campo nuevo,
+  `por_presencia`, es lo que impide que un rasgueo cuente como seis mediciones de
+  tiempo.
+
+Lo que hace falta de ti para cerrar la 2b, y que ninguna prueba puede dar:
+
+- Rasguear los ocho acordes y comprobar que salen «completos».
+- Dejar una cuerda muda a propósito y comprobar que el software nombra **esa**.
+- Calibrar `UMBRAL_PRESENCIA` con señal real: el 0,45 sale del hueco sintético, y
+  el hueco real puede ser más estrecho. No hay que hacerlo a ojo:
+  `uv run python -m herramientas.calibrar_presencia` lo mide y propone el valor
+  (ver **Calibrar la deteccion de acordes**).
+
+Las siguientes, según el diseño:
+
 4. Grabación de sesiones, medición de progreso, entrenamiento de oído y efectos
 
 ## Licencia

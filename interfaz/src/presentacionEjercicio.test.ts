@@ -162,6 +162,7 @@ describe("posicionesAcertadas", () => {
     descripcion: "",
     tempo: 80,
     perfil: "guitarra_estandar",
+    acordes: [],
     notas: [
       { midi: 40, nombre: "E2", posiciones: [{ cuerda: 6, traste: 0 }], pulsos: 1, referencia_midi: null },
       { midi: 45, nombre: "A2", posiciones: [{ cuerda: 5, traste: 0 }], pulsos: 1, referencia_midi: null },

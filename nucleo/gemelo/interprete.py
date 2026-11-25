@@ -8,8 +8,9 @@ la verdad se dedujera del audio, el gemelo estaria preguntandole al detector de
 tono que es lo que paso, y entonces no verificaria nada, se daria la razon.
 
 Todo el azar sale de un unico `numpy.random.default_rng(semilla)` y **el orden en
-que se consume es parte del contrato**: por cada nota del tramo, en orden,
-fallo -> nota mala -> trasteo -> desfase -> desafinacion -> fuerza. Se consume
+que se consume es parte del contrato**: por cada nota del tramo, en orden y
+CONTANDO TODAS LAS CUERDAS DE CADA ACORDE, fallo -> nota mala -> trasteo ->
+desfase -> desafinacion -> fuerza. Se consume
 SIEMPRE, incluso cuando el perfil tiene esa probabilidad a cero y cuando la nota
 ya se ha fallado. Saltarse un sorteo condicionalmente desplazaria todo el azar
 posterior, y entonces dos interpretaciones que deberian diferir en una sola cosa
@@ -61,6 +62,20 @@ TRASTEO_DE_LA_NOTA_SUCIA = 0.7
 # A que distancia cae el traste equivocado. El dedo se va al de al lado o al
 # siguiente, nunca a media octava.
 DESVIOS_DE_NOTA_MALA = (-2, -1, 1, 2)
+
+# Cuanto separa dos cuerdas consecutivas del mismo rasgueo.
+#
+# Un acorde no suena en un instante: la mano barre las cuerdas de la mas grave a
+# la mas aguda y cada una entra un poco despues que la anterior. Ocho
+# milisegundos por cuerda son 40 ms de barrido en un acorde de seis, que es un
+# rasgueo normal (los rasgueos de verdad van de 10 a 30 ms entre cuerdas segun el
+# brio, y aqui se toma el borde rapido).
+#
+# EL TECHO NO ES ESTETICA. `CUADROS_PARA_NOTA_ESTABLE = 3` a 21 ms de analisis son
+# 63 ms: un barrido mas largo que eso deja de ser UN ataque para el detector
+# monofonico y el carril veria dos pulsaciones donde la mano hizo un gesto. 40 ms
+# caben con margen; subir esta constante obliga a volver a mirar esa de alla.
+DESFASE_DE_RASGUEO_S = 0.008
 
 # Separacion entre las semillas de dos notas consecutivas. El ruido inicial de
 # cada cuerda sale de su propia semilla, derivada de la global y del SITIO de la
@@ -141,6 +156,23 @@ class Interpretacion:
 
 
 @dataclass(frozen=True)
+class _Escrita:
+    """Una nota del tramo lista para sortear, con su sitio dentro del rasgueo.
+
+    `puesto_en_el_grupo` es 0 para la cuerda mas grave del acorde y crece hacia la
+    mas aguda; una nota suelta es un grupo de una y siempre vale 0. De ese numero
+    salen las dos cosas que hacen de un acorde un gesto y no un monton de notas:
+    cuanto se retrasa la cuerda en el barrido, y quien sortea el desfase que todas
+    heredan.
+    """
+
+    indice: int
+    nota: NotaEnPieza
+    hueco_pulsos: float
+    puesto_en_el_grupo: int
+
+
+@dataclass(frozen=True)
 class _Pulsacion:
     """Un evento mas lo que hace falta para sintetizarlo y no se publica.
 
@@ -154,6 +186,19 @@ class _Pulsacion:
     fuerza: float
     trasteo: float
     semilla: int
+
+
+@dataclass(frozen=True)
+class _Sorteo:
+    """Lo que sale de sortear una nota: su pulsacion, si sono, y su desfase.
+
+    El desfase viaja FUERA de la pulsacion porque lo heredan las demas cuerdas del
+    acorde y la cuerda grave puede fallarse: guardado dentro de un `None`, una
+    sexta muteada desharia el barrido de las cinco que si suenan.
+    """
+
+    pulsacion: _Pulsacion | None
+    desfase_s: float
 
 
 def duracion_de_la_nota_s(figura_s: float, hueco_s: float, sustain: float) -> float:
@@ -188,7 +233,8 @@ def interpretar(
     """Toca `pieza` con la destreza de `perfil` y devuelve audio mas verdad.
 
     Parametros:
-        pieza: la pieza escrita. Los acordes se reducen a la nota mas grave.
+        pieza: la pieza escrita. Los acordes se rasguean enteros, cuerda a
+            cuerda (ver `_pulsaciones_escritas`).
         perfil: como de bien se toca. `PERFECTO` es el oraculo.
         factor_tempo: 1,0 es el tempo escrito; 0,5 es tocarla al doble de lento.
         primer_compas, ultimo_compas: el tramo, contando desde 1. `None` es hasta
@@ -249,11 +295,13 @@ def interpretar(
             + (vuelta + 1) * segundos_de_cuenta_atras
             + vuelta * duracion_tramo_s
         )
-        for puesto, (indice, nota, hueco_pulsos) in enumerate(a_tocar):
-            pulsacion = _sortear_pulsacion(
-                indice=indice,
-                nota=nota,
-                hueco_pulsos=hueco_pulsos,
+        # El desfase del gesto en curso: lo sortea la cuerda mas grave del acorde
+        # y lo heredan las demas. Arranca a cero porque la primera nota de la
+        # vuelta es cabeza de grupo y no lo mira.
+        desfase_del_grupo_s = 0.0
+        for puesto, escrita in enumerate(a_tocar):
+            sorteo = _sortear_pulsacion(
+                escrita=escrita,
                 pieza=pieza,
                 perfil=perfil,
                 factor_tempo=factor_tempo,
@@ -264,9 +312,13 @@ def interpretar(
                 semilla=semilla,
                 frecuencia_muestreo=frecuencia_muestreo,
                 generador=generador,
+                desfase_del_grupo_s=(
+                    None if escrita.puesto_en_el_grupo == 0 else desfase_del_grupo_s
+                ),
             )
-            if pulsacion is not None:
-                pulsaciones.append(pulsacion)
+            desfase_del_grupo_s = sorteo.desfase_s
+            if sorteo.pulsacion is not None:
+                pulsaciones.append(sorteo.pulsacion)
 
     total_s = cabecera_tecnica_s + repeticiones * (
         segundos_de_cuenta_atras + duracion_tramo_s
@@ -293,46 +345,64 @@ def interpretar(
 
 def _pulsaciones_escritas(
     pieza: Pieza, inicio_tramo: float, fin_tramo: float
-) -> tuple[tuple[int, NotaEnPieza, float], ...]:
-    """Las notas del tramo, los acordes ya reducidos, con su hueco a la siguiente.
+) -> tuple[_Escrita, ...]:
+    """Las notas del tramo, con su hueco al grupo siguiente y su sitio en el rasgueo.
 
-    De cada grupo de notas que comparten `inicio_pulsos` -eso es un acorde- se
-    queda la MAS GRAVE: el detector de tono de produccion es monofonico y el
-    gemelo no finge polifonia. El indice que se conserva es el de la nota elegida
-    dentro de `Pieza.notas`, que es el que el veredicto compara.
+    Las notas que comparten `inicio_pulsos` -eso es un acorde- SE TOCAN TODAS, de
+    la mas grave a la mas aguda y separadas por `DESFASE_DE_RASGUEO_S`, porque un
+    acorde es un barrido de la mano y no un monton de notas simultaneas.
 
-    El hueco de la ultima nota del tramo llega hasta el final del tramo, no hasta
-    la nota siguiente de la pieza: lo que viene despues no se va a tocar.
+    Hasta la etapa 2b este modulo se quedaba la cuerda mas grave y lo justificaba
+    por escrito: «el detector de tono de produccion es monofonico y el gemelo no
+    finge polifonia». Era verdad mientras el carril no sabia cobrar mas que una
+    nota por ataque. Ya no lo es: `nucleo.piezas.seguimiento` cobra el resto del
+    acorde por PRESENCIA contra la ventana cruda, y un gemelo que rasgueara una
+    sola cuerda no podria ejercitar ese camino -justamente la mitad nueva de la
+    etapa- ni hacer que fallara cuando esta mal.
+
+    El hueco es hasta el GRUPO siguiente y lo comparten todas las cuerdas del
+    acorde: cuanto se deja sonar es del gesto, no de cada cuerda. El de la ultima
+    nota del tramo llega hasta el final del tramo, no hasta la nota siguiente de
+    la pieza: lo que viene despues no se va a tocar.
     """
-    del_tramo = [
-        (indice, nota)
-        for indice, nota in enumerate(pieza.notas)
-        if inicio_tramo <= nota.inicio_pulsos < fin_tramo
-    ]
-
-    elegidas: list[tuple[int, NotaEnPieza]] = []
-    for indice, nota in del_tramo:
-        if elegidas and elegidas[-1][1].inicio_pulsos == nota.inicio_pulsos:
-            if nota.midi < elegidas[-1][1].midi:
-                elegidas[-1] = (indice, nota)
+    grupos: list[list[tuple[int, NotaEnPieza]]] = []
+    for indice, nota in enumerate(pieza.notas):
+        if not inicio_tramo <= nota.inicio_pulsos < fin_tramo:
             continue
-        elegidas.append((indice, nota))
+        if grupos and grupos[-1][0][1].inicio_pulsos == nota.inicio_pulsos:
+            grupos[-1].append((indice, nota))
+            continue
+        grupos.append([(indice, nota)])
 
-    con_hueco = []
-    for puesto, (indice, nota) in enumerate(elegidas):
+    escritas: list[_Escrita] = []
+    for puesto_del_grupo, grupo in enumerate(grupos):
+        inicio = grupo[0][1].inicio_pulsos
         siguiente = (
-            elegidas[puesto + 1][1].inicio_pulsos
-            if puesto + 1 < len(elegidas)
+            grupos[puesto_del_grupo + 1][0][1].inicio_pulsos
+            if puesto_del_grupo + 1 < len(grupos)
             else fin_tramo
         )
-        con_hueco.append((indice, nota, siguiente - nota.inicio_pulsos))
-    return tuple(con_hueco)
+        # De grave a aguda, que es el orden del rasgueo hacia abajo Y el orden en
+        # que el generador consume sus sorteos: tiene que quedar fijado aqui y no
+        # depender de en que orden la pieza escribio las cuerdas del acorde, o dos
+        # ficheros con el mismo acorde darian dos interpretaciones distintas con la
+        # misma semilla. El indice rompe el empate de dos cuerdas a la misma altura.
+        for puesto, (indice, nota) in enumerate(
+            sorted(grupo, key=lambda par: (par[1].midi, par[0]))
+        ):
+            escritas.append(
+                _Escrita(
+                    indice=indice,
+                    nota=nota,
+                    hueco_pulsos=siguiente - inicio,
+                    puesto_en_el_grupo=puesto,
+                )
+            )
+    return tuple(escritas)
 
 
 def _sortear_pulsacion(
-    indice: int,
-    nota: NotaEnPieza,
-    hueco_pulsos: float,
+    escrita: _Escrita,
     pieza: Pieza,
     perfil: PerfilDeDestreza,
     factor_tempo: float,
@@ -343,63 +413,89 @@ def _sortear_pulsacion(
     semilla: int,
     frecuencia_muestreo: int,
     generador: np.random.Generator,
-) -> _Pulsacion | None:
-    """Sortea una nota y devuelve su pulsacion, o `None` si se fallo.
+    desfase_del_grupo_s: float | None = None,
+) -> _Sorteo:
+    """Sortea una nota y devuelve su pulsacion -o ninguna, si se fallo- y su desfase.
 
     Los seis sorteos salen SIEMPRE y en este orden, aunque la nota se falle en el
     primero y aunque el perfil tenga la probabilidad a cero: es el contrato de
     reproducibilidad del modulo. Las desviaciones gaussianas se sacan de una
     normal tipica multiplicada por su sigma, y no de `normal(0, sigma)`, para que
     un sigma de cero consuma exactamente igual que cualquier otro.
+
+    `desfase_del_grupo_s` es el desfase que ya sorteo la cuerda mas grave de este
+    acorde, o `None` si esta nota es esa cuerda. EL DESFASE ES DEL GESTO: la mano
+    derecha llega tarde o pronto UNA vez por rasgueo, no una por cuerda. Sorteado
+    por cuerda, un acorde habria salido desparramado al azar y el barrido no se
+    habria podido ni ver ni medir. El sorteo se consume igual en todas las cuerdas,
+    que es el contrato del modulo: lo que se tira es el valor, no la tirada.
+
+    Un fallo, en cambio, SI es de la cuerda: una cuerda que el dedo apaga sin
+    querer es exactamente lo que le pasa a quien esta aprendiendo un acorde, y es
+    el caso que la mitad por presencia tiene que saber nombrar.
     """
+    nota = escrita.nota
     falla = generador.random() < perfil.probabilidad_de_fallo
     es_mala = generador.random() < perfil.probabilidad_de_nota_mala
     desvio = DESVIOS_DE_NOTA_MALA[int(generador.integers(0, len(DESVIOS_DE_NOTA_MALA)))]
     trastea = generador.random() < perfil.probabilidad_de_trasteo
-    desfase_s = perfil.desfase_medio_s + generador.normal() * perfil.desviacion_desfase_s
+    desfase_sorteado_s = (
+        perfil.desfase_medio_s + generador.normal() * perfil.desviacion_desfase_s
+    )
     cents = generador.normal() * perfil.cents_de_desafinacion
     fuerza = perfil.fuerza_media + generador.normal() * perfil.desviacion_fuerza
 
+    desfase_s = (
+        desfase_sorteado_s if desfase_del_grupo_s is None else desfase_del_grupo_s
+    )
     if falla:
-        return None
+        return _Sorteo(pulsacion=None, desfase_s=desfase_s)
 
     midi = nota.midi + desvio if es_mala else nota.midi
     # El instante no puede caer antes del comienzo del audio: un desfase negativo
     # grande en la primera nota de la primera vuelta se queda en el borde. Es la
     # unica vez que el gemelo recorta un sorteo, y recortar la verdad es mejor que
     # publicar un evento que suena fuera del buffer.
+    # EL BARRIDO NO SE ESTIRA CON EL TEMPO, a diferencia de todo lo demas de esta
+    # cuenta: es la velocidad de la mano cruzando las cuerdas, no una figura
+    # musical. Tocar la misma pieza al doble de lento no hace el rasgueo mas
+    # lento, igual que no hace el dedo mas gordo.
     instante_s = max(
         0.0,
         inicio_vuelta_s
         + pulsos_a_segundos(nota.inicio_pulsos - inicio_tramo, pieza.tempo) / factor_tempo
-        + desfase_s,
+        + desfase_s
+        + escrita.puesto_en_el_grupo * DESFASE_DE_RASGUEO_S,
     )
     duracion_s = max(
         duracion_de_la_nota_s(
             figura_s=pulsos_a_segundos(nota.duracion_pulsos, pieza.tempo) / factor_tempo,
-            hueco_s=pulsos_a_segundos(hueco_pulsos, pieza.tempo) / factor_tempo,
+            hueco_s=pulsos_a_segundos(escrita.hueco_pulsos, pieza.tempo) / factor_tempo,
             sustain=perfil.sustain,
         ),
         duracion_minima_s(midi + cents / 100.0, frecuencia_muestreo),
     )
 
     evento = EventoTocado(
-        indice_pretendido=indice,
+        indice_pretendido=escrita.indice,
         midi=midi,
         instante_s=instante_s,
         duracion_s=duracion_s,
         cents=cents,
         trasteada=trastea,
     )
-    return _Pulsacion(
-        evento=evento,
-        fuerza=float(np.clip(fuerza, 0.05, 1.0)),
-        trasteo=TRASTEO_DE_LA_NOTA_SUCIA if trastea else 0.0,
-        semilla=(
-            semilla
-            + PASO_DE_SEMILLA * (puesto + 1)
-            + PASO_DE_SEMILLA_POR_VUELTA * vuelta
+    return _Sorteo(
+        pulsacion=_Pulsacion(
+            evento=evento,
+            fuerza=float(np.clip(fuerza, 0.05, 1.0)),
+            trasteo=TRASTEO_DE_LA_NOTA_SUCIA if trastea else 0.0,
+            semilla=(
+                semilla
+                + PASO_DE_SEMILLA * (puesto + 1)
+                + PASO_DE_SEMILLA_POR_VUELTA * vuelta
+            ),
         ),
+        desfase_s=desfase_s,
     )
 
 

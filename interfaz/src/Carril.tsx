@@ -2,13 +2,18 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   VENTANA_VISIBLE_S,
+  acordesVisibles,
+  colorDeCuerda,
   colorDeDesviacion,
+  colorDeTextoSobre,
+  ligaduraDeAcorde,
   notasVisibles,
   rectanguloDeNota,
   yDeLaLineaDeAtaque,
   type LienzoCarril,
 } from "./geometriaCarril";
 import { ControlesEstudio } from "./ControlesEstudio";
+import { SelectorDeAcordes } from "./SelectorDeAcordes";
 import type { PerfilAfinacion } from "./tipos";
 import type { FamiliaEjercicio } from "./tiposEjercicio";
 import type { EstadoEstudio } from "./tiposEstudio";
@@ -34,11 +39,6 @@ import { VistaEscrita } from "./VistaEscritaPieza";
 const COLOR_FONDO = "#12161b";
 const COLOR_SEPARADOR = "#262d36";
 const COLOR_LINEA_ATAQUE = "#e6e9ee";
-/** Una nota que todavía no se ha tocado: pálida y sin veredicto. Los demás
- * colores los decide `colorDeDesviacion`, que es quien sabe qué significa cada
- * desviación (y que un `cents` nulo no es un cero). */
-const COLOR_PENDIENTE = "#cfd6e0";
-const COLOR_TRASTE = "#12161b";
 
 /** Hueco a cada lado del carril de una cuerda, en píxeles CSS, para que dos
  * notas simultáneas en cuerdas vecinas no se toquen. */
@@ -49,16 +49,95 @@ const ALTO_MINIMO_PX = 6;
 /** Alto por debajo del cual no cabe el número de traste dentro de la nota. */
 const ALTO_PARA_TRASTE_PX = 18;
 
+/** Hueco vertical entre una nota y la siguiente de la MISMA cuerda.
+ *
+ * Se lo quita al alto por el borde de arriba, nunca por el de ataque: el borde
+ * inferior es el que marca cuándo suena y moverlo mentiría sobre el tiempo. Sin
+ * este hueco, tres notas seguidas en una cuerda se pintaban pegadas y se leían
+ * como un solo bloque alto. */
+const SEPARACION_NOTAS_PX = 3;
+
+/** Radio de la esquina redondeada de una nota. */
+const RADIO_NOTA_PX = 4;
+
+/** Cuánto se apaga la nota más lejana del carril, de 0 (nada) a 1 (invisible).
+ *
+ * Da profundidad: lo que viene de lejos se ve más tenue y lo inminente destaca,
+ * que es lo que hace que el carril se lea como algo que viene hacia ti y no
+ * como una lista. No llega nunca a 1: una nota invisible es una nota que el
+ * usuario no sabe que tiene que tocar. */
+const DESVANECIDO_MAXIMO = 0.55;
+
+/** La franja de debajo de la línea de ataque, donde queda la estela. */
+const COLOR_ESTELA = "#0b0e12";
+/** Tinte del carril de cada cuerda sobre el fondo. */
+const ALFA_FRANJA_CUERDA = 0.05;
+/** El borde que distingue una nota YA TOCADA de una pendiente, además del
+ * color: los colores de cuerda y los del veredicto comparten gama, y la
+ * posición (encima o debajo de la línea) no basta en el instante del cruce. */
+const COLOR_BORDE_TOCADA = "#ffffff";
+/**
+ * La ligadura que une las notas de un acorde: un trazo a la altura del ataque,
+ * del centro de la cuerda más grave al de la más aguda del grupo.
+ *
+ * Es BLANCA y no del color de ninguna cuerda porque no es de ninguna: cada
+ * cuerda ya tiene su color, y pintar la ligadura de uno de ellos diría que esa
+ * manda. Y es el único trazo blanco del lienzo además de la línea de ataque, que
+ * es lo que las empareja: la línea dice *cuándo* se toca y la ligadura *qué* se
+ * toca de una vez.
+ *
+ * Tenue (`ALFA_LIGADURA`) a propósito: une sin tapar. Lo que se lee es la nota y
+ * su traste; la ligadura solo dice que van juntas.
+ */
+const COLOR_LIGADURA = "#e6e9ee";
+/**
+ * Lo que mide la CABEZA de una nota, en pixeles, por larga que sea la nota.
+ *
+ * 54 px es algo menos de un tercio de segundo a la velocidad del carril: lo
+ * bastante para que quepa el numero del traste dentro y para que el ojo la lea
+ * como una ficha, no como una franja.
+ */
+const ALTO_CABEZA_PX = 54;
+/** El ancho de la cola, en fraccion del carril de la cuerda. */
+const FRACCION_COLA = 0.34;
+const ALFA_COLA = 0.45;
+const ALFA_LIGADURA = 0.6;
+/**
+ * Lo que la ligadura se separa del borde de arriba de las cabezas.
+ *
+ * Pegada al borde se come la mitad de su grosor con la cabeza y lo que queda es
+ * una pestaña gris que no parece dibujada a propósito. Cinco píxeles bastan para
+ * que se lea como una barra que ata las cabezas.
+ */
+const SEPARACION_LIGADURA_PX = 5;
+const GROSOR_LIGADURA_PX = 3;
+
 const TEXTO_CLASIFICACION: Record<Clasificacion, string> = {
   a_tiempo: "a tiempo",
   pronto: "pronto",
   tarde: "tarde",
 };
 
-/** Cómo llegó una pulsación. `null` NO es "a tiempo": es que no se supo cuándo
- * empezó, y decir que fue puntual sería inventárselo. */
-function textoClasificacion(clasificacion: Clasificacion | null): string {
-  return clasificacion === null ? "sin instante" : TEXTO_CLASIFICACION[clasificacion];
+/**
+ * Cómo llegó una nota, y por qué camino se supo.
+ *
+ * Tres casos y tres textos distintos, porque son tres cosas distintas:
+ *
+ * - Una nota cobrada por PRESENCIA (`por_presencia`) es una cuerda de un acorde
+ *   que no tuvo ataque propio: el rasgueo fue uno solo. No es que su instante se
+ *   perdiera, es que no existe, así que se dice "en el acorde" y no "sin
+ *   instante", que sonaría a medición fallida.
+ * - `clasificacion` nula con ataque sí es una medición que no se pudo hacer: no se
+ *   supo cuándo empezó.
+ * - Y si hay clasificación, se dice.
+ *
+ * En ninguno de los dos primeros casos se dice "a tiempo": sería inventárselo.
+ */
+function textoClasificacion(tocada: NotaTocada): string {
+  if (tocada.por_presencia) return "en el acorde";
+  return tocada.clasificacion === null
+    ? "sin instante"
+    : TEXTO_CLASIFICACION[tocada.clasificacion];
 }
 
 /** El desfase en milisegundos, con signo. Vacío si no se supo. */
@@ -66,6 +145,21 @@ function textoDesfase(desfaseS: number | null): string {
   if (desfaseS === null) return "";
   const ms = Math.round(desfaseS * 1000);
   return `(${ms > 0 ? "+" : ""}${ms} ms)`;
+}
+
+/**
+ * Las clases de una fila del resumen. Dos marcas independientes: fallar es una
+ * cosa y haberse sabido por presencia es otra, y una nota de acorde ausente no
+ * aparece en esta lista (se queda sin cobrar), así que las dos nunca coinciden
+ * hoy. Se escriben como clases separadas igualmente, porque combinarlas en una
+ * sola obligaría a tocar las dos el día que cambie una.
+ */
+function clasesDeFila(tocada: NotaTocada): string | undefined {
+  const clases = [
+    tocada.acertada ? null : "nota-fallada",
+    tocada.por_presencia ? "nota-por-presencia" : null,
+  ].filter((c) => c !== null);
+  return clases.length === 0 ? undefined : clases.join(" ");
 }
 
 /** El nombre de la nota PEDIDA, que lo trae la pieza y no la pulsación. */
@@ -162,8 +256,23 @@ function pintarCuadro(
   contexto.fillStyle = COLOR_FONDO;
   contexto.fillRect(0, 0, lienzo.ancho, lienzo.alto);
 
-  // Un carril por cuerda, separados por una línea fina.
   const anchoCarril = lienzo.ancho / lienzo.cuerdas;
+  const lineaAtaque = yDeLaLineaDeAtaque(lienzo, VENTANA_VISIBLE_S);
+
+  // El carril de cada cuerda, tenido con SU color. Es el mismo idioma que el de
+  // las notas: la franja dice de quien es el carril aunque este vacio.
+  for (let i = 0; i < lienzo.cuerdas; i += 1) {
+    contexto.globalAlpha = ALFA_FRANJA_CUERDA;
+    contexto.fillStyle = colorDeCuerda(i + 1);
+    contexto.fillRect(i * anchoCarril, 0, anchoCarril, lienzo.alto);
+    contexto.globalAlpha = 1;
+  }
+
+  // La estela, mas oscura que el resto: separa de un vistazo lo que YA sono de
+  // lo que viene, sin tener que localizar la linea.
+  contexto.fillStyle = COLOR_ESTELA;
+  contexto.fillRect(0, lineaAtaque, lienzo.ancho, lienzo.alto - lineaAtaque);
+
   contexto.strokeStyle = COLOR_SEPARADOR;
   contexto.lineWidth = 1;
   for (let i = 1; i < lienzo.cuerdas; i += 1) {
@@ -179,44 +288,154 @@ function pintarCuadro(
   );
 
   contexto.textAlign = "center";
-  contexto.font = "600 11px system-ui, sans-serif";
+  contexto.textBaseline = "middle";
   const tempoEfectivo = tempoParaDibujar(pieza, estado);
-  for (const nota of notasVisibles(pieza.notas, instanteS, tempoEfectivo, VENTANA_VISIBLE_S)) {
+  const visibles = notasVisibles(pieza.notas, instanteS, tempoEfectivo, VENTANA_VISIBLE_S);
+
+  for (const nota of visibles) {
     const rectangulo = rectanguloDeNota(nota, instanteS, tempoEfectivo, lienzo, VENTANA_VISIBLE_S);
     const indice = indices.get(nota);
     const tocada = indice === undefined ? undefined : tocadas.get(indice);
 
     // `rectangulo.y` es el borde de ATAQUE, el INFERIOR: el que llega primero a
-    // la línea de ataque. La esquina superior, que es la que pide `fillRect`,
-    // está un alto más arriba. Pasar `y` a secas pintaría fuera del lienzo.
-    const alto = Math.max(rectangulo.alto, ALTO_MINIMO_PX);
+    // la linea de ataque. La esquina superior esta un alto mas arriba. El hueco
+    // entre notas se le quita a ese borde de arriba, nunca al de ataque.
+    const alto = Math.max(rectangulo.alto - SEPARACION_NOTAS_PX, ALTO_MINIMO_PX);
     const arriba = rectangulo.y - alto;
+    const x = rectangulo.x + MARGEN_CARRIL_PX;
+    const ancho = Math.max(rectangulo.ancho - 2 * MARGEN_CARRIL_PX, 1);
 
-    contexto.fillStyle = tocada === undefined ? COLOR_PENDIENTE : colorDeDesviacion(tocada);
-    contexto.fillRect(
-      rectangulo.x + MARGEN_CARRIL_PX,
-      arriba,
-      Math.max(rectangulo.ancho - 2 * MARGEN_CARRIL_PX, 1),
-      alto
-    );
+    // Profundidad: lo que esta lejos de la linea se pinta mas tenue. Por debajo
+    // de la linea -la estela- no se desvanece: ya sono y es lo que se mira para
+    // ver el patron.
+    const distancia = Math.min(Math.max((lineaAtaque - rectangulo.y) / lineaAtaque, 0), 1);
+    contexto.globalAlpha = 1 - DESVANECIDO_MAXIMO * distancia;
 
-    if (alto >= ALTO_PARA_TRASTE_PX) {
-      contexto.fillStyle = COLOR_TRASTE;
-      contexto.fillText(String(nota.traste), rectangulo.x + rectangulo.ancho / 2, rectangulo.y - 5);
+    const colorNota =
+      tocada === undefined ? colorDeCuerda(nota.cuerda) : colorDeDesviacion(tocada);
+
+    // CABEZA Y COLA.
+    //
+    // Una nota larga -un acorde dura un compas entero, cuatro segundos a 60 ppm-
+    // pintada de una pieza es un bloque de color mas alto que la ventana: cinco
+    // de ellos a la vez son un muro, y el acorde deja de leerse. Asi que la nota
+    // se parte en lo que de verdad son dos cosas distintas: el ATAQUE, que es un
+    // instante y es lo que hay que acertar, y lo que dura, que es dejarla sonar.
+    //
+    // La cabeza mide siempre lo mismo y va pegada al borde de ataque; la cola es
+    // el resto, mas estrecha y mas tenue. Una nota corta no tiene cola y se pinta
+    // exactamente como antes: esto no cambia el carril monofonico.
+    const altoCabeza = Math.min(alto, ALTO_CABEZA_PX);
+    const arribaCabeza = rectangulo.y - altoCabeza;
+    if (alto > altoCabeza) {
+      const anchoCola = Math.max(ancho * FRACCION_COLA, 2);
+      const alfa = contexto.globalAlpha;
+      contexto.globalAlpha = alfa * ALFA_COLA;
+      contexto.fillStyle = colorNota;
+      dibujarNota(
+        contexto, x + (ancho - anchoCola) / 2, arriba, anchoCola, alto - altoCabeza
+      );
+      contexto.fill();
+      contexto.globalAlpha = alfa;
     }
+
+    contexto.fillStyle = colorNota;
+    dibujarNota(contexto, x, arribaCabeza, ancho, altoCabeza);
+    contexto.fill();
+
+    if (tocada !== undefined) {
+      contexto.strokeStyle = COLOR_BORDE_TOCADA;
+      contexto.lineWidth = 2;
+      dibujarNota(contexto, x, arribaCabeza, ancho, altoCabeza);
+      contexto.stroke();
+    }
+
+    if (altoCabeza >= ALTO_PARA_TRASTE_PX) {
+      contexto.fillStyle = colorDeTextoSobre(colorNota);
+      contexto.font = "700 13px system-ui, sans-serif";
+      contexto.fillText(String(nota.traste), x + ancho / 2, arribaCabeza + altoCabeza / 2);
+    } else {
+      // No cabe dentro: va justo encima, en el color de la cuerda, para que una
+      // nota corta no se quede sin decir que traste es.
+      contexto.fillStyle = colorNota;
+      contexto.font = "700 11px system-ui, sans-serif";
+      contexto.fillText(String(nota.traste), x + ancho / 2, arribaCabeza - 8);
+    }
+    contexto.globalAlpha = 1;
   }
 
-  // La línea de ataque, al final para que ninguna nota la tape. No va en el
-  // borde de abajo: debajo queda la estela de las notas que ya sonaron, y donde
-  // cae lo dice la geometría (`yDeLaLineaDeAtaque`), no este archivo.
-  const lineaAtaque = yDeLaLineaDeAtaque(lienzo, VENTANA_VISIBLE_S);
-  contexto.strokeStyle = COLOR_LINEA_ATAQUE;
-  contexto.lineWidth = 2;
-  contexto.beginPath();
-  contexto.moveTo(0, lineaAtaque);
-  contexto.lineTo(lienzo.ancho, lineaAtaque);
-  contexto.stroke();
+  // La ligadura del rasgueo, por ENCIMA de las cabezas: un acorde es un gesto,
+  // no cinco notas que coinciden. Sin ella hay que comparar cinco alturas para
+  // saber si hay que rasguear o puntear, y es lo primero que la mano necesita
+  // saber. Va despues del bucle de las notas porque en el borde de ataque -el
+  // sitio obvio- quedaba debajo de las cabezas y encima de la linea, tapada por
+  // las dos.
+  for (const grupo of acordesVisibles(visibles)) {
+    const ligadura = ligaduraDeAcorde(
+      grupo, instanteS, tempoEfectivo, lienzo, VENTANA_VISIBLE_S, ALTO_CABEZA_PX
+    );
+    const distancia = Math.min(Math.max((lineaAtaque - ligadura.y) / lineaAtaque, 0), 1);
+    // Se desvanece con la distancia igual que las notas: si no, un acorde del
+    // fondo del carril llegaba antes al ojo que la nota que hay que tocar ahora.
+    contexto.globalAlpha = (1 - DESVANECIDO_MAXIMO * distancia) * ALFA_LIGADURA;
+    contexto.strokeStyle = COLOR_LIGADURA;
+    contexto.lineWidth = GROSOR_LIGADURA_PX;
+    contexto.lineCap = "round";
+    contexto.beginPath();
+    const yLigadura = ligadura.y - SEPARACION_LIGADURA_PX;
+    contexto.moveTo(ligadura.desde, yLigadura);
+    contexto.lineTo(ligadura.hasta, yLigadura);
+    contexto.stroke();
+    contexto.globalAlpha = 1;
+  }
+
+  // La linea de ataque, al final para que ninguna nota la tape. No va en el
+  // borde de abajo: debajo queda la estela, y donde cae lo dice la geometria.
+  // Se pinta con un halo -tres trazos cada vez mas anchos y mas tenues- porque
+  // una linea de 2 px se perdia entre las notas justo donde hay que mirar.
+  for (const [grosor, alfa] of [
+    [10, 0.1],
+    [5, 0.2],
+    [2, 1],
+  ] as const) {
+    contexto.globalAlpha = alfa;
+    contexto.strokeStyle = COLOR_LINEA_ATAQUE;
+    contexto.lineWidth = grosor;
+    contexto.beginPath();
+    contexto.moveTo(0, lineaAtaque);
+    contexto.lineTo(lienzo.ancho, lineaAtaque);
+    contexto.stroke();
+  }
+  contexto.globalAlpha = 1;
+
+  // La diana de cada cuerda sobre la linea: dice de que color es cada carril
+  // aunque no venga ninguna nota, que es como se aprende el codigo de colores.
+  for (let i = 0; i < lienzo.cuerdas; i += 1) {
+    contexto.fillStyle = colorDeCuerda(i + 1);
+    contexto.fillRect(i * anchoCarril + MARGEN_CARRIL_PX, lineaAtaque - 1, 
+      Math.max(anchoCarril - 2 * MARGEN_CARRIL_PX, 1), 3);
+  }
 }
+
+/** El contorno de una nota: un rectangulo de esquinas redondeadas.
+ *
+ * `roundRect` no existe en jsdom ni en navegadores viejos, asi que se degrada a
+ * un rectangulo recto en vez de romper el dibujo entero. */
+function dibujarNota(
+  contexto: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  ancho: number,
+  alto: number
+): void {
+  contexto.beginPath();
+  if (typeof contexto.roundRect === "function") {
+    contexto.roundRect(x, y, ancho, alto, Math.min(RADIO_NOTA_PX, ancho / 2, alto / 2));
+  } else {
+    contexto.rect(x, y, ancho, alto);
+  }
+}
+
 
 /**
  * El tempo con el que se convierten los pulsos en segundos al dibujar.
@@ -251,9 +470,24 @@ function elTramoEsLaPiezaEntera(estado: EstadoEstudio): boolean {
   return estado.primer_compas === 1 && estado.ultimo_compas === estado.total_de_compases;
 }
 
-/** El resumen de la pieza terminada: cómo llegó cada nota que se pudo adjudicar. */
+/**
+ * El resumen de la pieza terminada: cómo llegó cada nota que se pudo adjudicar.
+ *
+ * **Se lee EN EL ORDEN ESCRITO y no en el de llegada.** `estado.tocadas` viene en
+ * el orden en que la cadena las cobró, y las cuerdas de un acorde no se cobran a
+ * la vez: el seguidor deja el grupo abierto y cada una entra en cuanto la
+ * presencia la confirma, así que la que tarda —en un Sol abierto, la tercera—
+ * aparecía al final de su acorde y no en su sitio. Sobre la pantalla eso se lee
+ * como un desorden, no como un dato: el resumen es la partitura de lo que acabas
+ * de tocar, y una partitura va en su orden.
+ *
+ * `indice` es el de `Pieza.notas`, así que ordenar por él ES el orden escrito. No
+ * se repite dentro de una vuelta: el estudio vacía lo cobrado al cerrar cada
+ * repetición, que es lo mismo que hace que `indice` sirva de `key`.
+ */
 function ResumenCarril({ pieza, estado }: { pieza: Pieza; estado: EstadoEstudio }) {
   const acertadas = estado.tocadas.filter((tocada) => tocada.acertada).length;
+  const enOrdenEscrito = [...estado.tocadas].sort((una, otra) => una.indice - otra.indice);
   return (
     <div className="resumen-carril">
       <h3>Pieza terminada</h3>
@@ -261,17 +495,18 @@ function ResumenCarril({ pieza, estado }: { pieza: Pieza; estado: EstadoEstudio 
         {acertadas} de {estado.total} notas acertadas
       </p>
       <ul className="desviaciones-carril">
-        {estado.tocadas.map((tocada) => (
+        {enOrdenEscrito.map((tocada) => (
           <li
             key={tocada.indice}
-            className={tocada.acertada ? undefined : "nota-fallada"}
+            className={clasesDeFila(tocada)}
             data-testid={tocada.acertada ? "fila-acertada" : "fila-fallada"}
+            data-por-presencia={tocada.por_presencia ? "si" : undefined}
           >
             <span
               className="punto-desviacion"
               style={{ background: colorDeDesviacion(tocada) }}
             />
-            {textoDeFila(pieza, tocada)} — {textoClasificacion(tocada.clasificacion)}{" "}
+            {textoDeFila(pieza, tocada)} — {textoClasificacion(tocada)}{" "}
             {textoDesfase(tocada.desfase_s)}
           </li>
         ))}
@@ -317,6 +552,16 @@ export function Carril({ peticion = null }: PropiedadesCarril) {
   // seleccionada, igual que en `Configurador`.
   const [familia, setFamilia] = useState("");
   const [tempo, setTempo] = useState("");
+  /**
+   * Los acordes elegidos para la familia de cambios, en orden. Vacío = los que
+   * traiga el generador.
+   *
+   * El carril se alimenta del MISMO catálogo de familias que el configurador de
+   * ejercicios, así que «Cambios de acorde» es elegible aquí; y desde que
+   * `pieza_desde_ejercicio` traduce los acordes a grupos de notas simultáneas,
+   * tocarlos en el carril es una pasada de verdad, con su informe.
+   */
+  const [acordesElegidos, setAcordesElegidos] = useState<string[]>([]);
   // Carril para tocar a tempo; escrita para leer la pieza y repasar lo tocado.
   const [vista, setVista] = useState<"carril" | "escrita">("carril");
   // El informe de la pasada, tal como estaba al pedirlo: es una foto, no se
@@ -458,10 +703,22 @@ export function Carril({ peticion = null }: PropiedadesCarril) {
       return <p className="aviso-carril">Preparando la canción…</p>;
     }
 
+    /**
+     * Si la familia elegida pide acordes. Se deduce de los PARÁMETROS que el
+     * servidor publica para ella, no de su clave: comparar con "cambios" sería
+     * escribir aquí una clave del catálogo, que es justo lo que esta pantalla
+     * evita (ver `familia`).
+     */
+    const elegida = familias.find((f) => f.clave === familia);
+    const pideAcordes = elegida?.parametros.includes("claves") === true;
+
     const empezar = () => {
       const parametros: Record<string, unknown> = {};
       const numero = Number(tempo);
       if (tempo !== "" && Number.isFinite(numero)) parametros.tempo = numero;
+      // Solo si la familia elegida los declara: mandar `claves` a una escala es
+      // un 400, y la lista vacía deja que el generador ponga los suyos.
+      if (pideAcordes && acordesElegidos.length > 0) parametros.claves = acordesElegidos;
       // Si el catálogo todavía no ha llegado, la familia viaja vacía y el
       // servidor contesta cuáles hay (`SesionPractica.generar`). Es mejor que
       // adivinar una clave: lo que se ve seleccionado y lo que viaja son siempre
@@ -472,7 +729,9 @@ export function Carril({ peticion = null }: PropiedadesCarril) {
     return (
       <section className="configurador carril-configurador">
         <p className="descripcion-familia">
-          Las notas vienen hacia ti: toca cada una cuando llegue a la línea de abajo.
+          {pideAcordes
+            ? "Los acordes vienen hacia ti: rasguea cada uno cuando llegue a la línea de abajo."
+            : "Las notas vienen hacia ti: toca cada una cuando llegue a la línea de abajo."}
         </p>
         <div className="selector">
           {familias.length > 0 && (
@@ -490,6 +749,10 @@ export function Carril({ peticion = null }: PropiedadesCarril) {
                 ))}
               </select>
             </>
+          )}
+
+          {pideAcordes && (
+            <SelectorDeAcordes elegidas={acordesElegidos} alCambiar={setAcordesElegidos} />
           )}
 
           <div className="control">
@@ -576,17 +839,6 @@ export function Carril({ peticion = null }: PropiedadesCarril) {
       {/* Un rechazo del servidor a una orden (tempo, salto, pausa) no se pierde. */}
       {error !== null && <p className="error-ejercicio">{error}</p>}
 
-      {estado !== null && (
-        <ControlesEstudio
-          estado={estado}
-          secciones={secciones}
-          alCambiarPlan={cambiarPlan}
-          alPausar={(activa) => void pausar(activa)}
-          alSaltar={(compas) => void saltar(compas)}
-          alAjustarAcompanamiento={acompanamiento}
-        />
-      )}
-
       <div className="conmutador-vista" role="group" aria-label="Vista">
         <button type="button" aria-pressed={vista === "carril"} onClick={() => setVista("carril")}>
           Carril
@@ -602,6 +854,17 @@ export function Carril({ peticion = null }: PropiedadesCarril) {
 
       {dibujando && (
         <canvas className="lienzo-carril" data-testid="lienzo-carril" ref={lienzoRef} />
+      )}
+
+      {estado !== null && (
+        <ControlesEstudio
+          estado={estado}
+          secciones={secciones}
+          alCambiarPlan={cambiarPlan}
+          alPausar={(activa) => void pausar(activa)}
+          alSaltar={(compas) => void saltar(compas)}
+          alAjustarAcompanamiento={acompanamiento}
+        />
       )}
 
       {/* El resumen cuenta sobre la pieza ENTERA, así que solo se muestra cuando

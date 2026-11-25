@@ -1,5 +1,5 @@
 import { render, screen, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { colorDeDesviacion } from "./geometriaCarril";
 import type { EstadoCarril, NotaTocada, Pieza } from "./tiposPieza";
@@ -34,6 +34,10 @@ function tocada(indice: number, midi: number, nombre: string, cents: number | nu
     clasificacion: "a_tiempo",
     acertada: midi === PIEZA.notas[indice].midi,
     afinada: cents === null ? null : Math.abs(cents) < 5,
+    // Este ayudante finge el camino MONOFONICO, que es el que mide cents y
+    // desfase. Las notas de acorde cobradas por presencia llevan `true` y los
+    // cuatro campos de arriba en null; no hay ninguna en esta suite.
+    por_presencia: false,
   };
 }
 
@@ -140,5 +144,62 @@ describe("VistaEscrita", () => {
     render(<VistaEscrita pieza={pieza} estado={null} cuerdas={6} />);
     const lineas = screen.getByLabelText("Tablatura del compás 1").querySelectorAll("div");
     expect(new Set([...lineas].map((l) => l.textContent?.length)).size).toBe(1);
+  });
+});
+
+describe("VistaEscrita: el seguimiento", () => {
+  /** El compás marcado como el que se está tocando ahora. */
+  function compasEnCurso(): HTMLElement | null {
+    return document.querySelector(".compas-escrito.en-curso");
+  }
+
+  /** Su NUMERO. Se lee del rótulo del compás y no con `getByText`: sin
+   * `etiquetas`, las cuerdas de la tablatura se rotulan con su número y "2" es
+   * a la vez el compás 2 y la segunda cuerda. */
+  function numeroDe(compas: HTMLElement | null): string | undefined {
+    return compas?.querySelector(".numero-compas")?.textContent ?? undefined;
+  }
+
+  it("el compás que contiene la nota en curso va marcado", () => {
+    // La nota 3 (pulso 4) es la del segundo compás: un 4/4 a 60 son 4 pulsos.
+    render(<VistaEscrita pieza={PIEZA} estado={estado({ indice_actual: 3 })} cuerdas={6} />);
+    expect(compasEnCurso()).not.toBeNull();
+    expect(numeroDe(compasEnCurso())).toBe("2");
+  });
+
+  it("la marca se mueve con la nota en curso, no se queda en el primero", () => {
+    const { rerender } = render(
+      <VistaEscrita pieza={PIEZA} estado={estado({ indice_actual: 0 })} cuerdas={6} />
+    );
+    expect(numeroDe(compasEnCurso())).toBe("1");
+    rerender(<VistaEscrita pieza={PIEZA} estado={estado({ indice_actual: 3 })} cuerdas={6} />);
+    expect(numeroDe(compasEnCurso())).toBe("2");
+  });
+
+  it("con la pieza terminada no hay ningún compás en curso", () => {
+    // Si al acabar quedara uno marcado, el usuario leeria que todavia le toca
+    // tocar algo. `completado` ya apaga la nota en curso; el compas va detras.
+    render(
+      <VistaEscrita
+        pieza={PIEZA}
+        estado={estado({ indice_actual: 3, completado: true })}
+        cuerdas={6}
+      />
+    );
+    expect(compasEnCurso()).toBeNull();
+  });
+
+  it("sin estado tampoco hay compás en curso", () => {
+    render(<VistaEscrita pieza={PIEZA} estado={null} cuerdas={6} />);
+    expect(compasEnCurso()).toBeNull();
+  });
+
+  it("el compás en curso se trae a la vista", () => {
+    // Sin esto la vista escrita no SIGUE: con una pieza de treinta compases, el
+    // que estas tocando se va fuera de la pantalla y hay que buscarlo a mano.
+    const traer = vi.fn();
+    Element.prototype.scrollIntoView = traer;
+    render(<VistaEscrita pieza={PIEZA} estado={estado({ indice_actual: 3 })} cuerdas={6} />);
+    expect(traer).toHaveBeenCalled();
   });
 });

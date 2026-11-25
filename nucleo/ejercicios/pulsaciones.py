@@ -304,6 +304,36 @@ class DetectorPulsaciones:
         self._ultima_nota_resuelta: str | None = None
         self._cuadros_sin_nota_creible = 0
         self._senal_de_nota_nueva = False
+        # El ataque que caduco en ESTE cuadro sin que su altura llegara a cuajar.
+        # Se publica, no se devuelve: no es una pulsacion (no hay nota que
+        # nombrar) y quien no sepa que hacer con ello puede seguir sin mirarlo.
+        self._ataque_sin_altura: float | None = None
+
+    @property
+    def ataque_sin_altura(self) -> float | None:
+        """El instante del ataque que este cuadro abandono por no tener altura.
+
+        **ESTO ES UN RASGUEO, casi siempre.** Los dos caminos de disparo necesitan
+        una nota creible, y un acorde no la da: medido con acordes sinteticos de
+        este repositorio, la confianza del detector de tono baja de 1,00 con una
+        cuerda a 0,65 con DOS y se queda entre 0,50 y 0,66 de tres a cinco, contra
+        una `CONFIANZA_MINIMA` de 0,75. No es un umbral mal puesto -bajarlo a 0,5
+        arruinaria la deteccion monofonica, que es el 95% del programa-: es que
+        cinco cuerdas a la vez no tienen UNA altura que leer.
+
+        Asi que el ataque de energia existe, su instante es bueno -lo firma
+        `DetectorAtaques`, que solo mira el nivel- y lo unico que falta es el
+        nombre de la nota. Quien sepa QUE se esperaba en ese instante puede
+        resolverlo por otro camino: el carril lo verifica por presencia contra la
+        ventana cruda (`SeguidorPieza._cobrar_el_rasgueo_sin_altura`). Antes de
+        esto, el ataque se abandonaba en silencio y un acorde rasgueado no
+        producia NI UN reporte en todo el carril.
+
+        Vale solo para el cuadro en curso y se repone en cada `procesar`, igual
+        que `senal_de_nota_nueva`: un ataque abandonado se publica UNA vez, en el
+        cuadro en que caduca.
+        """
+        return self._ataque_sin_altura
 
     @property
     def senal_de_nota_nueva(self) -> bool:
@@ -364,6 +394,7 @@ class DetectorPulsaciones:
         volvera a dispararse hasta que se abra un hueco sin nota creible.
         """
         self._senal_de_nota_nueva = False
+        self._ataque_sin_altura = None
 
         if self._es_creible(resultado):
             self._cuadros_sin_nota_creible = 0
@@ -403,6 +434,10 @@ class DetectorPulsaciones:
         # test_el_onset_del_camino_b_es_el_comienzo_de_la_racha_no_el_final).
         if self._lectura_pendiente is not None and not self._ataque_vigente(instante):
             self._lectura_pendiente = None
+            # El ataque era real y su instante es bueno; lo que no llego es la
+            # altura. Se publica para que quien sepa que se esperaba lo pueda
+            # resolver por otro camino (ver `ataque_sin_altura`).
+            self._ataque_sin_altura = self._instante_ataque
 
         if (
             self._lectura_pendiente is not None

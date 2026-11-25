@@ -56,8 +56,54 @@ class NotaEsperada:
 
 
 @dataclass(frozen=True)
+class AcordeEsperado:
+    """Un acorde que el ejercicio pide tocar.
+
+    Es un tipo HERMANO de NotaEsperada, no una generalizacion suya, y eso es una
+    decision. La alternativa era darle a NotaEsperada un campo `midis` plural: se
+    rechazo porque el evaluador monofonico, el detector de pulsaciones y la
+    pantalla de ejercicios leen `NotaEsperada.midi` en todas partes, y un campo
+    que a veces es una nota y a veces cinco es la clase de ambiguedad que se paga
+    despues.
+
+    posiciones es la digitacion CONCRETA, no todas las formas de tocar el acorde.
+    A diferencia de NotaEsperada -donde varias posiciones son alternativas validas
+    y el alumno elige- aqui todas las posiciones se tocan a la vez.
+
+    pulsos vale 4 por defecto: un compas de 4/4 por acorde, que a 60 ppm son
+    cuatro segundos. Un cambio de acorde necesita mas tiempo que una nota.
+    """
+
+    nombre: str
+    posiciones: tuple[Posicion, ...]
+    midis: tuple[int, ...]
+    pulsos: float = 4.0
+
+    def __post_init__(self) -> None:
+        if not self.midis or not self.posiciones:
+            raise ValueError(f"El acorde '{self.nombre}' no tiene ninguna nota que tocar")
+
+    @property
+    def nombres(self) -> tuple[str, ...]:
+        """Nombres en notacion cientifica, de grave a aguda."""
+        return tuple(nombre_de_midi(midi) for midi in self.midis)
+
+    def a_dict(self) -> dict:
+        return {
+            "nombre": self.nombre,
+            "posiciones": [{"cuerda": p.cuerda, "traste": p.traste} for p in self.posiciones],
+            "midis": list(self.midis),
+            "nombres": list(self.nombres),
+            "pulsos": self.pulsos,
+        }
+
+
+@dataclass(frozen=True)
 class Ejercicio:
-    """Un ejercicio generado: que tocar, en que orden y a que tempo."""
+    """Un ejercicio generado: que tocar, en que orden y a que tempo.
+
+    Trae notas sueltas o acordes, nunca las dos cosas: ver `__post_init__`.
+    """
 
     clave: str
     nombre: str
@@ -65,9 +111,28 @@ class Ejercicio:
     notas: tuple[NotaEsperada, ...]
     tempo: int
     perfil: str
+    acordes: tuple[AcordeEsperado, ...] = ()
+
+    def __post_init__(self) -> None:
+        """Un ejercicio tiene notas o acordes, nunca las dos y nunca ninguna.
+
+        Se valida al construirlo y no al evaluarlo porque hay dos evaluadores
+        distintos -el monofonico (`EvaluadorEjercicio`) y el de cambios
+        (`EvaluadorCambios`)- y cada uno lee un campo. Un ejercicio con los dos
+        llenos iria a uno de ellos y el otro contenido se perderia en silencio,
+        que es la peor forma de perderse.
+        """
+        if self.notas and self.acordes:
+            raise ValueError(
+                f"El ejercicio '{self.clave}' trae notas y acordes a la vez: "
+                "tiene que traer una cosa o la otra"
+            )
+        if not self.notas and not self.acordes:
+            raise ValueError(f"El ejercicio '{self.clave}' esta vacio")
 
     def __len__(self) -> int:
-        return len(self.notas)
+        """Cuantos pasos tiene: acordes si es de acordes, notas si es de notas."""
+        return len(self.acordes) if self.acordes else len(self.notas)
 
     def a_dict(self) -> dict:
         return {
@@ -75,6 +140,7 @@ class Ejercicio:
             "nombre": self.nombre,
             "descripcion": self.descripcion,
             "notas": [n.a_dict() for n in self.notas],
+            "acordes": [a.a_dict() for a in self.acordes],
             "tempo": self.tempo,
             "perfil": self.perfil,
         }

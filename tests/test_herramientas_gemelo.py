@@ -64,7 +64,11 @@ from nucleo.gemelo.perfiles import (
 from nucleo.acompanamiento import renderizar
 from nucleo.gemelo.dispositivo import RecolectorDeLaSesion
 from nucleo.gemelo.interprete import interpretar
-from nucleo.gemelo.piezas_de_prueba import escala_de_ocho_notas, pieza_de_demostracion
+from nucleo.gemelo.piezas_de_prueba import (
+    escala_de_ocho_notas,
+    pieza_de_demostracion,
+    pieza_de_rasgueos,
+)
 from nucleo.gemelo.veredicto import Veredicto
 from nucleo.piezas.compases import pulsos_por_compas
 from nucleo.piezas.estudio import PlanDePasada, SesionDeEstudio
@@ -176,6 +180,30 @@ def test_sin_pieza_usa_la_de_demostracion_construida_en_codigo(monkeypatch):
     assert pieza == pieza_de_demostracion()
     assert pieza.notas, "una demostracion sin notas no demuestra nada"
     assert pieza.secciones, "la demostracion practica por secciones"
+
+
+def test_con_acordes_se_toca_el_ejercicio_de_cambios():
+    """Es el unico camino del escaparate que ejercita el cobro por presencia.
+
+    La pieza de demostracion es monofonica, asi que sin `--acordes` el carril de
+    acordes no se ve correr nunca sin un archivo propio. Y se construye en codigo
+    igual que la otra: no entra ningun archivo.
+    """
+    pieza = pieza_pedida(None, "guitarra_estandar", acordes=True)
+
+    assert pieza == pieza_de_rasgueos()
+    inicios = [nota.inicio_pulsos for nota in pieza.notas]
+    assert len(set(inicios)) < len(inicios), "sin notas simultaneas no hay acorde"
+
+
+def test_acordes_y_pieza_a_la_vez_se_rechazan_al_armar_la_pasada():
+    """Antes de levantar nada, igual que `--con-acompanamiento` y `--altavoces`."""
+    argumentos = _analizador_de_argumentos().parse_args(
+        ["--acordes", "--pieza", "cualquiera.gp5"]
+    )
+
+    with pytest.raises(ValueError, match="`--acordes` y `--pieza`"):
+        armar_la_pasada(argumentos)
 
 
 def test_el_repositorio_no_lleva_ninguna_partitura_dentro():

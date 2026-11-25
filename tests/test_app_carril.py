@@ -234,3 +234,68 @@ def test_el_endpoint_del_diagnostico_le_pasa_si_la_sesion_espera_notas(cliente):
         assert visto["esperando_notas"] is False
     finally:
         del sesion.diagnostico
+
+
+class TestLaFamiliaDeCambiosEnElCarril:
+    """«Cambios de acorde» es elegible en el selector del carril, porque el carril
+    se alimenta del mismo catalogo (`/api/ejercicios/familias`).
+
+    Y devolvia 200 con una pieza VACIA: `pieza_desde_ejercicio` solo recorria
+    `ejercicio.notas`, que en un ejercicio de acordes esta vacio. El alumno veia
+    cuatro segundos de cuenta atras y despues un lienzo en blanco con un informe
+    vacio, sin un solo mensaje. Ahora los acordes se traducen a grupos de notas
+    simultaneas, que es lo que el carril sabe cobrar.
+    """
+
+    def test_desde_ejercicio_trae_el_acorde_como_notas_simultaneas(self, cliente):
+        respuesta = cliente.post(
+            "/api/piezas/desde-ejercicio",
+            json={"familia": "cambios", "parametros": {"repeticiones": 1}},
+        )
+        assert respuesta.status_code == 200
+        notas = respuesta.json()["notas"]
+        assert notas, "una pieza de acordes no puede salir vacia"
+        del_primer_acorde = [n for n in notas if n["inicio_pulsos"] == 0.0]
+        assert len(del_primer_acorde) > 1, "un acorde son varias notas a la vez"
+
+    def test_iniciar_arranca_una_pieza_de_verdad(self, cliente):
+        respuesta = cliente.post(
+            "/api/piezas/iniciar",
+            json={"familia": "cambios", "parametros": {"repeticiones": 1}},
+        )
+        assert respuesta.status_code == 200
+        cuerpo = respuesta.json()
+        assert cuerpo["pieza"]["notas"]
+        assert cuerpo["total"] == len(cuerpo["pieza"]["notas"])
+        # Y no sale terminada antes de empezar, que es lo que pasaba con cero notas.
+        assert cuerpo["completado"] is False
+        cliente.post("/api/piezas/detener")
+
+
+class TestElCatalogoDeAcordes:
+    """`/api/ejercicios/acordes`: lo que el selector necesita para no escribir
+    nada a mano. Las claves que publica `familias` son identificadores (`do`,
+    `la_menor`) y no se le pueden mostrar a nadie."""
+
+    def test_publica_los_ocho_con_nombre_y_digitacion(self, cliente):
+        respuesta = cliente.get("/api/ejercicios/acordes")
+        assert respuesta.status_code == 200
+        catalogo = respuesta.json()
+        assert len(catalogo) == 8
+        primero = catalogo[0]
+        assert primero["clave"] == "do"
+        assert primero["nombre"] == "Do mayor"
+        # La misma forma que ya viaja en el estado del ejercicio de cambios: el
+        # diagrama que se dibuja mientras tocas sirve tambien para elegir.
+        assert set(primero) >= {"clave", "nombre", "posiciones", "midis", "nombres", "pulsos"}
+        assert len(primero["posiciones"]) == len(primero["midis"])
+        cuerdas = {p["cuerda"] for p in primero["posiciones"]}
+        assert cuerdas == {5, 4, 3, 2, 1}, "el Do abierto no toca la sexta"
+
+    def test_las_claves_son_las_mismas_que_publica_la_familia(self, cliente):
+        """Si las dos listas se separan, el selector ofrece un acorde que
+        `generar_cambios` rechaza, o se calla uno que acepta."""
+        catalogo = cliente.get("/api/ejercicios/acordes").json()
+        familias = cliente.get("/api/ejercicios/familias").json()
+        cambios = next(f for f in familias if f["clave"] == "cambios")
+        assert sorted(a["clave"] for a in catalogo) == sorted(cambios["tipos"])

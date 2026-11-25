@@ -48,8 +48,9 @@ def practica(perfil: str = "guitarra_estandar") -> SesionPractica:
     return SesionPractica(sesion, salida=SalidaCapturada().salida)
 
 
-def test_las_cuatro_familias_estan_registradas():
-    assert set(GENERADORES) == {"escala", "arpegio", "intervalo", "lectura"}
+def test_las_cinco_familias_estan_registradas():
+    # "cambios" la anade la etapa 2b, y es la unica que produce acordes.
+    assert set(GENERADORES) == {"escala", "arpegio", "intervalo", "lectura", "cambios"}
 
 
 def test_generar_devuelve_un_ejercicio_de_la_familia_pedida():

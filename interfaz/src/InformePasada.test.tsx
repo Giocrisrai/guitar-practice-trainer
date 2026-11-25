@@ -42,7 +42,7 @@ function celda(numero: number, clase: Columna): string {
   return elemento!.textContent ?? "";
 }
 
-const FRASE_ACORDES = "solo se puede medir una nota de cada acorde";
+const FRASE_ACORDES = "el TIEMPO solo se puede medir una vez por rasgueo";
 
 afterEach(cleanup);
 
@@ -81,11 +81,31 @@ describe("el informe de la pasada", () => {
     ]);
   });
 
-  it("un compás con acordes no finge cifras en ninguna de las tres columnas", () => {
+  /**
+   * Desde que el carril cobra los acordes por presencia (etapa 2b, tarea 8) un
+   * compás con acordes SÍ puede decir cuántas acertó: se cobran todas las cuerdas
+   * que suenan. Lo que sigue sin poder decir es el ritmo, porque el tiempo lo da
+   * el ataque y un rasgueo tiene uno.
+   */
+  it("un compás con acordes dice las acertadas sobre las ESCRITAS, no sobre los ataques", () => {
+    pintar({ compases: [compas(7, { notas_escritas: 4, notas_medibles: 1, acertadas: 4,
+                                    tiene_acordes: true })] });
+    expect(celda(7, "celda-acertadas")).toBe("4 de 4");
+  });
+
+  it("un compás con acordes no finge cifras de ritmo", () => {
     pintar({ compases: [compas(7, { notas_medibles: 1, tiene_acordes: true })] });
-    for (const columna of ["celda-acertadas", "celda-a-tiempo", "celda-limpias"] as const) {
-      expect(celda(7, columna)).toBe("con acordes");
+    for (const columna of ["celda-a-tiempo", "celda-limpias"] as const) {
+      expect(celda(7, columna)).toBe("una por acorde");
     }
+  });
+
+  it("un acorde a medio cobrar se ve a medio cobrar", () => {
+    // Tres de las cinco cuerdas sonaron: el usuario ve 3 de 5, que es la verdad,
+    // y no un "con acordes" que se la esconde.
+    pintar({ compases: [compas(7, { notas_escritas: 5, notas_medibles: 1, acertadas: 3,
+                                    tiene_acordes: true })] });
+    expect(celda(7, "celda-acertadas")).toBe("3 de 5");
   });
 
   it("enseña el desfase medio con signo y en milisegundos", () => {
@@ -126,7 +146,7 @@ describe("el informe de la pasada", () => {
         compas(7, { notas_escritas: 4, notas_medibles: 1, acertadas: 0, limpias: 0, tiene_acordes: true }),
       ],
     });
-    expect(celda(7, "celda-limpias")).toBe("con acordes");
+    expect(celda(7, "celda-limpias")).toBe("una por acorde");
     // La explicación sale una sola vez y la dice el texto, no la tabla.
     const avisos = document.querySelectorAll(".aviso-acordes");
     expect(avisos.length).toBe(1);

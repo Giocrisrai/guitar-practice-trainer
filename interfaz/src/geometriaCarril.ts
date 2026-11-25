@@ -186,3 +186,124 @@ export function colorDeDesviacion({ cents, afinada }: DesviacionPintable): strin
   if (afinada) return COLOR_AFINADA;
   return cents > 0 ? COLOR_ALTA : COLOR_BAJA;
 }
+
+/**
+ * Un color por cuerda, que es el idioma de Guitar Hero y de Rocksmith.
+ *
+ * El carril tenía las seis cuerdas del mismo gris pálido, así que para saber
+ * dónde iba una nota había que leer el número del traste y contar columnas. El
+ * color se lee sin pensar y el número no; con un color por cuerda la mano sabe
+ * dónde va antes de que el ojo lea nada.
+ *
+ * Va por NUMERO de cuerda y no por fracción del total a propósito: si el color
+ * se repartiera entre las que tenga el instrumento, la cuerda 1 de un bajo
+ * saldría de otro color que la 1 de la guitarra, y cambiar de instrumento
+ * obligaría a releer el carril entero. Más allá de la sexta el ciclo se repite
+ * —una guitarra de siete u ocho cuerdas existe— en vez de devolver nada:
+ * una nota sin color no se pinta, y una nota que no se pinta es una nota que el
+ * usuario no sabe que tiene que tocar.
+ */
+const COLORES_DE_CUERDA = [
+  "#c061f0", // 1.ª (mi agudo): violeta
+  "#2fd36f", // 2.ª (si): verde
+  "#f08a2f", // 3.ª (sol): naranja
+  "#3d8ee8", // 4.ª (re): azul
+  "#e8cf3d", // 5.ª (la): amarillo
+  "#e8503d", // 6.ª (mi grave): rojo
+];
+
+export function colorDeCuerda(cuerda: number): string {
+  const indice = Math.trunc(cuerda) - 1;
+  const cuantos = COLORES_DE_CUERDA.length;
+  // El resto de un negativo en JS es negativo: `((i % n) + n) % n` lo corrige.
+  return COLORES_DE_CUERDA[((indice % cuantos) + cuantos) % cuantos];
+}
+
+/**
+ * Negro o blanco, el que se lea encima de `fondo`.
+ *
+ * El número del traste se pinta DENTRO de la nota, y las notas ya no son todas
+ * del mismo gris pálido: con un color fijo para el número, el amarillo de la
+ * quinta se leía bien y el azul de la cuarta no se leía en absoluto. Una nota
+ * cuyo número no se lee es media nota: se ve que hay que tocar algo y no dónde.
+ *
+ * El umbral es la luminancia relativa simple (0,299 R + 0,587 G + 0,114 B,
+ * la de la norma BT.601), que para seis colores elegidos a mano basta y no
+ * necesita la conversión sRGB completa.
+ */
+const TEXTO_SOBRE_CLARO = "#12161b";
+const TEXTO_SOBRE_OSCURO = "#ffffff";
+
+export function colorDeTextoSobre(fondo: string): string {
+  const hex = fondo.replace("#", "");
+  const r = parseInt(hex.slice(0, 2), 16);
+  const g = parseInt(hex.slice(2, 4), 16);
+  const b = parseInt(hex.slice(4, 6), 16);
+  const luminancia = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  return luminancia > 0.55 ? TEXTO_SOBRE_CLARO : TEXTO_SOBRE_OSCURO;
+}
+
+/**
+ * Las notas visibles agrupadas por el instante en que se atacan.
+ *
+ * Un acorde es eso y nada más: varias notas con el mismo `inicio_pulsos` (así lo
+ * reconoce también el núcleo, en `SeguidorPieza`). Lo que el carril necesita de
+ * la agrupación es poder dibujar el rasgueo como UN gesto en vez de como cinco
+ * notas que coinciden por casualidad.
+ *
+ * Solo devuelve los grupos de MÁS DE UNA: una nota suelta no es un acorde y no
+ * lleva ligadura, así que una pieza monofónica no paga nada por esto.
+ *
+ * Se agrupa por el valor ESCRITO en pulsos y no por segundos ya estirados, por
+ * el mismo motivo que el núcleo: el factor de tempo las escala a todas igual, y
+ * comparar flotantes que han pasado por una multiplicación es como se pierde un
+ * grupo por un bit.
+ */
+export function acordesVisibles(notas: NotaDePieza[]): NotaDePieza[][] {
+  const porInstante = new Map<number, NotaDePieza[]>();
+  for (const nota of notas) {
+    const grupo = porInstante.get(nota.inicio_pulsos);
+    if (grupo === undefined) porInstante.set(nota.inicio_pulsos, [nota]);
+    else grupo.push(nota);
+  }
+  return [...porInstante.values()].filter((grupo) => grupo.length > 1);
+}
+
+/**
+ * De dónde a dónde va la ligadura de un acorde, y a qué altura.
+ *
+ * Va por los CENTROS de los carriles de la cuerda más aguda y la más grave del
+ * grupo, no por los bordes del lienzo: un acorde de cuatro cuerdas no cruza las
+ * seis, y dibujarlo de lado a lado diría que hay que rasguearlas todas.
+ *
+ * Va por el borde de ARRIBA de las cabezas y no por el de ataque, que sería el
+ * sitio obvio: en el de ataque la ligadura queda debajo de las cinco cabezas y
+ * encima de la línea de ataque, es decir tapada por las dos. Por arriba no la
+ * tapa nada y sigue diciendo lo mismo, porque las cabezas de un acorde empiezan
+ * todas en el mismo instante.
+ *
+ * `altoCabeza` es lo que mide una cabeza en el lienzo. Las notas de un acorde
+ * pueden durar distinto -una pieza de verdad suelta una cuerda antes que otra- y
+ * una más corta que la cabeza no llega tan arriba, así que la ligadura se queda
+ * a la altura de la cabeza MÁS BAJA: por encima de ella cruzaría por el aire.
+ */
+export function ligaduraDeAcorde(
+  grupo: NotaDePieza[],
+  instanteS: number,
+  tempo: number,
+  lienzo: LienzoCarril,
+  ventanaS: number,
+  altoCabeza = 0
+): { desde: number; hasta: number; y: number } {
+  const anchoCarril = lienzo.ancho / lienzo.cuerdas;
+  const centros = grupo.map((nota) => (nota.cuerda - 0.5) * anchoCarril);
+  const rectangulos = grupo.map((nota) =>
+    rectanguloDeNota(nota, instanteS, tempo, lienzo, ventanaS)
+  );
+  const cabeza = Math.min(altoCabeza, ...rectangulos.map((r) => r.alto));
+  return {
+    desde: Math.min(...centros),
+    hasta: Math.max(...centros),
+    y: rectangulos[0].y - cabeza,
+  };
+}

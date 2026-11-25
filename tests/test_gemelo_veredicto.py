@@ -459,19 +459,61 @@ def test_la_nota_repetida_consecutiva_se_excluye_en_vez_de_perderse():
     assert veredicto.limpio is True
 
 
-def test_las_notas_de_un_acorde_se_excluyen():
-    """El detector de tono es monofonico y el interprete reduce el acorde a la
-    nota mas grave: las otras no sonaron y no se pueden echar en falta."""
+def test_las_cuerdas_de_un_acorde_ya_no_se_excluyen():
+    """Suenan todas, asi que perderlas es una perdida de verdad.
+
+    Se excluian cuando el interprete reducia el acorde a su cuerda mas grave: las
+    demas no sonaban y no se podian echar en falta. Desde que el gemelo rasguea
+    (`_pulsaciones_escritas`) y el seguidor cobra el resto del acorde por
+    presencia, seguir excluyendolas taparia el unico camino nuevo de la etapa 2b
+    justo cuando se rompa.
+    """
     interpretacion = _interpretacion(pieza_con_acorde())
     registro = _todo_reportado(interpretacion)
 
     veredicto = juzgar(interpretacion, registro)
 
-    # Las notas 1 y 2 comparten `inicio_pulsos`; suena la mas grave, la 1.
-    assert veredicto.excluidas == ((1, 2),)
+    assert veredicto.excluidas == ()
     assert veredicto.perdidas == ()
     assert veredicto.notas_de_la_pieza == 4
-    assert veredicto.notas_tocadas == 3
+    assert veredicto.notas_tocadas == 4
+
+
+def test_la_cuerda_de_un_acorde_que_la_cadena_no_vio_sale_como_perdida():
+    """Es LA prueba del cobro por presencia, y no la podia dar nadie mas.
+
+    Antes de la etapa 2b esta cuerda estaba excluida, asi que una cadena que no
+    cobrara el resto del acorde sacaba el mismo veredicto limpio que una que si.
+    """
+    interpretacion = _interpretacion(pieza_con_acorde())
+    registro = _todo_reportado(interpretacion, saltar={(1, 2)})
+
+    veredicto = juzgar(interpretacion, registro)
+
+    assert veredicto.perdidas == ((1, 2),)
+    assert veredicto.limpio is False
+
+
+def test_un_acorde_corta_la_cadena_de_las_repetidas():
+    """La regla habla de dos pulsaciones SUELTAS de la misma altura.
+
+    Un rasgueo entre ellas mete varias alturas por medio, asi que el detector no
+    tiene nada que confundir y la nota de despues no se excluye. Es el borde que
+    aparecio al dejar de excluir los acordes: antes, el grupo entero se excluia y
+    la pregunta no se llegaba a hacer.
+    """
+    pieza = pieza_con_acorde()
+    # Un La3 (57) suelto, el acorde, y otro La3 suelto detras.
+    midis = (57, 60, 64, 57)
+    notas = tuple(
+        replace(nota, midi=midi)
+        for nota, midi in zip(pieza.notas, midis, strict=True)
+    )
+    interpretacion = _interpretacion(replace(pieza, notas=notas))
+
+    veredicto = juzgar(interpretacion, _todo_reportado(interpretacion))
+
+    assert veredicto.excluidas == ()
 
 
 def test_las_exclusiones_salen_de_la_pieza_y_no_de_lo_que_la_cadena_hizo():

@@ -59,19 +59,26 @@ export function InformePasada({ informe, historial, alMachacar }: PropiedadesInf
           {informe.compases.map((compas) => (
             <tr key={compas.numero} data-compas={compas.numero}>
               <th scope="row">{compas.numero}</th>
+              {/* La única columna que un compás con acordes SÍ puede dar entera,
+                  desde que el carril cobra los acordes por presencia: el
+                  denominador es `notas_escritas` y no `notas_medibles`, porque
+                  todas las cuerdas del acorde se pueden cobrar aunque solo una
+                  tenga ataque propio. En un compás sin acordes los dos números son
+                  el mismo (un instante por nota), así que esto no cambia nada ahí.
+                  Las otras dos columnas siguen diciendo "una por acorde" porque
+                  eso sigue siendo verdad: el tiempo lo da el ataque, y el rasgueo
+                  tiene uno. */}
               <td className="celda-acertadas">
-                {compas.tiene_acordes
-                  ? "con acordes"
-                  : `${compas.acertadas} de ${compas.notas_medibles * informe.repeticiones}`}
+                {`${compas.acertadas} de ${compas.notas_escritas * informe.repeticiones}`}
               </td>
               <td className="celda-a-tiempo">
                 {compas.tiene_acordes
-                  ? "con acordes"
+                  ? "una por acorde"
                   : `${compas.a_tiempo} de ${compas.notas_medibles * informe.repeticiones}`}
               </td>
               <td className="celda-limpias">
                 {compas.tiene_acordes
-                  ? "con acordes"
+                  ? "una por acorde"
                   : `${compas.limpias} de ${compas.notas_medibles * informe.repeticiones}`}
               </td>
               <td className="celda-desfase">{textoDelDesfase(compas.desfase_medio_s)}</td>
@@ -82,8 +89,9 @@ export function InformePasada({ informe, historial, alMachacar }: PropiedadesInf
 
       {hayAcordes && (
         <p className="aviso-informe aviso-acordes">
-          En los compases con acordes solo se puede medir una nota de cada acorde, así
-          que no entran en el resultado: no significa que los hayas tocado mal.
+          De un acorde se cobran todas las cuerdas que suenan, pero el TIEMPO solo se
+          puede medir una vez por rasgueo: por eso los compases con acordes dicen las
+          acertadas y no el ritmo, y no cuentan para la sugerencia de tempo.
         </p>
       )}
 

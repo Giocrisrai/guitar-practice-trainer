@@ -269,13 +269,73 @@ describe("Carril", () => {
       instante_s: 4.0, indice_actual: 3, total: 3, completado: true, pausado: false,
       tocadas: [
         { indice: 0, midi: 40, cents: -5.0, desfase_s: 0.01, clasificacion: "a_tiempo", acertada: true,
-          afinada: false },
+          afinada: false , por_presencia: false },
         { indice: 1, midi: 45, cents: 3.0, desfase_s: 0.22, clasificacion: "tarde", acertada: true,
-          afinada: true },
+          afinada: true , por_presencia: false },
       ],
     });
     expect(await screen.findByText(/a tiempo/i)).toBeTruthy();
     expect(await screen.findByText(/tarde/i)).toBeTruthy();
+  });
+
+  /**
+   * Una cuerda de un acorde cobrada por presencia: el rasgueo tuvo UN ataque, y
+   * las demás cuerdas se verificaron por presencia armónica. No tienen desfase ni
+   * clasificación, y el resumen no puede decir "sin instante" —eso suena a
+   * medición fallida— ni mucho menos "a tiempo".
+   */
+  it("una nota de acorde cobrada por presencia se dice distinta, no fallida", async () => {
+    vi.stubGlobal("fetch", crearFetchFalso());
+    render(<Carril />);
+    fireEvent.click(await screen.findByRole("button", { name: /empezar/i }));
+    enviarEstado({
+      instante_s: 4.0, indice_actual: 2, total: 3, completado: true, pausado: false,
+      tocadas: [
+        { indice: 0, midi: 40, cents: -1.0, desfase_s: 0.01, clasificacion: "a_tiempo",
+          acertada: true, afinada: true, por_presencia: false },
+        { indice: 1, midi: 45, cents: null, desfase_s: null, clasificacion: null,
+          acertada: true, afinada: null, por_presencia: true },
+      ],
+    });
+    expect(await screen.findByText(/en el acorde/i)).toBeTruthy();
+    expect(screen.queryByText(/sin instante/i)).toBeNull();
+    // Cuenta como acertada: cobrar el acorde entero es justo el punto.
+    expect(await screen.findByText(/2 de 3 notas acertadas/)).toBeTruthy();
+  });
+
+  it("la fila por presencia va marcada y la del ataque no", async () => {
+    vi.stubGlobal("fetch", crearFetchFalso());
+    render(<Carril />);
+    fireEvent.click(await screen.findByRole("button", { name: /empezar/i }));
+    enviarEstado({
+      instante_s: 4.0, indice_actual: 2, total: 3, completado: true, pausado: false,
+      tocadas: [
+        { indice: 0, midi: 40, cents: -1.0, desfase_s: 0.01, clasificacion: "a_tiempo",
+          acertada: true, afinada: true, por_presencia: false },
+        { indice: 1, midi: 45, cents: null, desfase_s: null, clasificacion: null,
+          acertada: true, afinada: null, por_presencia: true },
+      ],
+    });
+    await screen.findByText(/en el acorde/i);
+    const marcadas = document.querySelectorAll('[data-por-presencia="si"]');
+    expect(marcadas).toHaveLength(1);
+    expect(marcadas[0].className).toContain("nota-por-presencia");
+    expect(marcadas[0].className).not.toContain("nota-fallada");
+  });
+
+  it("una nota de acorde sin desfase no imprime un desfase de cero", async () => {
+    vi.stubGlobal("fetch", crearFetchFalso());
+    render(<Carril />);
+    fireEvent.click(await screen.findByRole("button", { name: /empezar/i }));
+    enviarEstado({
+      instante_s: 4.0, indice_actual: 1, total: 2, completado: true, pausado: false,
+      tocadas: [
+        { indice: 0, midi: 40, cents: null, desfase_s: null, clasificacion: null,
+          acertada: true, afinada: null, por_presencia: true },
+      ],
+    });
+    await screen.findByText(/en el acorde/i);
+    expect(screen.queryByText(/0 ms/)).toBeNull();
   });
 
 
@@ -303,9 +363,9 @@ describe("Carril", () => {
         ultimo_compas: 4,
         tocadas: [
           { indice: 0, midi: 40, nombre: "E2", cents: 0, desfase_s: 0.01,
-            clasificacion: "a_tiempo", acertada: true, afinada: true },
+            clasificacion: "a_tiempo", acertada: true, afinada: true , por_presencia: false },
           { indice: 1, midi: 45, nombre: "A2", cents: 0, desfase_s: 0.01,
-            clasificacion: "a_tiempo", acertada: true, afinada: true },
+            clasificacion: "a_tiempo", acertada: true, afinada: true , por_presencia: false },
         ],
       }),
     );
@@ -331,7 +391,7 @@ describe("Carril", () => {
         ultimo_compas: 4,
         tocadas: [
           { indice: 0, midi: 40, nombre: "E2", cents: 0, desfase_s: 0.01,
-            clasificacion: "a_tiempo", acertada: true, afinada: true },
+            clasificacion: "a_tiempo", acertada: true, afinada: true , por_presencia: false },
         ],
       }),
     );
@@ -354,16 +414,48 @@ describe("Carril", () => {
       instante_s: 4.0, indice_actual: 2, total: 3, completado: true, pausado: false,
       tocadas: [
         { indice: 0, midi: 40, nombre: "E2", cents: 0, desfase_s: 0.01,
-          clasificacion: "a_tiempo", acertada: true, afinada: true },
+          clasificacion: "a_tiempo", acertada: true, afinada: true , por_presencia: false },
         // La nota 1 pedia A2 (MIDI 45) y sonó A#2: fallada, y bien afinada.
         { indice: 1, midi: 46, nombre: "A#2", cents: 1.0, desfase_s: 0.02,
-          clasificacion: "a_tiempo", acertada: false, afinada: true },
+          clasificacion: "a_tiempo", acertada: false, afinada: true , por_presencia: false },
       ],
     });
     expect(await screen.findByText(/1 de 3 notas acertadas/i)).toBeTruthy();
     expect(screen.getByText(/Pedida A2, tocaste A#2/)).toBeTruthy();
     expect(screen.getAllByTestId("fila-fallada")).toHaveLength(1);
     expect(screen.getAllByTestId("fila-acertada")).toHaveLength(1);
+  });
+
+  /**
+   * Las cuerdas de un acorde no se cobran a la vez: el seguidor deja el grupo
+   * abierto y cada una entra cuando la presencia la confirma, así que la que tarda
+   * llegaba la última de su acorde. Sobre la pantalla eso se lee como un desorden.
+   */
+  it("el resumen pone las cuerdas del acorde en el orden escrito, no en el de llegada", async () => {
+    vi.stubGlobal("fetch", crearFetchFalso());
+    render(<Carril />);
+    fireEvent.click(await screen.findByRole("button", { name: /empezar/i }));
+    enviarEstado({
+      instante_s: 4.0, indice_actual: 2, total: 3, completado: true, pausado: false,
+      // Llegan 0, 2, 1: la nota 1 es la cuerda que tardó en levantarse.
+      tocadas: [
+        { indice: 0, midi: 40, nombre: "E2", cents: null, desfase_s: 0.01,
+          clasificacion: "a_tiempo", acertada: true, afinada: null, por_presencia: false },
+        { indice: 2, midi: 50, nombre: "D3", cents: null, desfase_s: null,
+          clasificacion: null, acertada: true, afinada: null, por_presencia: true },
+        { indice: 1, midi: 45, nombre: "A2", cents: null, desfase_s: null,
+          clasificacion: null, acertada: true, afinada: null, por_presencia: true },
+      ],
+    });
+
+    await screen.findByText(/Pieza terminada/i);
+    const filas = [...document.querySelectorAll(".desviaciones-carril li")].map(
+      (fila) => fila.textContent ?? "",
+    );
+    expect(filas).toHaveLength(3);
+    expect(filas[0]).toMatch(/E2/);
+    expect(filas[1]).toMatch(/A2/);
+    expect(filas[2]).toMatch(/D3/);
   });
 
   it("escucha el WebSocket del carril, no el de los ejercicios", async () => {
@@ -430,7 +522,7 @@ describe("Carril", () => {
       pausado: false,
       tocadas: [
         { indice: 2, midi: 52, cents: 0, desfase_s: 0, clasificacion: "a_tiempo", acertada: true,
-          afinada: true },
+          afinada: true , por_presencia: false },
       ],
     });
 
@@ -470,7 +562,7 @@ describe("Carril", () => {
       pausado: false,
       tocadas: [
         { indice: 2, midi: 52, cents: 0, desfase_s: 0, clasificacion: "a_tiempo", acertada: true,
-          afinada: true },
+          afinada: true , por_presencia: false },
       ],
     });
     expect(screen.queryByText(/pieza terminada/i)).toBeNull();
@@ -516,6 +608,81 @@ describe("Carril", () => {
     expect(screen.getByText(/cambiar de afinación/i)).toBeTruthy();
     // Y se puede volver a empezar: la pantalla es la de elegir pieza.
     expect(screen.getByRole("button", { name: /empezar/i })).toBeTruthy();
+  });
+
+  /**
+   * El apagado que pide el PROPIO ALUMNO llega por el mismo camino que el ajeno,
+   * y durante un instante es indistinguible de él: entre el POST de «Detener» y
+   * la respuesta, el socket ya trae `arranque: 0` mientras aquí todavía hay
+   * arranque y `vistoPorElSocket`. Así que al pulsar «Otra vez» salía un aviso
+   * sobre cambiar la afinación, que nadie había cambiado.
+   */
+  it("el apagado que pedimos nosotros suelta la pieza SIN aviso", async () => {
+    let soltarLaRespuesta: () => void = () => {};
+    const detencionPendiente = new Promise<Response>((resolver) => {
+      soltarLaRespuesta = () => resolver({ ok: true, status: 200 } as Response);
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        const direccion = String(url);
+        if (direccion.includes("/api/ejercicios/familias")) return responder(FAMILIAS);
+        if (direccion.includes("/api/perfiles")) return responder(PERFILES);
+        if (direccion.includes("/api/piezas/iniciar")) return responder(RESPUESTA_INICIAR);
+        // La detención se queda en vuelo: es la ventana que hay que probar.
+        if (direccion.includes("/api/piezas/detener")) return detencionPendiente;
+        return responder(ESTADO_APAGADO);
+      })
+    );
+    render(<Carril />);
+    await pulsarEmpezar();
+
+    enviarEstado({
+      instante_s: 1.0, indice_actual: 1, total: 3, completado: false, pausado: false,
+      tocadas: [],
+    });
+    expect(screen.getByText("2 / 3")).toBeTruthy();
+
+    // Se pulsa Detener y, con el POST todavía en vuelo, llega el apagado.
+    fireEvent.click(screen.getByRole("button", { name: /detener/i }));
+    act(() => {
+      WebSocketFalso.ultimo!.enviar(ESTADO_APAGADO);
+    });
+
+    // La pieza se suelta -el apagado es de verdad- pero sin inventar un motivo.
+    expect(screen.queryByText("2 / 3")).toBeNull();
+    expect(screen.queryByTestId("lienzo-carril")).toBeNull();
+    expect(screen.queryByText(/se detuvo desde el servidor/i)).toBeNull();
+    expect(screen.getByRole("button", { name: /empezar/i })).toBeTruthy();
+
+    await act(async () => {
+      soltarLaRespuesta();
+      await detencionPendiente;
+    });
+  });
+
+  /**
+   * Y la bandera de la detención propia no se queda levantada: una vez soltada la
+   * pieza, un apagado ajeno de la pieza SIGUIENTE vuelve a avisar.
+   */
+  it("tras detener a mano, un apagado ajeno posterior sí avisa", async () => {
+    vi.stubGlobal("fetch", crearFetchFalso());
+    render(<Carril />);
+    await pulsarEmpezar();
+    await act(async () => {
+      screen.getByRole("button", { name: /detener/i }).click();
+    });
+
+    await pulsarEmpezar();
+    enviarEstado({
+      instante_s: 1.0, indice_actual: 1, total: 3, completado: false, pausado: false,
+      tocadas: [],
+    });
+    act(() => {
+      WebSocketFalso.ultimo!.enviar(ESTADO_APAGADO);
+    });
+
+    expect(screen.getByText(/se detuvo desde el servidor/i)).toBeTruthy();
   });
 
   /**
@@ -883,6 +1050,7 @@ describe("Carril: el dibujo sigue al tempo efectivo", () => {
   };
   const ANCHO = 600; // seis cuerdas: un carril de 100 px cada una
   const MARGEN = 5; // el hueco a cada lado que deja el carril (MARGEN_CARRIL_PX)
+  const ANCHO_CARRIL = 100; // ANCHO / 6 cuerdas
 
   beforeEach(() => vi.stubGlobal("WebSocket", WebSocketFalso));
   afterEach(() => {
@@ -896,6 +1064,18 @@ describe("Carril: el dibujo sigue al tempo efectivo", () => {
    * devuelve `[x, y de la esquina superior, alto]` de cada nota pintada en ese cuadro,
    * con la `x` ya sin el margen del carril. */
   async function carrilesPintados(paquete: Record<string, unknown>): Promise<number[][]> {
+    // Solo las CABEZAS. Una nota larga se pinta en dos piezas -la cabeza, del
+    // ancho del carril, y la cola, mas estrecha- y lo que estas pruebas miden es
+    // que notas se ven y donde cae su ataque, que es la cabeza. La cola tiene su
+    // propia prueba.
+    const CABEZA = ANCHO_CARRIL - 2 * MARGEN;
+    return (await rectangulosPintados(paquete))
+      .filter(([, , ancho]) => Math.abs(ancho - CABEZA) < 1)
+      .map(([x, y, , alto]) => [x - MARGEN, y, alto]);
+  }
+
+  /** Lo mismo, sin filtrar ni recortar: `[x, y, ancho, alto]` de cada rectangulo. */
+  async function rectangulosPintados(paquete: Record<string, unknown>): Promise<number[][]> {
     const fetchFalso = vi.fn((url: string) => {
       const direccion = String(url);
       if (direccion.includes("/api/ejercicios/familias")) return responder(FAMILIAS);
@@ -907,14 +1087,22 @@ describe("Carril: el dibujo sigue al tempo efectivo", () => {
     });
     vi.stubGlobal("fetch", fetchFalso);
 
+    // Se recogen los rectangulos de las NOTAS, que son los unicos que pasan por
+    // `roundRect`. Antes se leian de `fillRect` descartando "el primero, que es
+    // el fondo"; con mas de un rectangulo de fondo -las franjas de cada cuerda,
+    // la estela, las dianas- esa cuenta se rompe en cuanto cambia el dibujo, y
+    // ademas colaba el fondo entre las notas si alguna vez se pintaba antes.
     const rectangulos: number[][] = [];
     const contexto = {
       setTransform: vi.fn(),
-      fillRect: vi.fn((x: number, y: number, ancho: number, alto: number) => {
-        rectangulos.push([x, y, ancho, alto]);
-      }),
+      fillRect: vi.fn(),
       fillText: vi.fn(),
       beginPath: vi.fn(),
+      roundRect: vi.fn((x: number, y: number, ancho: number, alto: number) => {
+        rectangulos.push([x, y, ancho, alto]);
+      }),
+      rect: vi.fn(),
+      fill: vi.fn(),
       moveTo: vi.fn(),
       lineTo: vi.fn(),
       stroke: vi.fn(),
@@ -944,10 +1132,12 @@ describe("Carril: el dibujo sigue al tempo efectivo", () => {
     act(() => {
       cuadros[cuadros.length - 1](performance.now());
     });
-    // El primer `fillRect` de un cuadro es el fondo; las notas vienen después.
-    const [fondo, ...notas] = rectangulos;
-    expect(fondo).toEqual([0, 0, ANCHO, 500]);
-    return notas.map(([x, y, , alto]) => [x - MARGEN, y, alto]);
+    // Cada nota se dibuja dos veces cuando ya esta tocada (relleno y borde), asi
+    // que se queda una de cada dos posiciones repetidas consecutivas.
+    const notas = rectangulos.filter(
+      (r, i) => i === 0 || r.join() !== rectangulos[i - 1].join()
+    );
+    return notas;
   }
 
   it("al 50 % las notas visibles son las del reloj estirado, no las del tempo escrito", async () => {
@@ -961,7 +1151,11 @@ describe("Carril: el dibujo sigue al tempo efectivo", () => {
     // son 6 s, menos los 4 s) y dura 2 s. Con el tempo escrito saldría ya pasada
     // (y = 500) y de 100 px de alto.
     const [, arriba, alto] = carriles[0];
-    expect(alto).toBe(200);
+    // La cabeza mide siempre lo mismo (ALTO_CABEZA_PX), dure lo que dure la
+    // nota: una nota de 200 px pintada entera era un bloque mas alto que la
+    // ventana. Lo que no cambia es donde cae el ATAQUE, que es lo que hay que
+    // acertar: el borde de abajo de la cabeza, en el 200.
+    expect(alto).toBe(54);
     expect(Math.abs(arriba + alto - 200)).toBeLessThan(10);
   });
 
@@ -975,6 +1169,19 @@ describe("Carril: el dibujo sigue al tempo efectivo", () => {
   it("un tempo efectivo de 0, el del carril apagado, no rompe el dibujo ni lo vacía", async () => {
     const carriles = await carrilesPintados({ tempo_efectivo: 0 });
     expect(carriles.map(([x]) => x)).toEqual([100, 200]);
+  });
+
+  it("una nota larga lleva cola: mas estrecha, centrada y por encima de la cabeza", async () => {
+    const todos = await rectangulosPintados({ tempo_efectivo: undefined });
+    const CABEZA = ANCHO_CARRIL - 2 * MARGEN;
+    const colas = todos.filter(([, , ancho]) => ancho < CABEZA - 1);
+    expect(colas.length).toBeGreaterThan(0);
+    const [x, y, ancho, alto] = colas[0];
+    const cabeza = todos.find(([cx, , canc]) => Math.abs(canc - CABEZA) < 1 && cx <= x)!;
+    // Centrada en el carril de su nota.
+    expect(Math.abs(x + ancho / 2 - (cabeza[0] + CABEZA / 2))).toBeLessThan(1);
+    // Y encima: acaba justo donde empieza la cabeza.
+    expect(Math.abs(y + alto - cabeza[1])).toBeLessThan(1);
   });
 });
 

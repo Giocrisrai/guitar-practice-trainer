@@ -2085,6 +2085,13 @@ class DetectorDeOnsetsDichos:
         self.onsets_por_cuadro = dict(onsets_por_cuadro)
         self.cuadros = 0
 
+    # Parte de la frontera con el seguidor desde la etapa 2b: el ataque
+
+    # cuyo nombre de nota no cuajo. Este doble no finge rasgueos.
+
+    ataque_sin_altura = None
+
+
     def reiniciar(self):
         self.cuadros = 0
 

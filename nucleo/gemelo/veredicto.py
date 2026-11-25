@@ -14,13 +14,20 @@ retraso, ni el umbral de cents; tampoco los lee. De una `NotaTocada` solo mira
 leyera esos campos estaria preguntandole a la cadena si la cadena lo hizo bien, y
 una prueba de este modulo lo vigila con `ast`.
 
-**LAS EXCLUSIONES SALEN DE LA PIEZA, no de lo que la cadena hizo.** Los acordes
-(varias notas en el mismo `inicio_pulsos`) y las notas repetidas consecutivas se
-excluyen porque el programa declara por escrito que no las distingue: el detector
-de tono es monofonico y `DetectorPulsaciones` necesita un hueco de tres cuadros
-sin nota creible para contar dos pulsaciones seguidas de la misma altura.
-Dedujeras las exclusiones de lo que la cadena no reporto, y el veredicto no
-podria perder una nota jamas: todo lo perdido se llamaria «excluido».
+**LAS EXCLUSIONES SALEN DE LA PIEZA, no de lo que la cadena hizo.** Queda UNA
+familia: las notas repetidas consecutivas, que se excluyen porque el programa
+declara por escrito que no las distingue -`DetectorPulsaciones` necesita un hueco
+de tres cuadros sin nota creible para contar dos pulsaciones seguidas de la misma
+altura-. Dedujeras las exclusiones de lo que la cadena no reporto, y el veredicto
+no podria perder una nota jamas: todo lo perdido se llamaria «excluido».
+
+**LOS ACORDES YA NO SE EXCLUYEN, y es el cambio de la etapa 2b.** Se excluian
+porque el interprete reducia cada acorde a su cuerda mas grave: las demas no
+sonaban y no se podian echar en falta. Ahora el interprete RASGUEA el acorde
+entero (`nucleo.gemelo.interprete._pulsaciones_escritas`) y el seguidor cobra el
+resto del acorde por presencia, asi que las cinco cuerdas de arriba si sonaron y
+el veredicto tiene que poder decir que la cadena no las vio. Seguir excluyendolas
+seria tapar el unico camino nuevo de la etapa justo cuando se rompa.
 
 **LOS DOS EJES DE TIEMPO.** `EventoTocado.instante_s` esta en el eje del AUDIO,
 con el silencio de cabecera dentro. `ReporteDeLaCadena.instante_pasada_s` esta en
@@ -63,6 +70,9 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from nucleo.analisis.acordes import VENTANA_DE_RASGUEO_S
+from nucleo.analisis.pipeline import INTERVALO_DE_ANALISIS_S
+from nucleo.ejercicios.ataques import MUESTRAS_REFERENCIA
 from nucleo.ejercicios.pulsaciones import VENTANA_ATAQUE_COMO_ONSET_S
 from nucleo.gemelo.cadena import RegistroDeLaCadena, ReporteDeLaCadena
 from nucleo.gemelo.interprete import Interpretacion
@@ -86,6 +96,36 @@ from nucleo.piezas.modelo import Pieza, pulsos_a_segundos
 # perdidas. Apretarla es como se pone un oraculo rojo por construccion: la prueba
 # mediria la tolerancia y no la cadena.
 TOLERANCIA_DE_EMPAREJAMIENTO_MS = VENTANA_ATAQUE_COMO_ONSET_S * 1000.0
+
+# La holgura de emparejamiento de un RASGUEO, que es otra y mucho mas ancha.
+#
+# **Un acorde no llega al registro en un instante, llega durante toda su ventana.**
+# El carril no lo resuelve por altura -cinco cuerdas a la vez no tienen una; los
+# numeros, en `DetectorPulsaciones.ataque_sin_altura`- sino por PRESENCIA, y la
+# presencia de las cuerdas que no doblan la fundamental tarda en levantarse: el
+# seguidor deja el grupo abierto `VENTANA_DE_RASGUEO_S` y cobra cada cuerda en
+# cuanto la ve. Una cuerda puede entonces reportarse medio segundo despues del
+# golpe, legitimamente. A eso se le suman los `MUESTRAS_REFERENCIA` cuadros que
+# `DetectorAtaques` puede tardar en VER el golpe cuando el acorde anterior todavia
+# suena -el caso normal de un ejercicio de cambios: el salto de 6 dB sobre el nivel
+# de referencia tarda mas en aparecer cuando el nivel de partida ya es alto- y un
+# cuadro mas, el que lo nota.
+#
+# MEDIDO sobre dos acordes abiertos seguidos (Do y Sol, 60 ppm) con el techo pelado
+# de 250 ms: las once cuerdas de los dos acordes salian POR CONSTRUCCION como
+# perdidas y sus reportes como inventados -el veredicto medira la tolerancia y no
+# la cadena, que es justo lo que el comentario de arriba advierte-.
+#
+# **ES UNA HOLGURA FLOJA Y SE DICE EN VOZ ALTA.** Casi un segundo no distingue gran
+# cosa en el tiempo, y por eso se aplica SOLO a los eventos de un acorde: una nota
+# suelta sigue emparejandose con 250 ms, que es donde el veredicto puede estar
+# afilado y lo esta. De un acorde, lo que el veredicto sigue afirmando con fuerza
+# es que la cuerda se reporto y con la altura escrita; que se reportara pronto lo
+# dice `desfase_introducido_ms`, que es el sitio donde esa latencia tiene que
+# aparecer, y no una tolerancia apretada que convertiria la latencia en perdidas.
+HOLGURA_DEL_RASGUEO_S = (
+    VENTANA_DE_RASGUEO_S + (MUESTRAS_REFERENCIA + 1) * INTERVALO_DE_ANALISIS_S
+)
 
 
 @dataclass(frozen=True)
@@ -221,6 +261,15 @@ def juzgar(
 
     excluidas = _excluidas(interpretacion, tocados)
     por_puesto = _reportes_por_puesto(registro)
+    # Los indices que son cuerda de un acorde: a ellos -y solo a ellos- se les
+    # suma la holgura del rasgueo (ver `HOLGURA_DE_MAS_DEL_RASGUEO_S`).
+    inicio_tramo, fin_tramo = _tramo_en_pulsos(interpretacion)
+    de_un_acorde = {
+        indice
+        for grupo in _grupos_del_tramo(interpretacion.pieza, inicio_tramo, fin_tramo)
+        if len(grupo) > 1
+        for indice in grupo
+    }
 
     perdidas: list[tuple[int, int]] = []
     mal_adjudicadas: list[tuple[int, int, int]] = []
@@ -238,10 +287,15 @@ def juzgar(
             continue
         puesto = (vuelta, evento.indice_pretendido)
         instante_real_s = evento.instante_s - adelantos_s[vuelta]
+        holgura_s = (
+            max(tolerancia_s, HOLGURA_DEL_RASGUEO_S)
+            if evento.indice_pretendido in de_un_acorde
+            else tolerancia_s
+        )
         posicion = por_puesto.get(puesto)
         reporte = None if posicion is None else registro.reportes[posicion]
         if reporte is None or not _habla_del_ataque(
-            reporte, instante_real_s, tolerancia_s
+            reporte, instante_real_s, holgura_s
         ):
             if puesto not in excluidas:
                 perdidas.append(puesto)
@@ -443,17 +497,15 @@ def _excluidas(
 ) -> set[tuple[int, int]]:
     """Los `(vuelta, indice)` que no se juzgan, deducidos DE LA PIEZA.
 
-    Dos familias, las dos por un limite declarado del programa y no por un fallo:
+    Una familia, por un limite declarado del programa y no por un fallo: las
+    notas repetidas consecutivas. `DetectorPulsaciones` declara que no distingue
+    dos pulsaciones seguidas de la misma altura sin un hueco de tres cuadros sin
+    nota creible. Se excluye la SEGUNDA, que es la que el detector se come.
 
-    * Los acordes. Varias notas con el mismo `inicio_pulsos` son un acorde, el
-      detector de tono es monofonico y el interprete toca solo la mas grave. Las
-      demas no sonaron.
-    * Las notas repetidas consecutivas. `DetectorPulsaciones` declara que no
-      distingue dos pulsaciones seguidas de la misma altura sin un hueco de tres
-      cuadros sin nota creible. Se excluye la SEGUNDA, que es la que el detector
-      se come.
+    Los acordes NO (ver la cabecera del modulo): desde que el interprete los
+    rasguea enteros, sus cuerdas sonaron y perderlas es una perdida de verdad.
 
-    **Las dos reglas se leen DENTRO DEL TRAMO INTERPRETADO**, no sobre la pieza
+    **La regla se lee DENTRO DEL TRAMO INTERPRETADO**, no sobre la pieza
     entera, y no es un detalle: si la primera nota del tramo repite la altura de
     la nota anterior de la pieza -que en esta pasada nadie toca- no hay dos
     pulsaciones seguidas que el detector pueda confundir, y excluirla seria tapar
@@ -482,59 +534,59 @@ def _testigos_de_las_exclusiones(
 ) -> dict[int, int]:
     """Cada indice excluido con el indice cuyo evento prueba que se llego a tocar.
 
-    El testigo de una nota de acorde es la nota del acorde que SI suena (la mas
-    grave); el de una repetida es ella misma, porque se toca y lo que se come el
-    detector es el reporte.
+    El testigo de una repetida es ella misma, porque se toca y lo que se come el
+    detector es el reporte. Hoy es el unico caso, y la funcion sigue devolviendo un
+    diccionario de testigos en vez de un conjunto porque de eso cuelga el acotado
+    por vueltas de `_excluidas`.
+
+    **UN ACORDE CORTA LA CADENA DE REPETIDAS**, y es mas que un detalle de borde:
+    la regla habla de lo que `DetectorPulsaciones` confunde, y lo que confunde son
+    dos PULSACIONES SUELTAS de la misma altura. Un rasgueo entre ellas mete cinco
+    alturas distintas por medio, asi que ni el grupo de un acorde se excluye a si
+    mismo ni se excluye la nota suelta que viene detras de uno. De ahi que
+    `anterior` se ponga a `None` en cada acorde y no al ultimo midi del grupo.
 
     La nota anterior arranca en `None` en el borde del tramo, y ahi esta el
     arreglo de la sobre-exclusion: la primera nota del tramo no tiene con quien
     repetirse.
     """
-    sonadas = _reduccion_de_los_acordes(pieza, inicio_tramo, fin_tramo)
+    grupos = _grupos_del_tramo(pieza, inicio_tramo, fin_tramo)
     testigos: dict[int, int] = {}
 
-    for indices, elegida in sonadas:
-        for indice in indices:
-            if indice != elegida:
-                testigos[indice] = elegida
-
     anterior = None
-    for _, elegida in sonadas:
-        actual = pieza.notas[elegida]
-        if anterior is not None and actual.midi == anterior.midi:
-            testigos[elegida] = elegida
-        anterior = actual
+    for grupo in grupos:
+        # Solo las notas SUELTAS entran en la regla; un acorde deja `anterior` en
+        # `None` y corta la cadena.
+        sola = pieza.notas[grupo[0]] if len(grupo) == 1 else None
+        if sola is not None and anterior is not None and sola.midi == anterior.midi:
+            testigos[grupo[0]] = grupo[0]
+        anterior = sola
     return testigos
 
 
-def _reduccion_de_los_acordes(
+def _grupos_del_tramo(
     pieza: Pieza, inicio_tramo: float, fin_tramo: float
-) -> tuple[tuple[tuple[int, ...], int], ...]:
-    """El tramo reducido a lo que una guitarra monofonica puede tocar.
+) -> tuple[tuple[int, ...], ...]:
+    """Los gestos del tramo: un grupo de indices por `inicio_pulsos`.
 
-    Devuelve un grupo por `inicio_pulsos`, con los indices del grupo y el del que
-    suena. La regla es la del interprete -la mas grave, y de dos iguales la
-    primera-, sobre las notas del tramo y en su orden, que es exactamente lo que
-    `_pulsaciones_escritas` recorre.
+    Un grupo de uno es una nota suelta; uno de varios es un acorde. Las notas del
+    tramo y en su orden, que es exactamente lo que `_pulsaciones_escritas` recorre.
 
-    Se replica y no se importa: la del interprete devuelve ademas el hueco hasta
-    la nota siguiente y se usa para sintetizar: compartirla engancharia el
-    veredicto a una firma pensada para generar audio. Si una de las dos cambia sin
-    la otra, las pruebas de exclusiones de este modulo se ponen rojas, y esta
-    medido.
+    Se replica y no se importa: la del interprete devuelve ademas el hueco al grupo
+    siguiente y el sitio de cada cuerda en el barrido, y se usa para sintetizar;
+    compartirla engancharia el veredicto a una firma pensada para generar audio. Si
+    una de las dos cambia sin la otra, las pruebas de exclusiones de este modulo se
+    ponen rojas, y esta medido.
     """
-    grupos: list[tuple[list[int], int]] = []
+    grupos: list[list[int]] = []
     for indice, nota in enumerate(pieza.notas):
         if not inicio_tramo <= nota.inicio_pulsos < fin_tramo:
             continue
-        if grupos and pieza.notas[grupos[-1][0][0]].inicio_pulsos == nota.inicio_pulsos:
-            indices, elegida = grupos[-1]
-            indices.append(indice)
-            if nota.midi < pieza.notas[elegida].midi:
-                grupos[-1] = (indices, indice)
+        if grupos and pieza.notas[grupos[-1][0]].inicio_pulsos == nota.inicio_pulsos:
+            grupos[-1].append(indice)
             continue
-        grupos.append(([indice], indice))
-    return tuple((tuple(indices), elegida) for indices, elegida in grupos)
+        grupos.append([indice])
+    return tuple(tuple(grupo) for grupo in grupos)
 
 
 def _reportes_por_puesto(

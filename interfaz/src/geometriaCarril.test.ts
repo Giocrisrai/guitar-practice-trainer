@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  acordesVisibles,
+  colorDeCuerda,
+  ligaduraDeAcorde,
+  colorDeTextoSobre,
   colorDeDesviacion,
   ESTELA_S,
   notasVisibles,
@@ -7,6 +11,7 @@ import {
   VENTANA_VISIBLE_S,
   yDeLaLineaDeAtaque,
 } from "./geometriaCarril";
+import type { NotaDePieza } from "./tiposPieza";
 
 const LIENZO = { ancho: 600, alto: 400, cuerdas: 6 };
 
@@ -121,5 +126,106 @@ describe("geometría del carril", () => {
     expect(colorDeDesviacion({ cents: 12, afinada: null })).toBe(
       colorDeDesviacion({ cents: null, afinada: null })
     );
+  });
+});
+
+describe("colorDeCuerda", () => {
+  it("cada cuerda de una guitarra tiene su propio color", () => {
+    const colores = [1, 2, 3, 4, 5, 6].map((cuerda) => colorDeCuerda(cuerda));
+    expect(new Set(colores).size).toBe(6);
+  });
+
+  it("el color de una cuerda no depende de cuantas tenga el instrumento", () => {
+    // El bajo tiene cuatro cuerdas y el ukelele cuatro: la 1 es la 1 en los
+    // tres sitios. Si el color se repartiera por fracción del total, cambiar de
+    // instrumento repintaría toda la pieza y el usuario tendría que releerla.
+    expect(colorDeCuerda(1)).toBe(colorDeCuerda(1));
+    expect(colorDeCuerda(4)).toBe(colorDeCuerda(4));
+  });
+
+  it("una cuerda fuera de las seis habituales sigue dando un color", () => {
+    // Una guitarra de siete u ocho cuerdas existe. Devolver `undefined` aquí
+    // pintaría la nota de "transparent" y la nota desaparecería del carril:
+    // el usuario no vería que tiene que tocarla.
+    for (const cuerda of [7, 8, 12]) {
+      expect(colorDeCuerda(cuerda)).toMatch(/^#[0-9a-f]{6}$/i);
+    }
+  });
+
+  it("el cero y los negativos tampoco rompen el dibujo", () => {
+    expect(colorDeCuerda(0)).toMatch(/^#[0-9a-f]{6}$/i);
+    expect(colorDeCuerda(-1)).toMatch(/^#[0-9a-f]{6}$/i);
+  });
+});
+
+describe("colorDeTextoSobre", () => {
+  it("sobre un color claro escribe oscuro y sobre uno oscuro escribe claro", () => {
+    expect(colorDeTextoSobre("#e8cf3d")).not.toBe(colorDeTextoSobre("#3d8ee8"));
+  });
+
+  it("el blanco y el negro puros caen de los lados que les tocan", () => {
+    expect(colorDeTextoSobre("#ffffff")).toBe(colorDeTextoSobre("#e8cf3d"));
+    expect(colorDeTextoSobre("#000000")).toBe(colorDeTextoSobre("#3d8ee8"));
+  });
+
+  it("los seis colores de cuerda dan un numero legible", () => {
+    // El numero del traste se pinta encima de la nota. Si el contraste se
+    // eligiera mal en una sola cuerda, esa cuerda tendria las notas mudas: se
+    // ve el bloque y no se ve que traste es.
+    for (const cuerda of [1, 2, 3, 4, 5, 6]) {
+      const texto = colorDeTextoSobre(colorDeCuerda(cuerda));
+      expect(["#12161b", "#ffffff"]).toContain(texto);
+    }
+  });
+});
+
+describe("acordesVisibles", () => {
+  const nota = (cuerda: number, inicio: number): NotaDePieza => ({
+    midi: 40 + cuerda, nombre: "x", cuerda, traste: 0,
+    inicio_pulsos: inicio, duracion_pulsos: 1,
+  });
+
+  it("agrupa las notas que se atacan en el mismo instante", () => {
+    const grupos = acordesVisibles([nota(5, 0), nota(4, 0), nota(3, 0)]);
+    expect(grupos).toHaveLength(1);
+    expect(grupos[0]).toHaveLength(3);
+  });
+
+  it("una nota suelta no es un acorde: una pieza monofónica no paga nada", () => {
+    expect(acordesVisibles([nota(6, 0), nota(5, 1), nota(4, 2)])).toEqual([]);
+  });
+
+  it("separa dos acordes seguidos", () => {
+    const grupos = acordesVisibles([nota(5, 0), nota(4, 0), nota(5, 4), nota(4, 4)]);
+    expect(grupos).toHaveLength(2);
+  });
+});
+
+describe("ligaduraDeAcorde", () => {
+  const lienzo = { ancho: 600, alto: 400, cuerdas: 6 };
+  const nota = (cuerda: number): NotaDePieza => ({
+    midi: 40 + cuerda, nombre: "x", cuerda, traste: 0,
+    inicio_pulsos: 0, duracion_pulsos: 1,
+  });
+
+  it("va por los centros de los carriles, no de borde a borde del lienzo", () => {
+    // Cuerdas 5 a 2 de seis: carriles de 100 px, centros en 450 y 150.
+    const l = ligaduraDeAcorde([nota(5), nota(4), nota(3), nota(2)], 0, 60, lienzo, 2);
+    expect(l.desde).toBe(150);
+    expect(l.hasta).toBe(450);
+  });
+
+  it("se queda por encima de las cabezas, no en el borde de ataque", () => {
+    const l = ligaduraDeAcorde([nota(5), nota(4)], 0, 60, lienzo, 2, 54);
+    const rectangulo = rectanguloDeNota(nota(5), 0, 60, lienzo, 2);
+    expect(l.y).toBe(rectangulo.y - 54);
+  });
+
+  it("baja a la cabeza más corta cuando una nota del acorde dura menos", () => {
+    // Sin esto cruzaría por el aire sobre la nota corta.
+    const corta: NotaDePieza = { ...nota(4), duracion_pulsos: 0.02 };
+    const l = ligaduraDeAcorde([nota(5), corta], 0, 60, lienzo, 2, 54);
+    const rectangulo = rectanguloDeNota(corta, 0, 60, lienzo, 2);
+    expect(l.y).toBe(rectangulo.y - rectangulo.alto);
   });
 });

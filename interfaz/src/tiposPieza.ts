@@ -68,6 +68,15 @@ export type Clasificacion = "a_tiempo" | "pronto" | "tarde";
  * interfaz los consume; no vuelve a comparar MIDIs ni a copiarse el umbral de
  * cents. `afinada` es `null` cuando `cents` lo es: no se supo, que no es ni
  * afinada ni desafinada.
+ *
+ * `por_presencia` distingue las dos formas de cobrar una nota, y cambia lo que
+ * se puede decir de ella. `false` es el camino de siempre: hubo un ataque, el
+ * detector de tono lo midió, y `cents`, `desfase_s` y `clasificacion` son
+ * reales. `true` es una cuerda de un acorde que no tuvo ataque propio —el
+ * rasgueo fue uno solo— y se verificó por presencia armónica: ahí los cuatro
+ * campos de arriba son `null` por fuerza, no por falta de datos de esta vez.
+ * Quien promedie desfases o cuente afinación filtra por este campo, o contará
+ * el mismo rasgueo tantas veces como cuerdas tenga el acorde.
  */
 export interface NotaTocada {
   indice: number;
@@ -78,6 +87,7 @@ export interface NotaTocada {
   clasificacion: Clasificacion | null;
   acertada: boolean;
   afinada: boolean | null;
+  por_presencia: boolean;
 }
 
 /**

@@ -1,5 +1,6 @@
 import pytest
 
+from nucleo.ejercicios.generadores.acordes import generar_cambios
 from nucleo.ejercicios.generadores.escalas import generar_escala
 from nucleo.ejercicios.modelo import Ejercicio, NotaEsperada
 from nucleo.musica import Posicion
@@ -65,3 +66,70 @@ def test_una_escala_en_una_posicion_no_salta_por_el_mastil():
     p = pieza_desde_ejercicio(e)
     trastes = [n.traste for n in p.notas if n.traste > 0]
     assert max(trastes) - min(trastes) <= 4
+
+
+class TestUnEjercicioDeAcordes:
+    """Un ejercicio de cambios tambien se puede llevar al carril.
+
+    Antes no: `pieza_desde_ejercicio` solo recorria `ejercicio.notas`, que en un
+    ejercicio de acordes esta vacio por construccion -trae notas o acordes, nunca
+    las dos cosas-, asi que devolvia una pieza SIN NOTAS. El carril la aceptaba
+    -`Pieza` no rechaza una pieza vacia- y el alumno veia un lienzo en blanco y un
+    informe vacio tras cuatro segundos de cuenta atras, sin un solo mensaje.
+
+    Ahora se traduce, y es lo que la tarea 8 hizo posible: el carril sabe cobrar
+    varias notas con el mismo instante.
+    """
+
+    @staticmethod
+    def _cambios():
+        return generar_cambios(claves=("do", "sol"), repeticiones=1)
+
+    def test_cada_acorde_es_un_grupo_de_notas_con_el_mismo_instante(self):
+        p = pieza_desde_ejercicio(self._cambios())
+        ejercicio = self._cambios()
+        por_instante: dict[float, list[int]] = {}
+        for nota in p.notas:
+            por_instante.setdefault(nota.inicio_pulsos, []).append(nota.midi)
+
+        assert len(por_instante) == len(ejercicio.acordes)
+        for acorde, instante in zip(ejercicio.acordes, sorted(por_instante)):
+            assert sorted(por_instante[instante]) == sorted(acorde.midis)
+
+    def test_los_instantes_se_acumulan_acorde_a_acorde(self):
+        ejercicio = self._cambios()
+        p = pieza_desde_ejercicio(ejercicio)
+        instantes = sorted({n.inicio_pulsos for n in p.notas})
+        esperados = []
+        inicio = 0.0
+        for acorde in ejercicio.acordes:
+            esperados.append(inicio)
+            inicio += acorde.pulsos
+        assert instantes == esperados
+        assert p.duracion_pulsos == inicio
+
+    def test_la_cuerda_y_el_traste_son_los_de_la_digitacion_escrita(self):
+        """No se elige posicion: un acorde abierto YA dice en que cuerda va cada
+        nota, y `elegir_posicion` -que mira el traste anterior- produciria una
+        digitacion que ninguna mano toca."""
+        ejercicio = self._cambios()
+        p = pieza_desde_ejercicio(ejercicio)
+        primero = ejercicio.acordes[0]
+        del_primer_acorde = [n for n in p.notas if n.inicio_pulsos == 0.0]
+        assert {(n.cuerda, n.traste) for n in del_primer_acorde} == {
+            (pos.cuerda, pos.traste) for pos in primero.posiciones
+        }
+
+    def test_cada_nota_dura_lo_que_dura_el_acorde(self):
+        ejercicio = self._cambios()
+        p = pieza_desde_ejercicio(ejercicio)
+        assert {n.duracion_pulsos for n in p.notas} == {
+            acorde.pulsos for acorde in ejercicio.acordes
+        }
+
+    def test_la_pieza_hereda_el_nombre_el_tempo_y_el_perfil(self):
+        ejercicio = self._cambios()
+        p = pieza_desde_ejercicio(ejercicio)
+        assert p.nombre == ejercicio.nombre
+        assert p.tempo == ejercicio.tempo
+        assert p.perfil == ejercicio.perfil

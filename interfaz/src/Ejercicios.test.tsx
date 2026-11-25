@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { detenerEjercicioAlSalir } from "./detencionAlSalir";
 import { Ejercicios } from "./Ejercicios";
-import type { EstadoEjercicio } from "./tiposEjercicio";
+import type { EstadoEjercicioAcordes, EstadoEjercicioNotas } from "./tiposEjercicio";
 
 /**
  * Las cuatro familias con los parametros REALES que publica
@@ -118,7 +118,9 @@ function responder(cuerpo: unknown, ok = true, estado = 200) {
 }
 
 /** Estado de un ejercicio en curso, con lo que cada prueba quiera cambiar. */
-function estadoEnCurso(cambios: Partial<EstadoEjercicio> = {}): EstadoEjercicio {
+function estadoEnCurso(
+  cambios: Partial<EstadoEjercicioNotas> = {}
+): EstadoEjercicioNotas {
   const nota = {
     midi: 48,
     nombre: "C3",
@@ -127,12 +129,14 @@ function estadoEnCurso(cambios: Partial<EstadoEjercicio> = {}): EstadoEjercicio 
     referencia_midi: null,
   };
   return {
+    es_de_acordes: false,
     ejercicio: {
       clave: "e",
       nombre: "Escala de Do mayor",
       descripcion: "",
       tempo: 80,
       perfil: "guitarra_estandar",
+      acordes: [],
       notas: [
         { midi: 40, nombre: "E2", posiciones: [{ cuerda: 6, traste: 0 }], pulsos: 1, referencia_midi: null },
         nota,
@@ -583,5 +587,127 @@ describe("Ejercicios", () => {
     await waitFor(() => expect(screen.getByText("Escalas")).toBeTruthy());
     await act(async () => {});
     expect(rutasLlamadas()).not.toContain("/api/ejercicios/detener");
+  });
+  // --- Ejercicios de acordes (etapa 2b) ---
+
+  /** Estado de un ejercicio de cambios en curso. */
+  function estadoDeAcordes(
+    cambios: Partial<EstadoEjercicioAcordes> = {}
+  ): EstadoEjercicioAcordes {
+    const acorde = {
+      nombre: "Do mayor",
+      posiciones: [
+        { cuerda: 5, traste: 3 },
+        { cuerda: 4, traste: 2 },
+        { cuerda: 3, traste: 0 },
+        { cuerda: 2, traste: 1 },
+        { cuerda: 1, traste: 0 },
+      ],
+      midis: [48, 52, 55, 60, 64],
+      nombres: ["C3", "E3", "G3", "C4", "E4"],
+      pulsos: 4,
+    };
+    return {
+      es_de_acordes: true,
+      ejercicio: {
+        clave: "cambios_do_sol",
+        nombre: "Cambios: Do mayor, Sol mayor",
+        descripcion: "",
+        tempo: 60,
+        perfil: "guitarra_estandar",
+        notas: [],
+        acordes: [acorde, acorde],
+      },
+      evaluacion: {
+        indice: 0,
+        total: 2,
+        intentos: 0,
+        ayuda_visible: false,
+        completado: false,
+        acorde_actual: acorde,
+        faltan: [],
+        ultimo_cambio_s: null,
+      },
+      informe: null,
+      metronomo: true,
+      metronomo_pausado: false,
+      metronomo_pedido: true,
+      ...cambios,
+    };
+  }
+
+  it("un ejercicio de acordes muestra el diagrama del acorde que toca", async () => {
+    render(<Ejercicios />);
+    await waitFor(() => expect(WebSocketFalso.ultimo).not.toBeNull());
+    WebSocketFalso.ultimo!.enviar(estadoDeAcordes());
+    await waitFor(() => expect(screen.getByText("Do mayor")).toBeTruthy());
+    expect(document.querySelectorAll(".cuerda-acorde").length).toBeGreaterThan(0);
+  });
+
+  it("senala la cuerda que no suena mientras tocas", async () => {
+    render(<Ejercicios />);
+    await waitFor(() => expect(WebSocketFalso.ultimo).not.toBeNull());
+    const estado = estadoDeAcordes();
+    estado.evaluacion!.faltan = [64];
+    WebSocketFalso.ultimo!.enviar(estado);
+    await waitFor(() => expect(screen.getByText("no suena")).toBeTruthy());
+  });
+
+  it("no revela los trastes del acorde hasta que toca ayudar", async () => {
+    render(<Ejercicios />);
+    await waitFor(() => expect(WebSocketFalso.ultimo).not.toBeNull());
+    WebSocketFalso.ultimo!.enviar(estadoDeAcordes());
+    await waitFor(() => expect(screen.getByText("Do mayor")).toBeTruthy());
+    expect(screen.getByText(/aparecen si te atascas/)).toBeTruthy();
+  });
+
+  it("muestra el tiempo del ultimo cambio cuando lo hay", async () => {
+    render(<Ejercicios />);
+    await waitFor(() => expect(WebSocketFalso.ultimo).not.toBeNull());
+    const estado = estadoDeAcordes();
+    estado.evaluacion!.ultimo_cambio_s = 1.37;
+    WebSocketFalso.ultimo!.enviar(estado);
+    await waitFor(() => expect(screen.getByText(/1.37 s/)).toBeTruthy());
+  });
+
+  it("al completarse muestra el informe de cambios y no el de notas", async () => {
+    render(<Ejercicios />);
+    await waitFor(() => expect(WebSocketFalso.ultimo).not.toBeNull());
+    WebSocketFalso.ultimo!.enviar(
+      estadoDeAcordes({
+        evaluacion: {
+          indice: 2,
+          total: 2,
+          intentos: 0,
+          ayuda_visible: false,
+          completado: true,
+          acorde_actual: null,
+          faltan: [],
+          ultimo_cambio_s: 1.2,
+        },
+        informe: {
+          ejercicio: "cambios_do_sol",
+          completado: true,
+          acordes: [],
+          logrados: 2,
+          a_la_primera: 2,
+          tiempo_medio_de_cambio_s: 1.2,
+          cambio_mas_lento_s: 1.2,
+          cuerdas_problematicas: [],
+        },
+      })
+    );
+    await waitFor(() => expect(screen.getByText(/1.20 s por cambio/)).toBeTruthy());
+    // El informe monofonico habla de notas a la primera; este, de acordes.
+    expect(screen.queryByText(/notas a la primera/)).toBeNull();
+  });
+
+  it("el aviso del metronomo tambien sale en los ejercicios de acordes", async () => {
+    render(<Ejercicios />);
+    await waitFor(() => expect(WebSocketFalso.ultimo).not.toBeNull());
+    WebSocketFalso.ultimo!.enviar(
+      estadoDeAcordes({ metronomo: false, metronomo_pedido: true })
+    );
+    await waitFor(() => expect(screen.getByText(/Sin metrónomo/)).toBeTruthy());
   });
 });

@@ -40,7 +40,11 @@ import time
 from dataclasses import replace
 from typing import Callable
 
+import numpy as np
+
 from nucleo.acompanamiento import PiezaRenderizada, renderizar
+from nucleo.afinaciones import PERFILES
+from nucleo.analisis.acordes import DetectorAcordes
 from nucleo.acompanante import Acompanante, BloqueadoAhora
 from nucleo.piezas.compases import compases_de_la_seccion, pulsos_por_compas
 # Las dos constantes del reloj y la politica que las usa viven en el nucleo desde
@@ -557,7 +561,13 @@ class SesionCarril:
             ahora = self._reloj()
             with self._candado:
                 self._pieza = pieza
-                self._estudio = SesionDeEstudio(pieza, plan or PlanDePasada())
+                detector_acordes, proveedor = self._cobro_de_acordes(pieza)
+                self._estudio = SesionDeEstudio(
+                    pieza,
+                    plan or PlanDePasada(),
+                    detector_acordes=detector_acordes,
+                    proveedor_de_muestras=proveedor,
+                )
                 # Empezar a tocar abre la cuenta atras (la spec la pide antes de
                 # la primera entrada, no solo al dar la vuelta el bucle).
                 self._estudio.arrancar()
@@ -739,6 +749,52 @@ class SesionCarril:
             else configuracion.umbral_ruido_dbfs
         )
         return resultado.nivel_db is not None and resultado.nivel_db > umbral
+
+    def _cobro_de_acordes(
+        self, pieza: Pieza
+    ) -> tuple[DetectorAcordes | None, Callable[[int], np.ndarray | None] | None]:
+        """El detector de acordes y el grifo de audio crudo para esta pieza.
+
+        Devuelve `(None, None)` -y el carril se comporta como el monofonico de
+        siempre- en tres casos, todos deliberados:
+
+        1. **La pieza no trae acordes.** Si ningun par de notas comparte
+           `inicio_pulsos` no hay nada que cobrar por presencia, y montar un
+           detector con su bufer de 8192 muestras seria trabajo que nadie mira.
+        2. **La sesion de audio no publica configuracion.** Pasa con los dobles de
+           las pruebas, y el detector necesita el umbral de ruido y la referencia
+           de A4 del usuario: inventarlos aqui pondria dos numeros distintos de los
+           que usa el resto del programa.
+        3. **La sesion de audio no sabe dar ventana cruda.** `leer_ventana_cruda`
+           llego con la etapa 2b; un doble antiguo no la tiene, y sin audio crudo no
+           hay presencia que medir.
+
+        El perfil es el de la PIEZA, no el activo: `iniciar` ya rechazo la pieza si
+        no coinciden (ver su docstring), asi que aqui son el mismo, y nombrar el de
+        la pieza dice de donde sale el rango de notas sobre el que se normaliza.
+        """
+        inicios = {nota.inicio_pulsos for nota in pieza.notas}
+        if len(inicios) == len(pieza.notas):
+            return None, None
+        configuracion = getattr(self._sesion_audio, "configuracion", None)
+        if configuracion is None:
+            return None, None
+        leer = getattr(self._sesion_audio, "leer_ventana_cruda", None)
+        if leer is None:
+            return None, None
+        perfil = PERFILES.get(pieza.perfil)
+        if perfil is None:
+            return None, None
+        # La frecuencia de muestreo se deja por defecto (48 kHz), igual que en
+        # `servidor/ejercicios.py` y por la misma razon: es la de `CapturaAudio`, no
+        # hay ajuste de usuario para ella, y un numero distinto aqui haria que el
+        # detector midiera frecuencias que no son las que se capturaron.
+        detector = DetectorAcordes(
+            perfil,
+            umbral_ruido_dbfs=configuracion.umbral_ruido_dbfs,
+            referencia_a4=configuracion.referencia_a4,
+        )
+        return detector, leer
 
     def _perfil_activo(self) -> str:
         """La afinacion con la que el usuario esta tocando ahora mismo.

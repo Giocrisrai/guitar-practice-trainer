@@ -198,6 +198,13 @@ def test_una_pulsacion_sin_instante_no_inventa_desfase():
         def __init__(self):
             self.cuadros = 0
 
+        # Parte de la frontera con el seguidor desde la etapa 2b: el ataque
+
+        # cuyo nombre de nota no cuajo. Este doble no finge rasgueos.
+
+        ataque_sin_altura = None
+
+
         def reiniciar(self):
             self.cuadros = 0
 
@@ -621,6 +628,13 @@ def test_una_desviacion_que_no_se_supo_no_es_ni_afinada_ni_desafinada():
         def __init__(self):
             self.cuadros = 0
 
+        # Parte de la frontera con el seguidor desde la etapa 2b: el ataque
+
+        # cuyo nombre de nota no cuajo. Este doble no finge rasgueos.
+
+        ataque_sin_altura = None
+
+
         def reiniciar(self):
             self.cuadros = 0
 
@@ -743,6 +757,13 @@ class DetectorDeUnSoloOnset:
         self.onset = onset
         self.en_el_cuadro = en_el_cuadro
         self.cuadros = 0
+
+    # Parte de la frontera con el seguidor desde la etapa 2b: el ataque
+
+    # cuyo nombre de nota no cuajo. Este doble no finge rasgueos.
+
+    ataque_sin_altura = None
+
 
     def reiniciar(self):
         self.cuadros = 0
@@ -940,6 +961,13 @@ def test_dos_pulsaciones_de_la_cola_no_se_adjudican_a_la_misma_nota():
 
         def __init__(self):
             self.onsets = []
+
+        # Parte de la frontera con el seguidor desde la etapa 2b: el ataque
+
+        # cuyo nombre de nota no cuajo. Este doble no finge rasgueos.
+
+        ataque_sin_altura = None
+
 
         def reiniciar(self):
             pass

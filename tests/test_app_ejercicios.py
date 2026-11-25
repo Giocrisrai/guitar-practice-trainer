@@ -118,10 +118,15 @@ def test_las_familias_traen_sus_parametros_y_valores_admitidos(cliente):
     """Asi el configurador se construye solo, sin listas escritas a mano."""
     familias = cliente.get("/api/ejercicios/familias").json()
     claves = {f["clave"] for f in familias}
-    assert claves == {"escala", "arpegio", "intervalo", "lectura"}
+    assert claves == {"escala", "arpegio", "intervalo", "lectura", "cambios"}
     escala = next(f for f in familias if f["clave"] == "escala")
     assert "mayor" in escala["tipos"]
     assert "pentatonica_menor" in escala["tipos"]
+    # "cambios" es la familia de acordes de la etapa 2b, y sus "tipos" son las
+    # digitaciones de la tabla, no patrones de intervalos.
+    cambios = next(f for f in familias if f["clave"] == "cambios")
+    assert "do" in cambios["tipos"]
+    assert "mi_menor" in cambios["tipos"]
 
 
 def test_generar_devuelve_el_ejercicio_sin_iniciarlo(cliente):

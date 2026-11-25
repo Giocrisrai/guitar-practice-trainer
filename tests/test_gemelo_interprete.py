@@ -15,8 +15,10 @@ import numpy as np
 import pytest
 
 from nucleo.afinaciones import PERFILES
-from nucleo.analisis.pipeline import Analizador
+from nucleo.analisis.pipeline import INTERVALO_DE_ANALISIS_S, Analizador
+from nucleo.ejercicios.pulsaciones import CUADROS_PARA_NOTA_ESTABLE
 from nucleo.gemelo.interprete import (
+    DESFASE_DE_RASGUEO_S,
     DESVIOS_DE_NOTA_MALA,
     FRACCION_DE_CORTE,
     Interpretacion,
@@ -210,27 +212,124 @@ def test_el_factor_de_tempo_estira_la_interpretacion():
         assert paso_lento == pytest.approx(2.0 * paso_normal, abs=1e-6)
 
 
-def test_el_acorde_se_reduce_a_la_nota_mas_grave():
-    """El gemelo no finge polifonia: el detector real es monofonico."""
+def test_el_acorde_se_rasguea_entero_de_grave_a_aguda():
+    """Las dos cuerdas suenan, barridas: un acorde es un gesto, no un instante.
+
+    Hasta la etapa 2b este modulo reducia el acorde a su cuerda mas grave y lo
+    decia por escrito -«el gemelo no finge polifonia»-. Era verdad mientras el
+    carril no sabia cobrar mas que una nota por ataque; desde que cobra el resto
+    del acorde por presencia, un gemelo monofonico no podria ejercitar ese camino.
+    """
     pieza = pieza_con_acorde()
     interpretacion = interpretar(pieza, PERFECTO)
 
     pulso_del_acorde = 1.0
-    escritas = [
-        nota for nota in pieza.notas if nota.inicio_pulsos == pulso_del_acorde
-    ]
+    escritas = sorted(
+        (nota for nota in pieza.notas if nota.inicio_pulsos == pulso_del_acorde),
+        key=lambda nota: nota.midi,
+    )
     assert len(escritas) == 2
 
     instante = interpretacion.silencio_de_cabecera_s + pulsos_a_segundos(
         pulso_del_acorde, pieza.tempo
     )
-    sonando = [
+    del_acorde = [
         evento
         for evento in interpretacion.eventos
-        if evento.instante_s == pytest.approx(instante, abs=1e-6)
+        if instante - 1e-6 <= evento.instante_s < instante + 0.1
     ]
-    assert len(sonando) == 1
-    assert sonando[0].midi == min(nota.midi for nota in escritas)
+
+    assert [evento.midi for evento in del_acorde] == [nota.midi for nota in escritas]
+    # La grave cae en el pulso escrito; la aguda, un barrido despues.
+    assert del_acorde[0].instante_s == pytest.approx(instante, abs=1e-6)
+    assert del_acorde[1].instante_s - del_acorde[0].instante_s == pytest.approx(
+        DESFASE_DE_RASGUEO_S, abs=1e-9
+    )
+
+
+def test_el_orden_del_barrido_es_por_altura_y_no_por_como_se_escribio():
+    """Dos ficheros con el mismo acorde en otro orden suenan igual.
+
+    El orden del barrido es tambien el orden en que el generador consume sus
+    sorteos, asi que dejarselo al fichero haria que la misma semilla diera dos
+    interpretaciones distintas de la misma musica.
+    """
+    pieza = pieza_con_acorde()
+    # Las notas 1 y 2 son las del acorde; se intercambian SOLO ellas, porque el
+    # modelo exige que `inicio_pulsos` no retroceda.
+    notas = list(pieza.notas)
+    notas[1], notas[2] = notas[2], notas[1]
+    del_reves = replace(pieza, notas=tuple(notas))
+
+    derechas = interpretar(pieza, PERFECTO).eventos
+    reves = interpretar(del_reves, PERFECTO).eventos
+
+    assert [evento.midi for evento in derechas] == [evento.midi for evento in reves]
+    assert [evento.instante_s for evento in derechas] == [
+        evento.instante_s for evento in reves
+    ]
+
+
+def test_las_cuerdas_del_acorde_comparten_el_desfase_de_la_mano():
+    """La mano derecha llega tarde UNA vez por rasgueo, no una por cuerda.
+
+    Con el desfase sorteado por cuerda, el acorde habria salido desparramado al
+    azar y el barrido no se habria podido ni ver. La separacion entre cuerdas
+    tiene que seguir siendo exactamente el barrido con CUALQUIER perfil.
+    """
+    pieza = pieza_con_acorde()
+    interpretacion = interpretar(pieza, INTERMEDIO, semilla=3)
+
+    pulso_del_acorde = 1.0
+    del_acorde = sorted(
+        (
+            evento
+            for evento in interpretacion.eventos
+            if pieza.notas[evento.indice_pretendido].inicio_pulsos == pulso_del_acorde
+        ),
+        key=lambda evento: evento.instante_s,
+    )
+    assert len(del_acorde) == 2
+    assert del_acorde[1].instante_s - del_acorde[0].instante_s == pytest.approx(
+        DESFASE_DE_RASGUEO_S, abs=1e-9
+    )
+
+
+def test_el_barrido_no_se_estira_con_el_tempo():
+    """Es la velocidad de la mano cruzando las cuerdas, no una figura musical.
+
+    Todo lo demas de la cuenta del instante se divide por el factor de tempo;
+    esto no. Tocar la pieza al doble de lento no hace el rasgueo mas lento.
+    """
+    pieza = pieza_con_acorde()
+    pulso_del_acorde = 1.0
+
+    def separacion(factor: float) -> float:
+        eventos = sorted(
+            (
+                evento
+                for evento in interpretar(
+                    pieza, PERFECTO, factor_tempo=factor
+                ).eventos
+                if pieza.notas[evento.indice_pretendido].inicio_pulsos
+                == pulso_del_acorde
+            ),
+            key=lambda evento: evento.instante_s,
+        )
+        return eventos[1].instante_s - eventos[0].instante_s
+
+    assert separacion(1.0) == pytest.approx(separacion(0.5), abs=1e-9)
+
+
+def test_el_barrido_cabe_dentro_de_un_solo_ataque():
+    """Seis cuerdas barridas duran menos que la racha del detector monofonico.
+
+    `CUADROS_PARA_NOTA_ESTABLE` cuadros al intervalo de analisis son el tiempo en
+    que el detector resuelve UNA pulsacion. Un barrido mas largo que eso dejaria
+    de ser un gesto para la cadena, que veria dos ataques donde la mano hizo uno.
+    """
+    barrido_de_seis_s = 5 * DESFASE_DE_RASGUEO_S
+    assert barrido_de_seis_s < CUADROS_PARA_NOTA_ESTABLE * INTERVALO_DE_ANALISIS_S
 
 
 def test_una_nota_fallada_no_genera_evento():
