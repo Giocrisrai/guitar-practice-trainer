@@ -17,6 +17,36 @@ from nucleo.analisis.energia import NIVEL_SILENCIO_DBFS, UMBRAL_RUIDO_POR_DEFECT
 
 # Cuanto debe subir el nivel sobre la referencia reciente para contar como ataque.
 # Provisional: se calibra con grabaciones reales de la guitarra del usuario.
+#
+# **EL SALTO NO SOLO DECIDE SI HAY ATAQUE: DECIDE CUANDO.** `procesar` firma el
+# ataque en el cuadro donde se alcanza el salto, y ese cuadro llega DESPUES de que
+# la cuerda empezara a sonar: cuanto mas alto este lo que ya sonaba -una nota que
+# no se ha apagado, las cuerdas vecinas de un acorde-, mas tarda la subida en
+# despegarse de la referencia. Ese retraso lo paga el alumno, porque el carril se
+# lo cuenta como haber tocado tarde.
+#
+# MEDIDO sobre el gemelo PERFECTO -que toca en el instante escrito, asi que todo
+# retraso es de aqui-, los milisegundos entre el inicio de la subida y el cuadro
+# donde se firma:
+#
+#     escala de ocho notas sueltas   0  21  21  42  21  84  21   0   ms
+#     ocho acordes abiertos          0   0  63   0  63   0  63  ...  ms
+#
+# Contra la ventana de acierto de 80 ms (`VENTANA_A_TIEMPO_S`), los 84 ms de la
+# escala son el borde entero: es la nota que el carril firma a +89 ms y marca
+# «tarde» sin que nadie haya tocado mal. Y el peor caso esta en una nota SUELTA,
+# no en un acorde, que es lo contrario de lo que parecia.
+#
+# LA CORRECCION OBVIA -retroceder el instante hasta el inicio de la subida- NO SE
+# PUEDE CALIBRAR AQUI, y por eso no esta hecha: la rapidez con que sube la
+# envolvente es precisamente lo que distingue una pulsacion real -ruido de pua,
+# decaimiento irregular, resonancia de las vecinas- de un seno con sobretonos.
+# Retroceder demasiado seria peor que no retroceder, porque marcaria el ataque
+# ANTES de que la cuerda sonara y le daria la razon a un alumno que llego tarde.
+# La medida sobre la guitarra del usuario la da
+# `herramientas/calibrar_ataques.py` (`retrasos_del_cruce`), que es quien lleva el
+# razonamiento completo; ese numero es el que decide si la correccion vale la pena
+# y de cuanto.
 SALTO_ATAQUE_DB = 6.0
 
 # Tiempo muerto tras un ataque. El transitorio de la pua hace que el nivel suba,

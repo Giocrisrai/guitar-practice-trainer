@@ -974,6 +974,15 @@ Pulsa una cuerda ocho veces separadas y la herramienta propone el salto y el
 refractario que mejor cuentan tus pulsaciones. Los valores por defecto estan
 elegidos a ojo; esto los ajusta a tu pua y tu pastilla.
 
+Ademas te dice **donde** se marcan, que no es lo mismo que cuantos hay: el
+detector firma el ataque cuando el nivel se despega de la referencia, y eso llega
+despues de que la cuerda empezara a sonar. Medido sobre el gemelo tocando
+perfecto, ese retraso llega a 84 ms contra una ventana de acierto de 80, asi que
+hay notas bien tocadas que salen «tarde» sin que nadie haya fallado. Apunta los
+numeros que te de: son los que deciden si el detector tiene que retroceder el
+instante del ataque hasta el inicio de la subida, y eso no se puede calibrar con
+audio sintetico (la forma de la envolvente real es justo lo que cambia).
+
 ## Calibrar la deteccion de acordes
 
 ```bash

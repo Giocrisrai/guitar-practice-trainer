@@ -17,6 +17,7 @@ from nucleo.afinaciones import PERFILES
 from nucleo.analisis.energia import nivel_dbfs
 from nucleo.captura import CapturaAudio, buscar_rocksmith
 from nucleo.ejercicios.ataques import MUESTRAS_REFERENCIA, DetectorAtaques
+from nucleo.piezas.seguimiento import VENTANA_A_TIEMPO_S
 from servidor.sesion import INTERVALO_ANALISIS
 
 FS = 48000
@@ -52,6 +53,102 @@ def niveles_de(muestras: np.ndarray, ventana: int) -> list[tuple[float, float]]:
 def contar_ataques(niveles, salto_db: float, refractario_s: float) -> int:
     detector = DetectorAtaques(salto_db=salto_db, refractario_s=refractario_s)
     return sum(1 for instante, nivel in niveles if detector.procesar(nivel, instante) is not None)
+
+
+def retrasos_del_cruce(niveles, salto_db: float, refractario_s: float) -> list[float]:
+    """Cuánto tarda el cruce de los dB en llegar, desde que la energía empezó a subir.
+
+    CONTAR BIEN LOS ATAQUES NO ES MARCARLOS EN EL SITIO, y el resto de esta
+    herramienta solo comprueba lo primero. `DetectorAtaques` firma el ataque en el
+    cuadro donde el nivel supera la referencia por `salto_db`, que es DESPUÉS de que
+    la cuerda empezara a sonar: la referencia es la mediana de los últimos
+    `MUESTRAS_REFERENCIA` niveles, así que cuanto más alto esté lo que ya sonaba
+    -una nota anterior que no se ha apagado, las cuerdas vecinas de un acorde-, más
+    tarda el salto en alcanzarse. Ese retraso lo paga el alumno: el carril se lo
+    cuenta como haber tocado tarde.
+
+    Esto devuelve, por cada ataque, los milisegundos entre el mínimo local de la
+    envolvente que lo precede -donde la subida empieza- y el cuadro donde el
+    detector lo firma.
+
+    MEDIDO SOBRE AUDIO SINTÉTICO, que es lo único que había al escribirlo, con los
+    valores por defecto y el gemelo PERFECTO (o sea: todo retraso es del detector,
+    porque el gemelo toca exactamente en el instante escrito):
+
+        escala de ocho notas sueltas   0  21  21  42  21  84  21   0   ms
+        ocho acordes abiertos          0   0  63   0  63   0  63  ...  ms
+
+    Contra una ventana de acierto de 80 ms, los 84 ms de la escala son el borde
+    entero: esa es la nota que el carril firmaba a +89 ms y marcaba «tarde» con el
+    gemelo tocando perfecto. El peor caso está en una nota SUELTA, no en un acorde,
+    que es lo contrario de lo que parecía. En los acordes el patrón es alterno -el
+    detector marca dos ataques por rasgueo, el primero en su sitio y el segundo 63
+    ms tarde- y la mediana sale cero: el problema es del PEOR caso, no del típico, y
+    por eso la corrección tendría que ser un retroceso y no un descuento fijo.
+
+    **POR ESO ESTÁ AQUÍ Y NO CORREGIDO EN EL DETECTOR.** Retroceder el instante del
+    ataque hasta el inicio de la subida es la corrección obvia, y no se puede
+    calibrar con audio sintético: la rapidez con que sube la envolvente es
+    precisamente lo que distingue una pulsación real -ruido de púa, decaimiento
+    irregular, resonancia de las vecinas- de un seno con sobretonos. Retroceder
+    demasiado sería peor que no retroceder, porque marcaría el ataque ANTES de que
+    la cuerda sonara y le daría la razón a un alumno que llegó tarde. Este número,
+    medido sobre la guitarra del usuario, es lo que decide si la corrección vale la
+    pena y de cuánto.
+    """
+    detector = DetectorAtaques(salto_db=salto_db, refractario_s=refractario_s)
+    suelo = detector.nivel_minimo_dbfs
+    valores = np.array([nivel for _, nivel in niveles], dtype=float)
+    retrasos = []
+    for indice, (instante, nivel) in enumerate(niveles):
+        if detector.procesar(nivel, instante) is None:
+            continue
+        # Hacia atrás mientras la energía siga subiendo: el mínimo local anterior
+        # es donde empezó la subida que acabó cruzando el umbral.
+        #
+        # CON EL SUELO DE RUIDO COMO TOPE, y no es un detalle. Sin él, un golpe
+        # seco sobre silencio -el caso en que el detector acierta el instante- se
+        # mediría con un cuadro de retraso, porque el cuadro anterior está más
+        # bajo y el retroceso se mete en él. Pero ese cuadro era SILENCIO, no la
+        # nota empezando: retroceder hasta ahí es marcar el ataque antes de que la
+        # cuerda sonara, que es el error que esta medida existe para no cometer.
+        inicio = indice
+        while (
+            inicio > 0
+            and valores[inicio - 1] < valores[inicio]
+            and valores[inicio - 1] > suelo
+        ):
+            inicio -= 1
+        retrasos.append((indice - inicio) * PASO_ANALISIS * 1000.0)
+    return retrasos
+
+
+def _informar_del_retraso(niveles, salto_db: float, refractario_s: float) -> None:
+    """Imprime dónde se marcan los ataques, no solo cuántos hay. Ver `retrasos_del_cruce`."""
+    retrasos = retrasos_del_cruce(niveles, salto_db, refractario_s)
+    if not retrasos:
+        return
+    serie = np.array(retrasos)
+    print(
+        f"\nDónde se marcan: el cruce llega {np.median(serie):.0f} ms de mediana "
+        f"(peor caso {serie.max():.0f} ms) después de que la energía empezara a subir."
+    )
+    print(
+        "  Ese retraso no es tuyo: el carril lo cuenta como haber tocado tarde. "
+        f"La ventana de acierto son {VENTANA_A_TIEMPO_S * 1000:.0f} ms."
+    )
+    if serie.max() >= VENTANA_A_TIEMPO_S * 1000.0:
+        print(
+            "  ATENCION: el peor caso se come la ventana entera, asi que hay notas "
+            "bien tocadas que saldran 'tarde'. Apunta estos numeros: son los que "
+            "deciden si el detector tiene que retroceder el instante del ataque "
+            "hasta el inicio de la subida, y de cuanto."
+        )
+    else:
+        print(
+            "  El peor caso cabe en la ventana, asi que retroceder el instante del "
+            "ataque no hace falta con esta guitarra y estos valores."
+        )
 
 
 def _avisar_acoplamiento(refractario_s: float) -> None:
@@ -150,6 +247,7 @@ def main() -> int:
     mejor = max(aciertos, key=robustez)
     print(f"\nRecomendado: salto {mejor[0]:.1f} dB, refractario {int(mejor[1] * 1000)} ms")
     print(f"Margen: acierta en {robustez(mejor)} de 3 variaciones del salto.")
+    _informar_del_retraso(niveles, mejor[0], mejor[1])
     _avisar_acoplamiento(mejor[1])
     print("\nSi difiere de los valores por defecto, actualiza SALTO_ATAQUE_DB y")
     print("REFRACTARIO_S en nucleo/ejercicios/ataques.py.")
