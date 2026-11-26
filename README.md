@@ -1171,8 +1171,15 @@ tarde hace diez días y ahora 40», que es la frase que hace volver a sentarse.
 
 **Hecho:** el registro en disco (`nucleo/historial/`) —la huella de la pieza, la
 escritura atómica, el recorte, y que un historial corrupto se aparte en vez de
-borrarse—. **Falta:** engancharlo al cierre de pasada, la medida de progreso, la
-propuesta de tramo y la pantalla.
+borrarse—; el enganche al cierre de cada vuelta, con su cola y su hilo
+(`servidor/historial.py`), para que escribir no dé tirones en la pantalla; y
+`GET /api/historial`. **Falta:** la medida de progreso, la propuesta de tramo y
+la pantalla.
+
+**Guardar hay que pedirlo**, y eso es deliberado: `crear_app` sin
+`ruta_historial` no construye escritor ninguno, así que ninguna prueba escribe
+en tu `historial.json`. Solo `servidor/arranque.py` —el programa de verdad— pasa
+la ruta, y hay una prueba que vigila que siga pasándola.
 
 **El diseño lo escribió Claude sin conversación previa**, porque se pidió avanzar
 en un momento en que no se podía discutir. Lleva siete decisiones marcadas como

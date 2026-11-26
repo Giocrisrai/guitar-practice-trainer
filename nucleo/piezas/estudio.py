@@ -1382,24 +1382,68 @@ PASADAS_BUENAS_PARA_SUBIR = 2
 class HistorialDeEstudio:
     """Las pasadas de esta sesion. En memoria: al apagar el servidor se olvida.
 
-    Es la decision del usuario, y el precio esta medido: no hay formato de
+    Era la decision de alcance de la etapa 3 -su objetivo 5: «el historial dura
+    lo que dure el servidor»- y el precio estaba medido: no hay formato de
     archivo que versionar, ni escritura atomica, ni una sola prueba que toque el
-    disco. El dia que se quiera recordar entre dias, esta clase es el unico sitio
-    que cambia.
+    disco. Esta clase decia ser «el unico sitio que cambia el dia que se quiera
+    recordar entre dias», y la etapa 4a es ese dia: lo que cambio es `al_anotar`.
+
+    **ESTA CLASE SIGUE SIN TOCAR EL DISCO, Y ESO ES A PROPOSITO.** `al_anotar` es
+    una costura: recibe cada informe cerrado y quien la pone decide que hacer con
+    el. Sin ella -el valor por omision- esta clase se comporta EXACTAMENTE como
+    antes, asi que la propiedad de la que presumia su docstring viejo se conserva
+    y ninguna prueba del nucleo abre un archivo. La escritura vive en
+    `servidor/historial.py`, que es quien sabe de discos, de piezas y de relojes.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self, al_anotar: Callable[[InformeDePasada], None] | None = None
+    ) -> None:
         self._pasadas: list[InformeDePasada] = []
         # Proporciones desde la ultima vez que se decidio mover el tempo. Se
         # vacia al decidir, y por eso `factor_sugerido` no sube dos veces con la
         # misma racha.
         self._racha: list[float] = []
+        self._al_anotar = al_anotar
+
+    def cambiar_oyente(
+        self, al_anotar: Callable[[InformeDePasada], None] | None
+    ) -> None:
+        """Reemplaza la costura sin tocar las pasadas ya apuntadas.
+
+        Hace falta porque los dos viven a ritmos distintos: el historial en
+        memoria se reutiliza por nombre de pieza y sobrevive a detener y volver a
+        empezar, pero el oyente cierra sobre la pieza Y EL PLAN de una pasada
+        concreta -el aviso del nucleo no los lleva dentro-, asi que cada
+        `iniciar` necesita uno nuevo. Sin este metodo habria que elegir entre
+        perder las pasadas de hoy al cambiar el plan o guardar en disco un tramo
+        que ya no es el que se toca.
+        """
+        self._al_anotar = al_anotar
 
     def anotar(self, informe: InformeDePasada) -> None:
+        """Apunta una vuelta cerrada, y avisa a `al_anotar` si hay quien escuche.
+
+        **EL AVISO VA AL FINAL Y SU FALLO NO PROPAGA**, y las dos cosas importan.
+        Al final, porque el historial en memoria es lo que la pantalla lee y no
+        puede quedarse a medias por culpa de un oyente. Sin propagar, porque el
+        oyente que habra es el que guarda en disco: si el disco esta lleno, lo
+        que NO puede pasar es que se caiga la vuelta del bucle. Tocar la guitarra
+        importa mas que anotarlo, y esa jerarquia se decide aqui.
+        """
         self._pasadas.append(informe)
         proporcion = proporcion_limpia(informe)
         if proporcion is not None:
             self._racha.append(proporcion)
+        if self._al_anotar is None:
+            return
+        try:
+            self._al_anotar(informe)
+        except Exception:
+            # A proposito sin registrar: este modulo es el nucleo y no tiene
+            # logger, y quien pone la costura es quien sabe que hacer con su
+            # propio fallo. `servidor/historial.py` lo registra una sola vez.
+            pass
 
     @property
     def pasadas(self) -> int:

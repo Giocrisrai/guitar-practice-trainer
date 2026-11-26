@@ -12,6 +12,7 @@ from fastapi import FastAPI
 
 from servidor import configuracion as config_modulo
 from servidor.app import crear_app
+from servidor.historial import RUTA_POR_DEFECTO as RUTA_DEL_HISTORIAL
 from servidor.ejercicios import SesionPractica
 from servidor.sesion import Sesion
 
@@ -58,7 +59,12 @@ def construir_aplicacion(ruta_config: Path | None = None) -> tuple[FastAPI, Sesi
             print(f"  {diagnostico.accion}")
 
     practica = SesionPractica(sesion)
-    app = crear_app(sesion, RUTA_INTERFAZ, practica)
+    # Aqui SI se pide guardar el historial: este es el programa de verdad, y el
+    # unico sitio del repositorio que escribe en el archivo del usuario. Ver
+    # `crear_app`, que explica por que guardar hay que pedirlo.
+    app = crear_app(
+        sesion, RUTA_INTERFAZ, practica, ruta_historial=RUTA_DEL_HISTORIAL
+    )
     app.state.ruta_config = ruta
     return app, sesion
 

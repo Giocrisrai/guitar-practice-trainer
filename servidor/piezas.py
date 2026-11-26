@@ -68,6 +68,7 @@ from nucleo.piezas.seguimiento import EstadoCarril
 from nucleo.piezas.voces_de_fondo import FondoDisponible, NotaDeFondo, VozDeFondo
 from nucleo.sintesis import Metronomo, SalidaAudio
 from servidor.configuracion import Configuracion
+from servidor.historial import EscritorDelHistorial
 
 _registro = logging.getLogger(__name__)
 
@@ -377,8 +378,16 @@ class SesionCarril:
         perfil_activo: Callable[[], str] | None = None,
         salida: SalidaAudio | None = None,
         salida_fondo: SalidaAudio | None = None,
+        escritor_del_historial: EscritorDelHistorial | None = None,
     ) -> None:
         self._sesion_audio = sesion_audio
+        # Quien guarda las pasadas en disco, inyectable como las salidas de audio
+        # y por el mismo motivo: una prueba del carril no debe escribir en el
+        # historial del usuario. `None` es el comportamiento de la etapa 3 -el
+        # historial dura lo que dure el servidor-, y es lo que usan las pruebas
+        # que no hablan de esto. Lo pone `crear_sesion_carril`, que es quien sabe
+        # que esto es el programa de verdad y no una prueba.
+        self._escritor_del_historial = escritor_del_historial
         # La salida de audio del click, inyectable como en `SesionPractica`. Crear
         # una `SalidaAudio` no abre ningun dispositivo: eso lo hace `abrir()`, y
         # solo cuando un plan pide click.
@@ -571,9 +580,17 @@ class SesionCarril:
                 # Empezar a tocar abre la cuenta atras (la spec la pide antes de
                 # la primera entrada, no solo al dar la vuelta el bucle).
                 self._estudio.arrancar()
+                # El oyente que guarda en disco se renueva en cada `iniciar`,
+                # porque cierra sobre la pieza y el plan de ESTA pasada: el aviso
+                # del nucleo no los lleva dentro. El historial en memoria, en
+                # cambio, se reutiliza por nombre de pieza y sobrevive a detener.
                 self._historial = self._historiales.setdefault(
                     pieza.nombre, HistorialDeEstudio()
                 )
+                if self._escritor_del_historial is not None:
+                    self._historial.cambiar_oyente(
+                        self._escritor_del_historial.oyente_de(pieza, plan)
+                    )
                 # El conductor nace con la pasada, asi que las marcas del
                 # detector de final y la sugerencia del tempo nacen limpias con
                 # el: antes se reponian a mano aqui y en `detener`, y eran tres

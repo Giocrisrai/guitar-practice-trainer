@@ -41,6 +41,7 @@ from servidor.canciones import (
     leer_subida,
 )
 from servidor.ejercicios import SesionPractica
+from servidor.historial import EscritorDelHistorial, historial_guardado
 from servidor.modulos import listar_modulos
 from servidor.piezas import SesionCarril, volumen_valido
 from servidor.sesion import Sesion
@@ -187,11 +188,21 @@ def crear_app(
     carril: SesionCarril | None = None,
     carpeta_canciones: Path | None = None,
     anfitriones: set[str] | None = None,
+    ruta_historial: Path | None = None,
 ) -> FastAPI:
     """Construye la aplicación alrededor de una sesión ya creada.
 
     `carpeta_canciones` es la biblioteca: `canciones/` si no se dice otra cosa, y
     `tmp_path` en las pruebas, para que ninguna ensucie la carpeta del proyecto.
+
+    **`ruta_historial` A `None` SIGNIFICA NO GUARDAR NADA, y es el valor por
+    omisión a propósito.** El historial es un archivo del usuario, en la raíz del
+    proyecto, y una suite de pruebas que lo escribiera le estaría metiendo
+    pasadas inventadas en su propio registro. Así que guardar es algo que hay que
+    PEDIR: lo pide `servidor/arranque.py`, que es el programa de verdad. Sin
+    ruta, el comportamiento es el de la etapa 3 -el historial dura lo que dure el
+    servidor- y ninguna prueba toca el disco. Es el mismo reparto que
+    `carpeta_canciones`, y por la misma razón.
 
     `anfitriones` son los nombres por los que se admite que llamen al servidor
     (`ANFITRIONES_LOCALES` si no se dice otra cosa); ver `guardia_de_peticiones`.
@@ -208,7 +219,18 @@ def crear_app(
     app.state.sesion = sesion
     app.state.ruta_config = config_modulo.RUTA_POR_DEFECTO
     app.state.practica = practica or SesionPractica(sesion)
-    app.state.carril = carril or SesionCarril(sesion)
+    # El escritor del historial se arranca AQUI y no en `SesionCarril`, por lo
+    # mismo que el carril se inyecta. Y solo si hay ruta: ver `ruta_historial` en
+    # el docstring, que explica por que guardar hay que pedirlo.
+    app.state.ruta_historial = ruta_historial
+    escritor = None
+    if ruta_historial is not None:
+        escritor = EscritorDelHistorial(ruta=ruta_historial)
+        escritor.arrancar()
+    app.state.escritor_del_historial = escritor
+    app.state.carril = carril or SesionCarril(
+        sesion, escritor_del_historial=escritor
+    )
     app.state.biblioteca = (
         Biblioteca(carpeta_canciones) if carpeta_canciones is not None else Biblioteca()
     )
@@ -1014,6 +1036,28 @@ def crear_app(
             return app.state.carril.informe()
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error))
+
+    @app.get("/api/historial")
+    def leer_historial() -> dict:
+        """Lo que el programa recuerda de OTROS dias, no solo de esta sesion.
+
+        Es lo que distingue este endpoint de `/api/piezas/informe`: ese sirve el
+        historial en memoria -las pasadas de hoy, que es lo que decide el «lo
+        fallas 4 de 5 veces»- y este el de disco.
+
+        **NO mide progreso**, y mientras no lo mida es mejor que no lo insinue:
+        sirve las pasadas tal cual, con su tramo y su factor de tempo, para que
+        quien las lea pueda agrupar lo comparable. La medida honesta -que solo
+        compara pasadas del mismo tramo al mismo tempo y descarta las diferencias
+        por debajo del ruido- esta en el diseño y sin construir.
+        """
+        ruta = app.state.ruta_historial
+        if ruta is None:
+            # Sin ruta no se guarda nada, asi que no hay nada de otros dias: la
+            # lista vacia es la verdad, y mentir con un 404 obligaria al
+            # navegador a distinguir «no hay» de «no funciona».
+            return {"pasadas": []}
+        return {"pasadas": [p.a_dict() for p in historial_guardado(ruta).pasadas]}
 
     @app.get("/api/piezas/pieza")
     def leer_pieza_en_marcha() -> dict:

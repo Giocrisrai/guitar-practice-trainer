@@ -37,9 +37,50 @@ es un archivo huérfano.
 
 ## 1. Intención
 
-**Hoy el programa no recuerda nada.** `InformeDePasada` se calcula, se sirve por
-HTTP, se pinta y se pierde. Lo único que persiste en todo el repositorio es
-`config_local.json`, y ahí solo hay el dispositivo y la afinación.
+### Corrección importante: el historial ya existe, en memoria
+
+**Esto lo escribí sin saberlo y lo descubrí al ir a construir el enganche.**
+`nucleo/piezas/estudio.py` ya tiene `HistorialDeEstudio`, de la etapa 3, y hace
+más de lo que yo suponía:
+
+- `anotar(informe)` — el conductor ya lo llama en cada cierre de vuelta.
+- `peores_compases(cuantos)` — **ya es casi todo el §4.5**, ordenado por fallos,
+  multiplicando por las repeticiones del informe, y **ya excluyendo los compases
+  con acordes** con el razonamiento escrito: ahí solo se puede medir una nota de
+  cada acorde, así que saldrían fallados siempre y el botón de machacar mandaría
+  al usuario justo a los compases que nunca podrá pasar. O sea que el defecto
+  que yo «descubrí» en §4.2.1 ya estaba resuelto un nivel más arriba, y mi
+  herramienta lo repitió por no mirar.
+- `factor_sugerido(factor)` — la subida automática de tempo.
+
+Y su propio docstring dice: «Es la decisión del usuario, y el precio está
+medido: no hay formato de archivo que versionar, ni escritura atómica, ni una
+sola prueba que toque el disco. **El día que se quiera recordar entre días, esta
+clase es el único sitio que cambia.**»
+
+Comprobado de dónde viene esa decisión, porque **revertir una decisión del
+usuario en silencio sería inadmisible**: es el objetivo 5 de la spec de la etapa
+3 («El historial dura lo que dure el servidor. Nada se escribe en disco. "Lo
+fallas 4 de 5 veces" cuenta las pasadas de hoy»). Es una decisión **de alcance
+de aquella etapa**, con su sucesor previsto por escrito, no una prohibición
+permanente. Así que esta etapa la continúa en vez de contradecirla.
+
+**Lo que cambia en este diseño:** el §4.3 no engancha en un sitio nuevo, engancha
+en `HistorialDeEstudio.anotar`, que es el sitio que el repositorio ya nombró. Y
+el §4.5 no se diseña de cero: se construye sobre `peores_compases`, que ya está
+probado y ya conoce la regla de los acordes.
+
+**Lo que NO cambia:** que `nucleo/` siga sin tocar el disco. Ese «ni una sola
+prueba que toque el disco» es una propiedad que vale la pena conservar, así que
+la escritura vive en `servidor/` y `HistorialDeEstudio` solo gana una costura
+opcional —sin ella, se comporta exactamente como hoy—.
+
+### El problema que sigue en pie
+
+**El programa no recuerda nada ENTRE DÍAS.** `HistorialDeEstudio` se olvida al
+apagar el servidor, así que «lo fallas 4 de 5 veces» cuenta solo las pasadas de
+hoy. Lo único que persiste en todo el repositorio es `config_local.json`, y ahí
+solo hay el dispositivo y la afinación.
 
 Eso tiene una consecuencia que no es de comodidad sino de pedagogía: **el programa
 no puede decirte lo único que de verdad querrías saber**, que es si estás mejor
@@ -369,6 +410,26 @@ Lo que **no** se puede afirmar aquí, y hay que escribirlo donde se vea:
 Dentro: el registro, su lectura, la medida de progreso, la propuesta de tramo, la
 pantalla, el recorte, y el `herramientas/` que imprime el historial en la
 terminal sin abrir el navegador.
+
+**Estado de construcción:**
+
+| Parte | Estado |
+|---|---|
+| El registro en disco, con huella, escritura atómica y recorte | hecho |
+| El `.roto` que aparta en vez de borrar | hecho |
+| La herramienta de terminal | hecho |
+| El enganche al cierre de vuelta, con su cola | hecho |
+| `GET /api/historial` | hecho |
+| La medida de progreso (§4.4) | **falta** |
+| La propuesta de tramo sobre `peores_compases` (§4.5) | **falta** |
+| La pantalla (§4.7) | **falta** |
+
+Y una decisión de seguridad que el diseño no previó: **guardar hay que pedirlo.**
+`crear_app(ruta_historial=None)` no construye escritor, así que ninguna prueba
+escribe en el `historial.json` del usuario; solo `servidor/arranque.py` —el
+programa de verdad— pasa la ruta. Hay una prueba con `ast` que vigila que siga
+pasándola, porque si alguien la quitara el programa dejaría de recordar y nada
+más chirriaría.
 
 Fuera: audio grabado, entrenamiento de oído, efectos, nube, cuentas, exportar a
 otro formato.
