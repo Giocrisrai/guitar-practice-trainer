@@ -1025,6 +1025,32 @@ numeros que te de: son los que deciden si el detector tiene que retroceder el
 instante del ataque hasta el inicio de la subida, y eso no se puede calibrar con
 audio sintetico (la forma de la envolvente real es justo lo que cambia).
 
+## Ver el historial de pasadas
+
+```bash
+uv run python -m herramientas.ver_historial
+uv run python -m herramientas.ver_historial --compases   # el detalle por compas
+```
+
+Imprime lo que el programa recuerda de lo que has tocado, agrupado por lo que
+*sería* comparable: misma pieza, mismo tramo, mismo tempo. Dice cuántas pasadas
+hay en cada serie, porque con una sola no hay progreso que medir.
+
+Da **dos** cifras y no una, y es a propósito: «a tiempo» deja fuera los compases
+con acordes —el ritmo de un rasgueo se mide una vez, no una por cuerda— y
+«suenan» cuenta todas las cuerdas pero no dice nada del ritmo. Con una sola, la
+foto engaña en los dos sentidos. La primera versión daba solo «limpio» y al
+gemelo principiante, que fallaba una cuerda de cinco y llegaba 650 ms tarde, le
+decía **«100,0 % limpio»**.
+
+**No mide progreso todavía**, y lo dice en voz alta cada vez. Esa medida tiene su
+propia aritmética —solo compara pasadas del mismo tramo al mismo tempo, y una
+diferencia por debajo del ruido no se nombra— y está en el diseño sin construir.
+
+El archivo es `historial.json` y está en `.gitignore`: es tuyo, es un registro de
+tus propios fallos, y se puede abrir con un editor. Si el programa alguna vez no
+lo entiende, lo **aparta** en `historial.json.roto` en vez de borrarlo.
+
 ## Calibrar la deteccion de acordes
 
 ```bash
@@ -1131,9 +1157,30 @@ Lo que hace falta de ti para cerrar la 2b, y que ninguna prueba puede dar:
   instante del ataque, y por tanto si un rasgueo bien tocado seguirá saliendo
   «tarde» (ver **El detector marca los ataques tarde**).
 
-Las siguientes, según el diseño:
+### La siguiente: etapa 4a, el historial
 
-4. Grabación de sesiones, medición de progreso, entrenamiento de oído y efectos
+Lo que el diseño original llamaba «etapa 4» —grabación de sesiones, medición de
+progreso, entrenamiento de oído y efectos— son en realidad cuatro proyectos que
+comparten poco. El primero, y el único que todo lo construido ya pide, es el
+**historial**:
+[`docs/superpowers/specs/2026-11-25-historial-y-progreso-design.md`](docs/superpowers/specs/2026-11-25-historial-y-progreso-design.md).
+
+Hasta ahora el programa no recordaba nada: ocho etapas midiendo pasadas que se
+tiran al cerrar la pestaña. Con historial puede decir «el 19 lo tocabas 90 ms
+tarde hace diez días y ahora 40», que es la frase que hace volver a sentarse.
+
+**Hecho:** el registro en disco (`nucleo/historial/`) —la huella de la pieza, la
+escritura atómica, el recorte, y que un historial corrupto se aparte en vez de
+borrarse—. **Falta:** engancharlo al cierre de pasada, la medida de progreso, la
+propuesta de tramo y la pantalla.
+
+**El diseño lo escribió Claude sin conversación previa**, porque se pidió avanzar
+en un momento en que no se podía discutir. Lleva siete decisiones marcadas como
+suyas y una sección final con lo que hace falta del usuario; nada de eso está
+acordado todavía.
+
+Y las otras tres de la antigua etapa 4 —grabación de audio, entrenamiento de
+oído, efectos— siguen sin diseño.
 
 ## Licencia
 

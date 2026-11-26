@@ -8,6 +8,14 @@ dist/
 .pnpm-store/
 .pytest_cache/
 config_local.json
+
+# El historial de pasadas del usuario: un registro de sus propios fallos, sesion
+# a sesion. Es suyo y no se distribuye con el codigo. El `.roto` es la copia que
+# `nucleo/historial/registro.py` aparta cuando no entiende el formato, en vez de
+# borrar lo que alguien tardo meses en acumular.
+historial.json
+historial.json.roto
+historial.json.parcial
 *.egg-info/
 
 # La biblioteca de canciones del usuario. Son archivos de terceros -partituras y

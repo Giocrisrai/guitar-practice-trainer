@@ -174,6 +174,30 @@ división que el lector puede hacer; un contador perdido no se recupera. Es el
 mismo criterio que `InformeDePasada.repeticiones` ya aplica al exigir que el
 denominador viaje con el numerador.
 
+### 4.2.1 Un campo que este diseño olvidó, y lo descubrió construyéndolo
+
+El ejemplo de arriba **no lleva `tiene_acordes`**, y hace falta. Lo escribo aquí
+en vez de corregirlo arriba en silencio, porque el error es instructivo.
+
+Parecía un detalle de *cómo se midió*, no un dato que comparar. Pero
+`nucleo.piezas.estudio.proporcion_limpia` **excluye los compases con acordes** —su
+propio docstring explica por qué— y devuelve `None` para una pieza entera de
+acordes, que es «no se puede medir» y no «cero». Sin el campo, quien lea el
+historial no puede aplicar esa regla.
+
+Y lo que pasa entonces está medido. Un compás de acorde tiene **una** nota
+medible —un rasgueo, un ataque—, así que la proporción limpia solo puede salir
+0 % o 100 %. Al gemelo **principiante**, que fallaba una cuerda de cinco y
+llegaba 650 ms tarde, la primera versión de la herramienta le dijo
+**«100,0 % limpio»**.
+
+Eso es exactamente el anti objetivo de §2: el historial mintiendo sobre el
+progreso. Y la lección para el resto de la etapa es más amplia que el campo:
+**en una pieza de acordes, la proporción limpia no es la medida de cabecera.** La
+medida de progreso de §4.4 y la propuesta de tramo de §4.5 tienen que decir
+*cuál* de las dos miran —el ritmo de lo medible, o cuántas cuerdas sonaron— y no
+pueden colapsar las dos en un número, porque cada una calla lo que la otra dice.
+
 ### 4.3 Quién escribe, y cuándo
 
 El conductor ya avisa del cierre de cada vuelta (`al_cambiar_repeticion`) y el
@@ -255,10 +279,17 @@ real**. Eso lo decide el usuario practicando semanas. Está en §6 y en el alcan
 
 ### 4.5 Qué practicar hoy
 
-Derivado, no inventado: los compases de la pieza ordenados por `limpias /
-medibles` ascendente, dentro del mismo factor de tempo, agrupados en tramos
-contiguos para que la propuesta sea un tramo tocable y no una lista de compases
-sueltos.
+Derivado, no inventado: los compases de la pieza ordenados por lo que peor va,
+dentro del mismo factor de tempo, agrupados en tramos contiguos para que la
+propuesta sea un tramo tocable y no una lista de compases sueltos.
+
+**«Lo que peor va» son dos cosas y no se pueden sumar** (ver §4.2.1): el ritmo
+de lo medible (`limpias / medibles`, sin los compases de acordes) y cuántas
+cuerdas sonaron (`acertadas / escritas`, con ellos). Un compás de acorde con
+todas las cuerdas mudas y el rasgueo a tiempo saldría perfecto por la primera y
+pésimo por la segunda. **DECISIÓN MÍA: manda la segunda cuando el compás tiene
+acordes, y la primera cuando no.** La razón es pedagógica: si una cuerda no
+suena, el ritmo de ese compás no es todavía el problema.
 
 **DECISIÓN MÍA: se proponen tramos, no compases.** Practicar el compás 19 solo no
 es practicar música; practicar del 17 al 20 sí. Dónde cortar el tramo es del
@@ -319,6 +350,9 @@ Lo que **sí** se puede afirmar aquí:
 - Que un historial corrupto se renombra y no se pierde.
 - Una pasada del gemelo deja su registro, y el registro dice lo que el informe
   decía.
+- **Que un rasgueo con una cuerda muda no salga «100 % limpio».** Es el defecto
+  de §4.2.1 convertido en candado: el gemelo principiante tiene que salir peor
+  que el perfecto en la cifra que se enseña, o la medida no sirve.
 
 Lo que **no** se puede afirmar aquí, y hay que escribirlo donde se vea:
 
